@@ -13,6 +13,23 @@ from typing import Any
 from app.global_domain.enums import ConstructType, EvidenceChannel
 
 
+#: `kind` → 计分机制的**结构性默认**。
+#:
+#: 与上面 `basis` 那张表同一个道理：这三种 `kind` 的计分机制由 kind 唯一决定，
+#: 所以不该靠几十处手抄 —— 手抄的下场是漏一处，而漏掉的那一处在 §5.3 聚合时
+#: 被**静默跳过**，症状是「这个变量的分数偏低」，不是「少算了一个方法」。
+#:
+#: `behavioral_task` 与 `retrospective` **刻意不在表里**：它们怎么变成一个数
+#: 是一个**尚未做出的测量设计决定**，不是可以推导的默认值。
+#: 给它们填一个默认值就是发明而不是测量（M1 §5 红线 7）——
+#: 空着会被 `tools/auditmethods.py` 报出来，那才是它该有的样子。
+_KIND_DEFAULT_SCORE: dict[str, str] = {
+    "self_report": "self_report",
+    "session_observation": "incremental",
+    "external_evidence": "none",
+}
+
+
 def _m(
     method_id: str,
     kind: str,
@@ -32,7 +49,7 @@ def _m(
         "description": description,
         "cost": {"time_min": time_min, "material": material},
         "priority": priority,
-        "maps_to_score": maps_to_score,
+        "maps_to_score": maps_to_score or _KIND_DEFAULT_SCORE.get(kind, ""),
         "basis": {
             "self_report": "stated",
             "retrospective": "experienced",
@@ -61,15 +78,27 @@ _TRAITS: list[dict[str, Any]] = [
             "goal": "在复杂/密集信息背景中提取核心信号的能力倾向。",
             "methods": [
                 _m("M-SE-01", "self_report", "行为指标自评", "P1",
-                   description="3-5 条行为描述，条目均值 → 0-10", maps_to_score="条目均值→0-10", time_min=3),
+                   description="3-5 条行为描述，条目均值 → 0-10", time_min=3),
+                # 回溯读物要靠**评分锚**（范例）才能落成一个数 ——
+                # `_采购清单` §13 已经把「回溯素材（困难事件 10-15）」列进要收集的东西。
                 _m("M-SE-02", "retrospective", "历史回溯", "P1",
-                   description="4-6 个过往事件；偏差≥3 以回溯为准", maps_to_score="事件提取表现", time_min=4),
+                   description="4-6 个过往事件；偏差≥3 以回溯为准", maps_to_score="rubric", time_min=4),
+                # ★ 正确率/用时 = 正误题 → 按 M1 §5 红线 7 它**只能是标尺**，
+                # 不得产出 V-SE.measured 的读数。
                 _m("M-SE-03", "behavioral_task", "嵌入图形任务（EFT 变体）", "P2",
-                   description="材料用户找；正确率/用时换算", maps_to_score="正确率/用时换算", time_min=8, material="用户寻找"),
+                   description="材料用户找；正确率/用时换算 → **只做等值化标尺**",
+                   maps_to_score="ruler", time_min=8, material="用户寻找"),
+                # ★★ M-SE-04 的计分机制**故意仍然空着**：
+                # 它原来声明的是「表现差」，而那是一个**建在正误分之上的差量** ——
+                # 差量抵消的是能力水平，不抵消"这是能力题"这件事，
+                # 所以按红线 7 它同样不能产出读数。
+                # 它要变成什么（编码题？行为量？）是一个**测量设计决定**，
+                # 留空让 `tools/auditmethods.py` 报出来，比填一个好看的值诚实。
                 _m("M-SE-04", "behavioral_task", "文本提取对照", "P2",
-                   description="全局/细节提取表现差", maps_to_score="表现差", time_min=6, material="用户寻找"),
+                   description="全局/细节提取表现差 —— **机制待重新定义（红线 7）**",
+                   time_min=6, material="用户寻找"),
                 _m("M-SE-05", "session_observation", "Session 观测", "P1", "incremental",
-                   description="review.extraction_efficiency 累积", maps_to_score="累积观测", time_min=0),
+                   description="review.extraction_efficiency 累积", time_min=0),
                 _m("M-SE-06", "external_evidence", "外部证据", "P3",
                    description="信息密集成果/他人反馈", time_min=0),
             ],
