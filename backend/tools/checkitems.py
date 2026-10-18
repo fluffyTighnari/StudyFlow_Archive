@@ -36,6 +36,7 @@ from app.benchmark.items import (
     BLANK as _BLANK,
     ELLIPSIS as _ELLIPSIS,
     PAREN as _PAREN,
+    RETIRED_FIELDS,
     SPEC_BLOCKING,
     SPEC_SAMPLING,
     divergence as _divergence,
@@ -45,6 +46,7 @@ from app.benchmark.items import (
     norm as _norm,
     strip_tail as _strip_tail,
 )
+from app.benchmark.topics import TopicError, label_of, require_topics, validate_catalog
 
 # --------------------------------------------------------------------------- #
 # 发现项
@@ -324,6 +326,17 @@ def check_key_points(item: dict, report: ItemReport) -> None:
 
 
 def check_spec_fields(item: dict, report: ItemReport) -> None:
+    # ★ 已删除字段：**报成错误而不是忽略**。
+    # 一道题带着旧的 `domain` 而没人发现，它的抽样资格就永远是错的 ——
+    # 而它看起来"只是多了一个字段"，没有任何症状。
+    for gone, why in RETIRED_FIELDS.items():
+        if gone in item:
+            report.add(
+                BAD,
+                f"还在用**已删除**的字段 `{gone}`（{item[gone]!r}）—— {why}",
+                "spec",
+            )
+
     missing_blocking = [
         f"{k}（{v}）" for k, v in SPEC_BLOCKING.items() if not item.get(k)
     ]
@@ -338,8 +351,31 @@ def check_spec_fields(item: dict, report: ItemReport) -> None:
         report.add(WARN, "**会让抽样静默失准**的字段缺失：", "spec")
         for m in missing_sampling:
             report.add(WARN, f"    · {m}", "spec")
+
+    # ★ 「后续所有题目都按这份清单，不要给随机题目」的落点。
+    # 拼错一个 topic_id = 这道题抽不出来（或抽错），而它不会报错 ——
+    # 所以这里必须查，且必须查**主题表**而不是题目自己说了什么。
+    raw_topics = item.get("topics")
+    if isinstance(raw_topics, list) and raw_topics:
+        try:
+            require_topics(raw_topics, where=report.path.name)
+        except TopicError as exc:
+            report.add(BAD, str(exc), "spec")
+        else:
+            names = "、".join(
+                f"{t}（{label_of(t)}）" for t in raw_topics
+            )
+            report.add(OK, f"主题：{names}", "spec")
+    elif raw_topics is not None:
+        report.add(
+            BAD,
+            f"`topics` 必须是非空列表（现在：{raw_topics!r}）—— "
+            f"它是「按清单抽题」的唯一依据",
+            "spec",
+        )
+
     if not missing_blocking and not missing_sampling:
-        report.add(OK, "规格字段齐全")
+        report.add(OK, "规格字段齐全", "spec")
 
 
 # --------------------------------------------------------------------------- #
@@ -412,6 +448,17 @@ def main(argv: list[str] | None = None) -> int:
     paths = sorted(p for p in items_dir.glob("*.json"))
     if not paths:
         print(f"❌ {items_dir.resolve()} 下没有 *.json")
+        return 2
+
+    # ★ 先查**主题表自己**有没有坏。
+    # 题目引用得对，前提是那张表本身没坏 —— 若表里有个重复 id，
+    # 那么"每道题的 topics 都存在"这句话就没有意义了。
+    catalog_problems = validate_catalog()
+    if catalog_problems:
+        print("❌ 主题表本身有问题（`app/seeds/domain_topics.json`）：")
+        for p in catalog_problems:
+            print(f"    · {p}")
+        print()
         return 2
 
     reports = [check_one(p, materials_dir) for p in paths]

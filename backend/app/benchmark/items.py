@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.benchmark.topics import TopicError, require_topics
+
 # --------------------------------------------------------------------------- #
 # 规格字段（来源：Benchmark基准测验_v0.3.md §6.2）
 # --------------------------------------------------------------------------- #
@@ -40,9 +42,9 @@ SPEC_BLOCKING = {
 
 #: 缺了它们，**能跑但会静默失准**（抽样选不对题、分数不可比）。
 SPEC_SAMPLING = {
-    "domain_familiarity": "low|mid|high —— 抽题的定向过滤靠它；缺了只能靠人记着",
+    "topics": "主题表里的专题 id 列表（非空；第一项是主题，其余是它还涉及的）"
+              " —— 「按清单抽题」与跨运行轮换的唯一依据",
     "time_min": "单题耗时（时间预算与作废题判据）",
-    "domain": "领域（跨运行轮换靠它）",
     "language": "语言",
     "media": "text|image|audio|table",
     "scoring": "计分规则（rule 与权重来源）",
@@ -61,9 +63,24 @@ FIELD_ALIASES: dict[str, str] = {
     "reading_time_est": "time_min",
 }
 
+#: ★ **已删除**的字段：`domain` 与 `domain_familiarity`。
+#:
+#: - `domain` 是自由文本（实际值如 `"地质学 / 海洋生物学"`），
+#:   从它算不出"是否落在某人的熟悉区"，因此"按清单抽题"当时无法实现。
+#:   取而代之的是 `topics` —— 主题表上的引用。
+#: - `domain_familiarity`（`low|mid|high`）是**作者手写的判断**，
+#:   没有任何东西能核对它：两位作者标"low"的两篇，可能一篇对谁都陌生、
+#:   一篇只是对非专业人士陌生。现在"熟不熟"由**用户自己的勾选**回答。
+#:
+#: 留这张表是为了**把旧写法报成明确错误，而不是让它静默消失** ——
+#: 一道题带着 `domain` 而没人发现，它的抽样资格就永远是错的。
+RETIRED_FIELDS: dict[str, str] = {
+    "domain": "已改为 `topics`（主题表里的 id 列表）",
+    "domain_familiarity": "已删除 —— 「熟不熟」由用户的清单勾选回答，不由作者猜",
+}
+
 VALID_ROLES = ("anchor", "regular")
 VALID_DIFFICULTIES = ("易", "中", "难")
-VALID_FAMILIARITY = ("low", "mid", "high")
 
 #: §5.3 的难度权重（易 1.0 / 中 1.4 / 难 2.0）。
 DIFFICULTY_WEIGHT: dict[str, float] = {"易": 1.0, "中": 1.4, "难": 2.0}
@@ -178,8 +195,13 @@ class BenchItem:
     method_id: str
     role: str
     difficulty: str
-    domain: str
-    domain_familiarity: str
+    #: 主题表里的专题 id 列表，**第一项是主题**，其余是它还涉及的专题。
+    #:
+    #: 为什么是列表而不是单个：现有题目**全都是跨两个专题的**
+    #: （`"地质学 / 海洋生物学"`），而且"这份材料对他陌生吗"的正确答案是
+    #: **只要有一个专题他勾了熟悉，就不算陌生** —— 因为他能靠那一格读下去。
+    #: 只留一个 id 会让这个判断在一半的材料上算错。
+    topics: tuple[str, ...]
     time_min: float
     language: str
     media: str
@@ -244,6 +266,15 @@ def load_item(
     这种错没人会归因到一行默认值上。
     """
     raw = apply_aliases(json.loads(path.read_text(encoding="utf-8-sig")))
+
+    # ★ 已删除字段 → **明确报错**，不让它静默消失。
+    # 一道题带着 `domain` 而没人发现，它的抽样资格就永远是错的。
+    for gone, why in RETIRED_FIELDS.items():
+        if gone in raw:
+            raise ItemSpecError(
+                f"{path.name} 还在用已删除的字段 `{gone}`（{raw[gone]!r}）—— {why}"
+            )
+
     blocking, sampling = missing_spec(raw)
     if blocking:
         detail = "；".join(f"{k}（{SPEC_BLOCKING[k]}）" for k in blocking)
@@ -258,11 +289,18 @@ def load_item(
         raise ItemSpecError(
             f"{path.name} difficulty={raw['difficulty']!r} 不在 {VALID_DIFFICULTIES}"
         )
-    if raw["domain_familiarity"] not in VALID_FAMILIARITY:
-        raise ItemSpecError(
-            f"{path.name} domain_familiarity={raw['domain_familiarity']!r}"
-            f" 不在 {VALID_FAMILIARITY}"
-        )
+    # 「按清单抽题」的唯一依据 —— 引用错了就直接报错，见 `require_topics`。
+    #
+    # ★ 这里**必须把它转成 `ItemSpecError`**：`load_item` 的契约是
+    # 「任何规格问题都在这里抛出」，而调用方（`load_bank`、工具、测试）
+    # catch 的是 `ItemSpecError`。`TopicError` 是它的兄弟类而不是子类
+    # （`topics.py` 不能 import `items.py`，那是循环），
+    # 所以一个拼错的 topic_id 会**绕过调用方的处理**直接冒到顶层 ——
+    # 报错内容一样，但"谁负责处理它"变了。这是探针发现的，不是推理发现的。
+    try:
+        topics = require_topics(raw["topics"], where=path.name)
+    except TopicError as exc:
+        raise ItemSpecError(str(exc)) from exc
 
     material_text = ""
     material_path: Path | None = None
@@ -299,8 +337,7 @@ def load_item(
         method_id=str(raw["method_id"]),
         role=str(raw["role"]),
         difficulty=str(raw["difficulty"]),
-        domain=str(raw["domain"]),
-        domain_familiarity=str(raw["domain_familiarity"]),
+        topics=tuple(topics),
         time_min=float(raw["time_min"]),
         language=str(raw["language"]),
         media=str(raw["media"]),

@@ -1,7 +1,10 @@
 {
   "id": "SE-TXT-005",
   "title": "ABO 血型：输血相容性的基础规则",
-  "domain": "生理学 / 医学",
+  "topics": [
+    "BIO-PHYSIO",
+    "BIO-CLIN"
+  ],
   "word_count": 1676,
   "reading_time_est": "6 min",
   "difficulty": "易",
@@ -17,15 +20,21 @@
     "key_facts": [
       {
         "fact": "ABO 规则：A 型含 A 抗原与抗 B 抗体；B 型相反；AB 型两抗原无抗体；O 型无抗原、双抗体。",
-        "evidence_sentences": ["A 型血的人红细胞表面有 A 抗原，血浆中含有抗 B 抗体；B 型血相反……AB 型血同时有两种抗原，血浆中既无抗 A 也无抗 B 抗体；O 型血两种抗原都没有，血浆中同时含有抗 A 与抗 B 抗体。"]
+        "evidence_sentences": [
+          "A 型血的人红细胞表面有 A 抗原，血浆中含有抗 B 抗体；B 型血相反……AB 型血同时有两种抗原，血浆中既无抗 A 也无抗 B 抗体；O 型血两种抗原都没有，血浆中同时含有抗 A 与抗 B 抗体。"
+        ]
       },
       {
         "fact": "ABO 由 IA/IB（共显性）与 i（隐性）三个等位基因决定，如 A 型（IAi）× B 型（IBi）的子女可产生 A/B/AB/O 四种血型。",
-        "evidence_sentences": ["IA、IB 与 i 三种等位基因构成显性遗传系统：IA 与 IB 共显性，i 为隐性。因此父母分别为 A 型（IAi）与 B 型（IBi）时，子女可能出现 A、B、AB、O 四种血型中的任意一种。"]
+        "evidence_sentences": [
+          "IA、IB 与 i 三种等位基因构成显性遗传系统：IA 与 IB 共显性，i 为隐性。因此父母分别为 A 型（IAi）与 B 型（IBi）时，子女可能出现 A、B、AB、O 四种血型中的任意一种。"
+        ]
       },
       {
         "fact": "Rh 系统（D 抗原）：约 85% 为 Rh 阳性；Rh 阴性者无天然抗 D 抗体，首次接触被致敏，再次输注发生溶血。",
-        "evidence_sentences": ["约 85% 的人群为 Rh 阳性……Rh 阴性者体内通常没有天然的抗 D 抗体，但首次接触 Rh 阳性红细胞后会被致敏，产生抗 D 抗体；此后再次输注 Rh 阳性血时，就会发生迟发性溶血反应。"]
+        "evidence_sentences": [
+          "约 85% 的人群为 Rh 阳性……Rh 阴性者体内通常没有天然的抗 D 抗体，但首次接触 Rh 阳性红细胞后会被致敏，产生抗 D 抗体；此后再次输注 Rh 阳性血时，就会发生迟发性溶血反应。"
+        ]
       }
     ],
     "limit_conditions": [
@@ -54,7 +63,12 @@
       "no": 1,
       "type": "choice",
       "question": "AB 型血的血浆中抗体情况是？",
-      "options": ["含抗 A 抗体", "含抗 B 抗体", "同时含抗 A 与抗 B 抗体", "既无抗 A 也无抗 B 抗体"],
+      "options": [
+        "含抗 A 抗体",
+        "含抗 B 抗体",
+        "同时含抗 A 与抗 B 抗体",
+        "既无抗 A 也无抗 B 抗体"
+      ],
       "answer": "既无抗 A 也无抗 B 抗体",
       "assesses": "key_fact",
       "notes": "考 ABO 规则；AB 型可接受任意血型红细胞的原理即源于此"
@@ -99,7 +113,12 @@
       "no": 5,
       "type": "choice",
       "question": "现代输血实践的最后一道保障是？",
-      "options": ["血型鉴定报告", "ABO 与 Rh 配型表", "交叉配血试验", "受血者病史询问"],
+      "options": [
+        "血型鉴定报告",
+        "ABO 与 Rh 配型表",
+        "交叉配血试验",
+        "受血者病史询问"
+      ],
       "answer": "交叉配血试验",
       "assesses": "key_fact",
       "notes": "考‘配型表是理论方向、交叉配血是个体化确认’的层级关系"
