@@ -1,0 +1,29 @@
+[project]
+name = "mouxue-zhiqi-backend"
+version = "0.1.0"
+description = "觅学之契 · 我的学习范式 — 后端（治理内核优先）"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "sqlalchemy>=2.0.36",
+    "alembic>=1.14",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.28",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers"
+# 这条来自 starlette 自己（新版建议装 httpx2）。它是上游的迁移提醒，不是本项目的
+# 问题，也没有可执行的修复动作 —— 留着它只会训练我们忽略 warnings 输出。
+# 注意类别是 `UserWarning` 的子类（不是 DeprecationWarning），别按名字想当然。
+filterwarnings = [
+    "ignore:Using .httpx. with .starlette.testclient. is deprecated:UserWarning",
+]

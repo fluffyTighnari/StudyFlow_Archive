@@ -1,0 +1,7 @@
+# pnpm 11 在这里声明"允许跑构建脚本的依赖"（package.json 的 pnpm 字段已不再生效）。
+#
+# esbuild 需要一个 postinstall 来落平台二进制；不批准的话 vite 起不来，
+# 而报错长这样：`Cannot find module '@esbuild/win32-x64'` —— 看起来像依赖没装，
+# 其实是构建脚本被跳过了。
+allowBuilds:
+  esbuild: true

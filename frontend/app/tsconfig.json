@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "types": ["vite/client", "node"],
+
+    /**
+     * 主题套件的类型**从它自己的源码推出来**，而不是我们在 app 里再手写一份。
+     *
+     * 手写一份 `.d.ts` 也能让它编过，但那是第二份契约：套件改了签名，
+     * 这边不会报错，只会在运行时以 `undefined is not a function` 的形式出现。
+     * 打开 `allowJs` 并把它纳进同一个编译范围，类型就永远跟着实现走。
+     */
+    "allowJs": true,
+    "baseUrl": ".",
+    "paths": {
+      "@mouxue/theme-kit": ["../theme-kit/src/index.mjs"],
+      "@mouxue/theme-kit/packs": ["../theme-kit/src/packs.mjs"],
+      "@mouxue/theme-kit/base.css": ["../theme-kit/src/base.css"]
+    }
+  },
+  "include": ["src", "vite.config.ts", "../theme-kit/src"],
+  "exclude": ["../theme-kit/src/*.test.mjs"]
+}

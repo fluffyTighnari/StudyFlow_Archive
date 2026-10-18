@@ -1,0 +1,100 @@
+/*
+ * 主题套件的基础样式（`theme-kit` 自带的那一层）。
+ *
+ * 这里只放**套件公开的钩子**：`.tk-shell` / `.tk-surface` / `.tk-topbar` /
+ * `.tk-sidebar` / `.tk-focusable`。它们是套件与宿主应用之间唯一的样式约定 ——
+ * 应用把类名挂在元素上，主题包就能针对它们写自定义片段，而**不必**依赖
+ * 组件内部的结构或类名（组件内部没有稳定类名，这是刻意的：
+ * 有稳定类名就会有人去依赖它，然后组件一重构主题就碎）。
+ *
+ * 文件里**没有一个颜色或尺寸字面量** —— 每个值都是 var(--…)，
+ * 由 `tools/check-literals.mjs` 对着 schema 检查（见 test/literals.test.mjs）。
+ * 这条规矩先管住套件自己，才有资格要求组件也这么做。
+ */
+
+@layer theme, theme-extra, components;
+
+@layer components {
+  .tk-shell {
+    box-sizing: border-box;
+    background: var(--bg-app);
+    color: var(--fg-primary);
+    font-family: var(--font-ui);
+    font-size: var(--text-body);
+    line-height: var(--leading-body);
+    /* 深色/浅色切换时整页变色，这里给一点过渡 —— 突变会让人以为界面闪了一下。 */
+    transition: background var(--duration-base) var(--ease-out),
+      color var(--duration-base) var(--ease-out);
+  }
+
+  .tk-surface {
+    position: relative;
+    background: var(--bg-surface);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
+    padding: var(--space-gutter);
+    /* 主题包的片段会往 ::before 上放图案，所以这里要给它一个定位上下文。 */
+    isolation: isolate;
+  }
+
+  /* 图案那一层压在内容下面，且不吃鼠标事件。 */
+  .tk-surface > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .tk-topbar {
+    background: var(--shell-topbar-bg);
+    border-bottom: var(--border-width) solid var(--shell-divider);
+    padding: var(--space-stack) var(--space-gutter);
+  }
+
+  .tk-sidebar {
+    background: var(--shell-sidebar-bg);
+    border-right: var(--border-width) solid var(--shell-divider);
+    padding: var(--space-gutter);
+  }
+
+  .tk-divider {
+    border: none;
+    border-top: var(--border-width) solid var(--shell-divider);
+    margin: var(--space-stack) 0;
+  }
+
+  .tk-focusable:focus-visible {
+    outline: var(--focus-ring-width) solid var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+    border-radius: var(--radius-control);
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+    color: var(--fg-primary);
+  }
+
+  /* 大块留白：这是默认主题的形态，不是可有可无的装饰。
+     一个学习界面里，拥挤是唯一会让人立刻关掉它的东西。 */
+  .tk-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-stack);
+  }
+
+  .tk-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-inline);
+  }
+
+  .tk-muted {
+    color: var(--fg-muted);
+    font-size: var(--text-caption);
+  }
+
+  /* 让浏览器别把中文渲染成"每个字都一样宽"的方块感。 */
+  body {
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+}

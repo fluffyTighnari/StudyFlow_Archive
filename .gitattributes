@@ -1,0 +1,23 @@
+# 行尾统一：仓库里一律 LF，检出也保持 LF。
+#
+# 理由与本项目的核心机制有关，不是洁癖：题库埋点引文、`basis_quote` 的核对
+# 都是**逐字**比较。让同一份材料在不同机器上换出不同的行尾，会制造一类
+# 只在别人机器上出现、且看起来像「引文写错了」的假故障。
+#
+# （严格说这不是**功能**要求 —— `app/benchmark/items.py::norm` 会抹平全部空白，
+#   `\r` 也在其中。留着这条是为了让 diff 与故障排查保持干净：
+#   一次 checkout 之后 `git status` 说"所有文件都变了"，是没人能从中
+#   学到东西的那种噪音。）
+* text=auto eol=lf
+
+# 二进制：不要碰。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.db binary
+*.woff2 binary

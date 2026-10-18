@@ -1,0 +1,38 @@
+# 仓库根就是 personal_learning_flow/ 本身（此前根在上一级 D:\Workspace\Code\phy，
+# 那里混着别的项目，因此只能靠这份 ignore 保护本子树；现在不再需要那层迁就）。
+
+# ── 密钥：绝不入库 ────────────────────────────────────────────────
+# 这个文件里有 API key。`.env.example` 是**可以**入库的模板（只有键名）。
+.env
+.env.*
+!.env.example
+
+# ── 运行时产物 ────────────────────────────────────────────────────
+# 本地库、SSE 录制、探针输出、文件桥的交换目录 —— 都是"跑一次就有"的东西。
+backend/var/
+*.db
+*.db-journal
+*.db-wal
+*.log
+
+# ── Python ────────────────────────────────────────────────────────
+backend/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# ── Node / 前端 ───────────────────────────────────────────────────
+node_modules/
+frontend/app/dist/
+frontend/*/dist/
+.vite/
+*.tsbuildinfo
+
+# ── 编辑器 / 系统 ─────────────────────────────────────────────────
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
