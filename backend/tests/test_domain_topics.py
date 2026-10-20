@@ -34,8 +34,13 @@ from app.benchmark.topics import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ITEMS_DIR = REPO_ROOT / "items"
-MATERIALS_DIR = REPO_ROOT / "materials"
+#: 真实题库住在 `benchmark/` 下（`items/` 与 `materials/` 这两份**后来搬过一次**：
+#: 原先在仓库根，为了让"题库/材料/卷子"三样东西待在一起，搬到了 `benchmark/`。
+#: 三个引用方（`Benchmark` §5.1、`_端到端` §7、`tools/checkitems.py`）都按新位置写，
+#: 这个测试当时没跟着改 —— 于是它读的是一个不存在的目录，报"题库数量变了：[]"。
+#: 这类"路径漂移"的报错信息很容易被读成"题库被删了"，所以这里把位置写清楚。
+ITEMS_DIR = REPO_ROOT / "benchmark" / "items"
+MATERIALS_DIR = REPO_ROOT / "benchmark" / "materials"
 
 
 # --------------------------------------------------------------------------- #
