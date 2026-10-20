@@ -22,13 +22,14 @@ from app.global_domain import reads as global_reads
 from app.session_domain import reads as session_reads
 from app.session_domain import writes as session_writes
 
-#: M8 §4 的工具名，逐字抄自文档的表（P6+.5 起是 15 个）。
+#: M8 §4 的工具名，逐字抄自文档的表（P6+.5 起是 15 个，P13 起是 16 个）。
 M8_TOOL_NAMES = [
     "retrieve_folder",
     "retrieve_session",
     "read_attachment",
     "retrieve_cognitive",
     "retrieve_strategy",
+    "ask_about_task",
     "update_task_definition",
     "update_motivation",
     "write_chat_note",
@@ -59,9 +60,17 @@ def test_there_are_exactly_fifteen_tools_with_the_names_m8_declares() -> None:
     加它是权衡过的：工具数增长（模型的选择面变大）是代价，
     换来的是资料不必挤进上下文。写在这里，是为了让下一个人知道
     这个数字是**讨论过的**，而不是随手改的。
+
+    **P13 从 15 改成 16**：`ask_about_task`（任务不明确时反问）。
+    它是被一个结构性事实逼出来的 —— **模型改不了 `goal`**
+    （改定义区需要用户自己的手势，M8 §4.2），所以目标不明时它只有
+    "问"与"猜"两条路。没有这个工具，第二条路是唯一被实现的那条：
+    它会自己选一个范围，产出一份看起来完整的计划。
+    这一条同样是讨论过的：多一个工具 = 模型的选择面变大，
+    而换来的是"计划建在猜出来的任务上"这件事不再无声发生。
     """
     assert [spec.name for spec in T.iter_tools()] == M8_TOOL_NAMES
-    assert len(T.TOOLS) == 15
+    assert len(T.TOOLS) == 16
 
 
 def test_only_the_global_tool_lacks_a_handler() -> None:
@@ -85,21 +94,42 @@ def test_exactly_one_global_tool_and_it_is_the_guarded_one() -> None:
 
 
 def test_read_tools_are_declared_read_only() -> None:
-    """五个检索工具是只读的 —— 这决定它们能不能被重试、能不能并行调用。
+    """检索类工具分两档，**不能合成一档**。
 
-    `read_attachment`（P6+.5）在名单里的意义不只是"它不改数据"：
+    `READ`（不碰任何会话）与 `SESSION_READ`（需要一个会话）在只读这件事上
+    完全一样 —— 它们都不改数据、不需要手势、可以被重试。
+    分成两档**只为一件事**：让"侧边栏能用哪些工具"变成一条**可推导的**规则
+    （`SIDEBAR_TOOL_SCOPES = {READ, GLOBAL}`），而不是一份手写的名单。
+
+    合回一档的代价是具体的：侧边栏会把 `retrieve_session` 暴露给模型，
+    模型不带 `session_id` 调它，于是它拿哨兵值去查一个叫 `sidebar` 的会话，
+    报出「会话不存在：sidebar」——**那条错误看起来像数据问题**。
+
+    `read_attachment`（P6+.5）留在只读名单里的意义也不只是"它不改数据"：
     只读工具**不需要手势、不需要理由、可以被重试**，
     而"读到一半接着读"必须能反复调 —— 如果它被误标成写工具，
     分段读第二段就会被当成一次重复调用而被零进展检测拦下。
     """
     read_only = {s.name for s in T.iter_tools() if s.scope is T.ToolScope.READ}
+    session_read = {
+        s.name for s in T.iter_tools() if s.scope is T.ToolScope.SESSION_READ
+    }
     assert read_only == {
+        "retrieve_folder",
+        "retrieve_cognitive",
+        "retrieve_strategy",
+    }
+    assert session_read == {"retrieve_session", "read_attachment"}
+    # ★ 两档合起来才是"能重试的只读工具"这个整体 —— 别让某一档悄悄变空。
+    assert read_only | session_read == {
         "retrieve_folder",
         "retrieve_session",
         "read_attachment",
         "retrieve_cognitive",
         "retrieve_strategy",
     }
+    # ★ 而侧边栏的作用域**恰好**是"不需要会话的那些"。
+    assert T.SIDEBAR_TOOL_SCOPES == {T.ToolScope.READ, T.ToolScope.GLOBAL}
 
 
 def test_every_tool_has_a_readable_description_and_an_object_schema() -> None:

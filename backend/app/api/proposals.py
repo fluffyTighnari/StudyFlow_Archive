@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.api.envelope import ItemsResponse, ok
 from app.api.deps import get_router, get_session
 from app.core.errors import NotFound
 from app.global_domain import reads
@@ -54,20 +55,20 @@ def submit(
     return router_.submit(body)
 
 
-@router.get("", response_model=list[ProposalDetailRead])
+@router.get("", response_model=ItemsResponse[ProposalDetailRead])
 def list_proposals(
     status: ProposalStatus | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     session: Session = Depends(get_session),
-) -> list[ProposalDetailRead]:
+) -> dict[str, list[ProposalDetailRead]]:
     """提案列表。`?status=pending_confirmation` 即待确认队列。"""
     proposals = reads.list_proposals(session, status)[:limit]
-    return [
+    return ok([
         ProposalDetailRead.from_proposal(
             proposal, _intents(session, proposal.proposal_id)
         )
         for proposal in proposals
-    ]
+    ])
 
 
 @router.get("/{proposal_id}", response_model=ProposalDetailRead)

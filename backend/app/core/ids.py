@@ -51,6 +51,9 @@ SCOPE_INTENT = "update_intent"
 
 #: C 个性化证据：E-0001（M2 §4.2）
 SCOPE_C_EVIDENCE = "c_evidence"
+#: 假说（P7）。**独立的序列**，不与证据共用 —— 共用一个计数器会让
+#: 「`E-0007` 和 `H-0007` 是不是同一件事的两面」变成一个要解释的问题。
+SCOPE_HYPOTHESIS = "hypothesis"
 
 #: M1 基线版本：M1-<变量缩写>-<3位>（M1 §3.3 的 log_id 格式）
 SCOPE_M1_BASELINE_PREFIX = "m1_baseline"
@@ -111,6 +114,31 @@ SCOPE_BENCHMARK_RUN = "benchmark_run"
 #: 基准作答：`BS-0001`
 SCOPE_BENCHMARK_RESPONSE = "benchmark_response"
 
+#: 领域勾选档案的版本：`DP-0001`。**按版本递增，不按用户递增** ——
+#: 目前是单用户产品，而"第几版清单"比"谁的清单"更能说明一条勾选的来历。
+SCOPE_DOMAIN_PROFILE = "domain_profile"
+
+#: 一次对话压缩：`CX-0001`。**全局一个序列** —— 见 `next_compact_id`。
+SCOPE_CONTEXT_COMPACT = "context_compact"
+
+#: 侧边栏常驻模型的一条消息：`SM-0001`。
+#: 与 `SCOPE_CHAT`（`CM-`）分开，因为它们是两张表、两种归属 —— 见 `SidebarMessage`。
+SCOPE_SIDEBAR_MESSAGE = "sidebar_message"
+
+#: 澄清问题（"任务不明确时反问"）：`CL-0001`。
+#: 与 `SCOPE_CHAT` 分开：一条对话消息可以被删被压缩，
+#: 而一个问题**问过就是问过** —— 它是"我什么时候说过我不知道"的证据。
+SCOPE_CLARIFICATION = "clarification"
+
+#: 句子标注（"输出可标注某句并看推断理由"，P15）：`AN-0001`。
+#: 与 `SCOPE_CHAT` 分开：标注的生命周期**长于**被标注的那句话吗？不 ——
+#: 它随消息一起走（外键 CASCADE）。分开的理由是**计数**：
+#: "我给助手的话做了几次追问"是一个独立读数，混进消息序列就查不出来了。
+SCOPE_ANNOTATION = "annotation"
+
+#: 复盘之后的感想（P15）：`RF-0001`。
+SCOPE_REFLECTION = "reflection"
+
 
 def _variable_abbrev(variable_id: str) -> str:
     """`"V-SE"` → `"SE"`（M1 §3.3 日志格式用变量缩写）。"""
@@ -135,6 +163,16 @@ def next_evidence_id(store: SequenceStore) -> str:
 
 def next_preference_id(store: SequenceStore) -> str:
     return format_seq("P", store.next(SCOPE_M2_PREFERENCE), 4)
+
+
+def next_hypothesis_id(store: SequenceStore) -> str:
+    """假说 id：`H-0001`。
+
+    ★ 用 `H` 而不是 `C` 前缀：证据是 `E-0001`。两者在同一张日志里并排出现时，
+    `E`（evidence，已试过）与 `H`（hypothesis，想试）一眼分得开 ——
+    而 `C` 前缀会让人以为它是"条件和效果"的意思，与可信度无关。
+    """
+    return format_seq("H", store.next(SCOPE_HYPOTHESIS), 4)
 
 
 def next_m1_obs_id(store: SequenceStore) -> str:
@@ -216,6 +254,63 @@ def next_benchmark_run_id(store: SequenceStore) -> str:
 def next_benchmark_response_id(store: SequenceStore) -> str:
     """`BS-0001`。逐题一行。"""
     return format_seq("BS", store.next(SCOPE_BENCHMARK_RESPONSE), 4)
+
+
+def next_domain_profile_id(store: SequenceStore) -> str:
+    """`DP-0001`。领域勾选档案的一版。
+
+    与 `next_benchmark_run_id` 同族：**每次改动都是一行新的**，旧的留着。
+    「我当时勾了哪些」因此永远可回看。
+    """
+    return format_seq("DP", store.next(SCOPE_DOMAIN_PROFILE), 4)
+
+
+def next_compact_id(store: SequenceStore) -> str:
+    """`CX-0001`。一次对话压缩。
+
+    `X` = 压缩（eXcerpt）。**全局一个序列**，不按 scope 分段：
+    压缩次数是个位数量级，而分段序列会让"总共压过几次"需要跨序列相加。
+    """
+    return format_seq("CX", store.next(SCOPE_CONTEXT_COMPACT), 4)
+
+
+def next_sidebar_msg_id(store: SequenceStore) -> str:
+    """`SM-0001`。侧边栏的一条消息。
+
+    一个序列、不按会话分段：侧边栏**只有一个**（它就是那块常驻面板），
+    所以"第几条"本身就是它的顺序。
+    """
+    return format_seq("SM", store.next(SCOPE_SIDEBAR_MESSAGE), 4)
+
+
+def next_clarification_id(store: SequenceStore) -> str:
+    """`CL-0001`。澄清问题（P13）。
+
+    ★ 问题**不是**一条对话消息：对话消息会被压缩、会被清掉（侧边栏那一路），
+    而"我问过、他还没答"这个事实必须活到答案回来为止 ——
+    它挂在计划闸门上，被清掉就意味着闸门自己解开了。
+    """
+    return format_seq("CL", store.next(SCOPE_CLARIFICATION), 4)
+
+
+def next_reflection_id(store: SequenceStore) -> str:
+    """`RF-0001`。复盘之后的感想（P15）。
+
+    与 `S-`（会话总结 `summary`）分开计数：一份是**复盘产物**，
+    一份是**对它的补充**，两者在 `V-PAR` 的测量里不是一回事 ——
+    混在一个序列里，"他复盘了几次"与"他回看了几次"就分不开了。
+    """
+    return format_seq("RF", store.next(SCOPE_REFLECTION), 4)
+
+
+def next_annotation_id(store: SequenceStore) -> str:
+    """`AN-0001`。句子标注（P15）。
+
+    用 `AN-` 而不是复用 `N-`（笔记）：一条笔记是**用户自己写的**，
+    一条标注是**用户对助手某句话的追问** —— 两者在界面上的位置、
+    生命周期、以及"它算不算内容"都不同。
+    """
+    return format_seq("AN", store.next(SCOPE_ANNOTATION), 4)
 
 
 def next_plan_step_id(store: SequenceStore, plan_id: str) -> str:

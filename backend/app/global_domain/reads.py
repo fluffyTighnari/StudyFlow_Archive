@@ -11,12 +11,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Iterable
 
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.global_domain.enums import (
     HARD_CONSTRAINT_BASIS,
+    BenchmarkRunStatus,
     ChannelObsSourceKind,
     Completeness,
     EvidenceChannel,
@@ -28,6 +30,9 @@ from app.global_domain.models import (
     BenchmarkResponse,
     BenchmarkRun,
     CEvidence,
+    DomainProfile,
+    DomainTopic,
+    Hypothesis,
     M1BaselineCurrent,
     M1BaselineVersion,
     M1ChannelObs,
@@ -345,10 +350,23 @@ def list_strategies(session: Session, limit: int | None = 4) -> list[M2Strategy]
 
 
 def list_active_evidence(
-    session: Session, *, keyword: str | None = None, limit: int | None = None
+    session: Session,
+    *,
+    keyword: str | None = None,
+    limit: int | None = None,
+    include_archived: bool = False,
 ) -> list[CEvidence]:
-    """按 condition / effect / statement 做关键字匹配（MVP 不上向量检索，M0 §6.4）。"""
-    stmt = select(CEvidence).where(CEvidence.status == LifecycleStatus.ACTIVE)
+    """按 condition / effect / statement 做关键字匹配（MVP 不上向量检索，M0 §6.4）。
+
+    ## ★ `include_archived` 默认 `False`，而装配侧**根本不传这个参数**
+
+    它是给 `/api/evidence?include_archived=true` 用的（让人能看见自己删掉的东西
+    并恢复）。装配路径（`session_domain/context.py` 等）调用时不传，于是永远
+    只拿 active 的 —— **默认值就是装配的语义**，而不是"每个调用点都要记得"。
+    """
+    stmt = select(CEvidence)
+    if not include_archived:
+        stmt = stmt.where(CEvidence.status == LifecycleStatus.ACTIVE)
     if keyword:
         like = f"%{keyword}%"
         stmt = stmt.where(
@@ -362,6 +380,74 @@ def list_active_evidence(
     if limit is not None:
         stmt = stmt.limit(limit)
     return list(session.scalars(stmt))
+
+
+# --------------------------------------------------------------------------- #
+# 假说（P7）—— C 家族的第二档
+# --------------------------------------------------------------------------- #
+
+
+def list_hypotheses(
+    session: Session,
+    *,
+    keyword: str | None = None,
+    limit: int | None = None,
+    include_archived: bool = False,
+) -> list[Hypothesis]:
+    """他**想试但还没试**的具体做法。
+
+    ★ 这个函数**没有** `active_only` 这类参数，默认就是只取 active 的。
+    原因和分表同源：装配路径（`list_active_evidence`）与展示路径
+    共用同一个函数时，"只取已验证"就会变成一个调用方要记得传的开关。
+    假说根本不进装配，所以这里不需要那个开关 —— 它只需要回答
+    "他想试什么"。
+
+    `include_archived=True` 给界面用：他归档掉的假说要能看得见
+    （否则"我明明记得记过这条"会变成一次无法解释的消失）。
+    """
+    stmt = select(Hypothesis)
+    if not include_archived:
+        stmt = stmt.where(Hypothesis.status == LifecycleStatus.ACTIVE)
+    if keyword:
+        like = f"%{keyword}%"
+        stmt = stmt.where(
+            or_(
+                Hypothesis.condition.like(like),
+                Hypothesis.statement.like(like),
+                Hypothesis.effect.like(like),
+            )
+        )
+    stmt = stmt.order_by(Hypothesis.created_at.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(session.scalars(stmt))
+
+
+def get_hypothesis(session: Session, hypothesis_id: str) -> Hypothesis:
+    row = session.get(Hypothesis, hypothesis_id)
+    if row is None:
+        raise KeyError(f"假说不存在：{hypothesis_id}")
+    return row
+
+
+def find_hypothesis(session: Session, hypothesis_id: str) -> Hypothesis | None:
+    """同 `get_hypothesis`，但**不抛异常**。
+
+    ## 为什么两个都要有
+
+    抛异常的那个给"调用方已经确定它存在"的场景（读模型、内部流程），
+    不抛的那个给"这个 id 是外面传进来的"场景（HTTP 路径参数）。
+
+    混成一个会让两种意图里较弱的那种胜出：要么内部流程到处 `try/except`
+    （把真错误也吞了），要么 HTTP 层拿着 KeyError 去猜 404。**"它可能不在"
+    是一个应该写在函数名里的信息。**
+    """
+    return session.get(Hypothesis, hypothesis_id)
+
+
+def find_evidence(session: Session, evidence_id: str) -> CEvidence | None:
+    """同 `find_hypothesis`，用于 C 证据。"""
+    return session.get(CEvidence, evidence_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -457,6 +543,78 @@ def latest_finished_benchmark_run(
     ).first()
 
 
+def resumable_benchmark_run(session: Session) -> BenchmarkRun | None:
+    """有没有一次**可以继续**的运行；有就返回它。
+
+    ★ 这就是「下次进入时，继续该次测试还是重新开始」那个问题的答案来源。
+
+    **只认 `interrupted`，不认 `in_progress`**：一条 `in_progress` 运行意味着
+    此刻有人在另一个标签页里做着它，或者上一次进程被强杀而没来得及记状态。
+    把两者混起来，会让"打开基准页"这个动作**悄悄接管**另一个正在进行的会话。
+    `in_progress` 的运行由开始按钮自己处理（先作废再新建，见 API 层）。
+
+    多次中断时取**最近一次**：用户想继续的显然是刚放下的那一次。
+    """
+    return session.scalars(
+        select(BenchmarkRun)
+        .where(BenchmarkRun.status == BenchmarkRunStatus.INTERRUPTED)
+        .order_by(BenchmarkRun.started_at.desc())
+        .limit(1)
+    ).first()
+
+
+def list_benchmark_runs(
+    session: Session, *, limit: int | None = None
+) -> list[BenchmarkRun]:
+    """全部运行，最近的在前。用于「我的测试历史」。"""
+    stmt = select(BenchmarkRun).order_by(BenchmarkRun.started_at.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(session.scalars(stmt))
+
+
+# --------------------------------------------------------------------------- #
+# 领域勾选（用户裁定 岔路 A = 乙）
+# --------------------------------------------------------------------------- #
+
+
+def list_domain_topics(session: Session) -> list[DomainTopic]:
+    """主题目录，按显示顺序。
+
+    排序用 `seq`（种子里的顺序）而不是 `topic_id`：
+    `id` 是按英文缩写排的，而清单是给人看的 ——
+    字母序会让「文学」排在「生物」后面，纯粹因为 `LIT` > `BIO`。
+    """
+    return list(
+        session.scalars(select(DomainTopic).order_by(DomainTopic.seq))
+    )
+
+
+def get_domain_topic(session: Session, topic_id: str) -> DomainTopic | None:
+    return session.get(DomainTopic, topic_id)
+
+
+def current_domain_profile(session: Session) -> DomainProfile | None:
+    """最新一版勾选档案。没有任何一版时返回 `None`。
+
+    `None` 是有含义的：**他还没勾过**。这与"勾了但全空"不同 ——
+    后者表示"我熟悉所有领域"（清单上没有一栏被他漏掉），
+    而前者表示"这个问题还没问过他"。抽题规则对这两者的处理不一样。
+    """
+    return session.scalars(
+        select(DomainProfile).order_by(DomainProfile.version_no.desc()).limit(1)
+    ).first()
+
+
+def domain_profile_history(session: Session) -> list[DomainProfile]:
+    """全部版本，最新的在前 —— 「我对某专题熟不熟是怎么变的」."""
+    return list(
+        session.scalars(
+            select(DomainProfile).order_by(DomainProfile.version_no.desc())
+        )
+    )
+
+
 def anchor_baseline_for_item(
     session: Session, item_id: str, *, before: datetime | None = None
 ) -> float | None:
@@ -480,3 +638,56 @@ def anchor_baseline_for_item(
         if isinstance(rate, int | float):
             return float(rate)
     return None
+
+
+@dataclass(frozen=True)
+class AnchorBaseline:
+    """一道锚题的基准读数，以及**它是哪一次运行定下的**（P12）。
+
+    「来自哪一次运行」不是锦上添花：等值化底下压着"他对这道锚题的能力没变"
+    这个假设，而假设成不成立，取决于那次运行是多久以前 ——
+    所以那个 `run_id` 与时间必须跟着分数一起被带出来。
+    """
+
+    item_id: str
+    score: float
+    run_id: str
+    started_at: datetime | None
+
+
+def anchor_baselines(
+    session: Session,
+    item_ids: Iterable[str],
+    *,
+    before: datetime | None = None,
+) -> dict[str, AnchorBaseline]:
+    """一批锚题的基准，**一次查询**（P12）。
+
+    与 `anchor_baseline_for_item` 同一口径：**最早**记录它的那次运行说了算。
+    逐题调一次上面那个函数也能得到同样的结果 —— 但那是 N 次全表扫描，
+    而锚题校正每次计分都要做一次，`N` 会随锚题数量长。
+
+    ★ 重复出现时**保留最早的那条**，不保留最近的那条。这条规则是等值化的地基：
+    用来校正漂移的东西自己不能漂移。
+    """
+    wanted = set(item_ids)
+    if not wanted:
+        return {}
+    stmt = (
+        select(BenchmarkRun)
+        .where(BenchmarkRun.anchor_baseline.is_not(None))
+        .order_by(BenchmarkRun.started_at)
+    )
+    if before is not None:
+        stmt = stmt.where(BenchmarkRun.started_at < before)
+    out: dict[str, AnchorBaseline] = {}
+    for row in session.scalars(stmt):
+        for item_id, value in (row.anchor_baseline or {}).items():
+            if item_id in wanted and item_id not in out and isinstance(value, int | float):
+                out[item_id] = AnchorBaseline(
+                    item_id=item_id,
+                    score=float(value),
+                    run_id=row.run_id,
+                    started_at=row.started_at,
+                )
+    return out

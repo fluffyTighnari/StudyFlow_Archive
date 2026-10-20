@@ -46,6 +46,16 @@ from app.benchmark.items import (
     norm as _norm,
     strip_tail as _strip_tail,
 )
+from app.benchmark.questions import (
+    KIND_KEY_POINTS,
+    KIND_OBSERVATION,
+    KIND_SELF_REPORT,
+    SpecError,
+    load_self_report,
+    question_kinds,
+    requires_material,
+)
+from app.benchmark.scoring import IMPLICIT_PARAMETERS
 from app.benchmark.topics import TopicError, label_of, require_topics, validate_catalog
 
 # --------------------------------------------------------------------------- #
@@ -325,6 +335,75 @@ def check_key_points(item: dict, report: ItemReport) -> None:
         report.add(OK, f"要点清单：{len(guide)} 条，覆盖主线/关键事实/限定条件三面")
 
 
+def check_self_report(item: dict, report: ItemReport) -> None:
+    """自评量表：选项权重、反向句（P11）。
+
+    ★ 这里不重复实现校验逻辑 —— 它调用与运行时**同一个** `load_self_report`。
+    两份实现的下场是「校验器放过的量表，加载器读不懂」，
+    而作者看到的是"我的题通过了"。
+    """
+    raw = item.get("self_report_question")
+    try:
+        question = load_self_report(raw, where=report.path.name)
+    except SpecError as exc:
+        report.add(BAD, f"自评量表不合法：{exc}", "content")
+        return
+    reverses = sum(1 for s in question.statements if s.reverse)
+    detail = (
+        f"自评量表：{len(question.statements)} 句 × {len(question.options)} 档"
+        f"（权重 {question.options[0].weight:g}–{question.options[-1].weight:g}）"
+    )
+    if reverses == 0:
+        # ★ 这不是"建议"：全是正向句时，"看到就选最右边那个"这种作答习惯
+        # 会直接抬高分数 —— 而那不是他的倾向，是他填表的习惯。
+        report.add(
+            BAD,
+            "一句反向句都没有 —— 全正向句的量表会把「一路选最右」"
+            "这种作答习惯算成他的倾向（至少加一句 `reverse: true`）",
+            "content",
+        )
+    elif reverses * 2 > len(question.statements):
+        report.add(WARN, f"{detail}；反向句偏多（{reverses} 句）")
+    else:
+        report.add(OK, f"{detail}，反向 {reverses} 句")
+
+
+def check_observation(item: dict, report: ItemReport) -> None:
+    """行为观测题必须有**明示换算表**（§5.2）。
+
+    ★ 没有换算表就没有分数 —— 那是一个应当报出来的缺口，
+    而不是"用一个看起来合理的默认值凑一个分出来"。
+    """
+    table = (item.get("scoring") or {}).get("observation_table")
+    if not isinstance(table, dict):
+        report.add(
+            BAD,
+            "`scoring.rule=observation` 但没有 `scoring.observation_table` —— "
+            "换算表是一个测量设计决定，不是一个可以推断的默认值",
+            "spec",
+        )
+        return
+    unit = str(table.get("unit") or "")
+    bands = table.get("bands")
+    if not unit or not isinstance(bands, list) or not bands:
+        report.add(BAD, "换算表缺 `unit` 或 `bands`", "spec")
+        return
+    if bands[-1].get("upper") is not None:
+        report.add(
+            BAD,
+            "换算表最后一档没有 `upper: null` 兜底 —— "
+            "落表外的值会变成一个没人发现的默认分",
+            "spec",
+        )
+        return
+    where = (
+        "隐性参数（由作答过程记录，不由他填写）"
+        if unit in IMPLICIT_PARAMETERS
+        else "作答里读出的量"
+    )
+    report.add(OK, f"换算表 `{table.get('table_id')}`：unit={unit}（{where}），{len(bands)} 档")
+
+
 def check_spec_fields(item: dict, report: ItemReport) -> None:
     # ★ 已删除字段：**报成错误而不是忽略**。
     # 一道题带着旧的 `domain` 而没人发现，它的抽样资格就永远是错的 ——
@@ -397,22 +476,51 @@ def check_one(path: Path, materials_dir: Path) -> ItemReport:
 
     report.item_id = str(item.get("item_id") or item.get("id") or "?")
 
-    # 材料
-    ref = item.get("material_ref")
-    material_path = (
-        (materials_dir.parent / ref) if ref else (materials_dir / f"{report.item_id}.md")
-    )
-    if not material_path.is_file():
-        report.add(BAD, f"材料文件不存在：{material_path}")
-        material = ""
+    # ★ 规格按**题型**分支（P11）。这一条必须与运行时加载器
+    # （`app/benchmark/items.py::load_item`）用**同一份判断**。
+    #
+    # 两份判断的下场是「校验器放行的题，加载器读不懂」——
+    # 而作者看到的是"我的题通过了"，然后运行在别处炸。
+    kinds = question_kinds(item)
+    if not kinds:
+        report.add(
+            BAD,
+            "一个可作答的问题块都没有（要有 `key_points_question` / "
+            "`exact_questions` / `self_report_question` 之一，"
+            "或 `scoring.rule=observation`）",
+            "spec",
+        )
+    report.add(OK, f"题型：{'、'.join(kinds) if kinds else '（无）'}", "kind")
+
+    # 材料：**只有读材料答题的那几类才需要有材料**。
+    #
+    # 自评量表没有材料 —— 它问的是"你平时怎样"，与某篇具体文章无关。
+    # 逼它挂一份材料，作者只能编一份假的，而那份假材料会被抽样与引文核对当真。
+    need_material = requires_material(kinds)
+    material = ""
+    if need_material:
+        ref = item.get("material_ref")
+        material_path = (
+            (materials_dir.parent / ref) if ref else (materials_dir / f"{report.item_id}.md")
+        )
+        if not material_path.is_file():
+            report.add(BAD, f"材料文件不存在：{material_path}")
+        else:
+            material = material_path.read_text(encoding="utf-8-sig")
+            report.add(OK, f"材料：{material_path.name}（{len(_norm(material))} 字，去空白后）")
     else:
-        material = material_path.read_text(encoding="utf-8-sig")
-        report.add(OK, f"材料：{material_path.name}（{len(_norm(material))} 字，去空白后）")
+        report.add(OK, "无需材料（这类题不读材料）", "kind")
 
     if material:
         check_material_quotes(item, material, report)
-    check_key_points(item, report)
-    check_exact_questions(item, report)
+    if KIND_KEY_POINTS in kinds:
+        check_key_points(item, report)
+    if set(kinds) & {"exact", "exact_blank"}:
+        check_exact_questions(item, report)
+    if KIND_SELF_REPORT in kinds:
+        check_self_report(item, report)
+    if KIND_OBSERVATION in kinds:
+        check_observation(item, report)
     check_spec_fields(item, report)
     return report
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.api.envelope import ItemsResponse, ok
 from app.api.deps import get_session
 from app.global_domain import reads
 from app.global_domain.schemas import RouterLogRead
@@ -16,18 +17,18 @@ from app.global_domain.schemas import RouterLogRead
 router = APIRouter(prefix="/api/router-logs", tags=["audit"])
 
 
-@router.get("", response_model=list[RouterLogRead])
+@router.get("", response_model=ItemsResponse[RouterLogRead])
 def list_router_logs(
     target: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     session: Session = Depends(get_session),
-) -> list[RouterLogRead]:
+) -> dict[str, list[RouterLogRead]]:
     """按时间倒序返回审计日志（可选按 target 过滤）。
 
     `target` 用 `M1.V-SE` 这类规范名 —— 与 `RouterLog.target` 同源，
     不在这里解析 `V-SE`：那会变成 A9 命名空间映射的第二处实现。
     """
-    return [
+    return ok([
         RouterLogRead.model_validate(row)
         for row in reads.list_router_logs(session, target=target, limit=limit)
-    ]
+    ])

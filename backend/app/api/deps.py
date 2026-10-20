@@ -23,6 +23,7 @@ from collections.abc import Iterator
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
+from app.config import Settings
 from app.core.ids import next_intent_id
 from app.db import DbSequenceStore, session_scope
 from app.global_domain.invariants import set_invariants_enabled
@@ -49,6 +50,18 @@ def get_router(session: Session = Depends(get_session)) -> Router:
     能调 `submit` / `resolve` / `rollback` 的对象，拿不到写函数本身。
     """
     return Router(session)
+
+
+def get_settings(request: Request) -> Settings:
+    """当前应用的配置（题库目录、LLM、不变式开关…）。
+
+    ★ **为什么走 `app.state` 而不是每次 `Settings.from_env()`**：
+    再读一次环境变量会得到一份**可能不同**的配置 —— 而"题库目录是哪个"
+    这种值在进程生命周期里改掉的话，会出现"这次抽题读的是 A 目录、
+    上次记的历史来自 B 目录"，而抽题器无从察觉。
+    配置在 `create_app` 时定一次，之后只读。
+    """
+    return request.app.state.settings
 
 
 def new_ui_intent_id(session: Session) -> str:

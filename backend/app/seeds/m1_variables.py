@@ -402,6 +402,49 @@ _STRATEGY_OPTIONS: list[dict[str, Any]] = [
 ]
 
 
+# --------------------------------------------------------------------------- #
+# 分段说明（0-4 / 4-8 / 8-10）—— P10
+# --------------------------------------------------------------------------- #
+
+#: ★ 三段的**中段文字是新写的产品文案**，低端与高端直接引用已有的
+#: `scale_low_anchor` / `scale_high_anchor`。
+#:
+#: 为什么要分开对待：锚点早就在种子里（"0 分长什么样、10 分长什么样"），
+#: 而**中段没有现成的话可引用** —— 一个 6 分的用户该看到什么，
+#: 是一个必须写出来的判断，不是可以从两端推导出来的东西。
+#:
+#: 所以它被标成 `draft`：解释权在用户手里，他随时可以改这几句。
+#: 把它伪装成"从锚点算出来的"，比留空更坏 —— 那会让人以为它已经定稿了。
+_SCALE_MID: dict[str, str] = {
+    "V-SE": "主线抓得住，但限定条件容易漏；材料一密集就退回逐句读",
+    "V-HSR": "会求助，但通常要等到明显卡住之后才开口",
+    "V-DC": "重大选择会比较选项，小事直接凭直觉拍板",
+    "V-IR": "能开始，但常需要一次准备动作（列清单、找材料）才进入状态",
+    "V-PAR": "会回想，但很少把结论写成下次能用的东西",
+    "V-ENV": "安静时产出稳定，有明显声响或通知时效率下降",
+    "V-ATT": "大约 20-30 分钟一个整段，再长需要停一下",
+    "V-CP": "先看一个具体例子，再看定义；两者都要有",
+    "V-SMP": "能用，但不是首选；能换成偏爱的那种会更好",
+    "V-OSP": "先扫一遍目录，再从头线性推进",
+    "V-ACT": "有人组织就参加，自己不太会主动发起",
+}
+
+
+def scale_bands(variable_id: str, low: str, high: str) -> list[dict[str, Any]]:
+    """把两端锚点扩成三段说明（0-4 / 4-8 / 8-10）。
+
+    ★ 区间用**左闭右开**（最后一段右闭）：`4.0` 属于中段、`8.0` 属于高端、
+    `10.0` 属于高端。这个约定必须只有一处，否则"我 8.0 分到底算什么"
+    会有两个答案 —— 见 `app/benchmark/scale.py::band_for`。
+    """
+    mid = _SCALE_MID[variable_id]
+    return [
+        {"low": 0.0, "high": 4.0, "label": "低端", "description": low, "draft": False},
+        {"low": 4.0, "high": 8.0, "label": "中段", "description": mid, "draft": True},
+        {"low": 8.0, "high": 10.0, "label": "高端", "description": high, "draft": False},
+    ]
+
+
 def _build() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     order = 0
@@ -423,6 +466,11 @@ def _build() -> list[dict[str, Any]]:
                     "definition_what_not": spec["definition_what_not"],
                     "scale_low_anchor": spec["scale_low_anchor"],
                     "scale_high_anchor": spec["scale_high_anchor"],
+                    "scale_bands": scale_bands(
+                        spec["variable_id"],
+                        spec["scale_low_anchor"],
+                        spec["scale_high_anchor"],
+                    ),
                     "measurement_def": measurement,
                     "intervention_hooks": spec["intervention_hooks"],
                     "pairing": None,

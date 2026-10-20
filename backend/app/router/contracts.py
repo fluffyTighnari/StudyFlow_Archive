@@ -148,6 +148,88 @@ class CEvidenceValue(_NonBlank):
     source: CEvidenceSource = CEvidenceSource.SESSION_DERIVED
 
 
+class HypothesisValue(_NonBlank):
+    """`C.hypothesis` 的 `add_preference` 参数 —— 他**想试但还没试**的具体做法。
+
+    ## 与 `CEvidenceValue` 的差别只有一个字段，而那个字段必须缺
+
+    少了 `evidence_strength`，也**没有** `source`（来源是"他说的"，
+    恒为 `stated`，不需要填）。多留一个强度槽会诱出「低强度假说」这种说法，
+    而假说不是"最弱的证据"——它是"还没开始验证"，两者不能共用一个刻度。
+
+    ## `condition` 为什么仍然必填
+
+    这是"方法 vs 偏好"的结构判据：**偏好没有条件槽**（`M2PreferenceValue`
+    里根本没有 `condition`），具体做法才有。于是「我喜欢在安静的环境下学习」
+    这句话在结构上填不进假说 —— 它没有一个"什么场景"可以填。
+    模型硬编一个假条件仍然可能，但那会显示在列表里，用户一眼看得见。
+    """
+
+    statement: str
+    condition: str
+    effect: str
+
+
+class StatusChangeValue(_Strict):
+    """`archive` / `restore` 的参数 —— 只有一句可选的 `reason`。
+
+    ## 为什么归档也要带理由
+
+    因为这是**唯一**会在用户几个月后回头看时解释"我当初为什么把它拿掉"的东西。
+    可选的，不是必填：让他为了删掉一条东西必须先编一句话，他就不删了，
+    而那些没删的东西会继续参与上下文。
+
+    ## 为什么这里没有 `status` 字段
+
+    `archive` 只可能是 `archived`、`restore` 只可能是 `active` —— 让调用方传
+    `status` 等于给它一个"传错"的机会，而收益是零。**能填错的字段就是会填错的字段。**
+    """
+
+    reason: str | None = None
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _strip(cls, value):
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+
+class ReviseCEvidenceValue(CEvidenceValue):
+    """`C.evidence` 的 `revise` 参数 —— 三个槽整体替换，外加一句改动理由。
+
+    继承而不是重写：**能被写进来的东西，与新增时一模一样**。
+    改写不该是一条更宽松的路 —— 那会让"先随便写一条，再改成想要的"成本低于
+    "一次写对"，而后者才是我们想要的。
+    """
+
+    reason: str | None = None
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _strip_reason(cls, value):
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+
+class ReviseHypothesisValue(HypothesisValue):
+    """`C.hypothesis` 的 `revise` 参数 —— 同上，且**仍然没有 `evidence_strength`**。
+
+    这一条要特别防：改写是"它还是假说，只是说得更准了"，
+    不是"它变成证据了"。所以 `basis` 依然只能 `stated`，强度槽依然不存在。
+    """
+
+    reason: str | None = None
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _strip_reason(cls, value):
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+
 # --------------------------------------------------------------------------- #
 # 提交侧
 # --------------------------------------------------------------------------- #

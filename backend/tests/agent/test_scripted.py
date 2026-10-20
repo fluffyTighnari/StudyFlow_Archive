@@ -149,3 +149,73 @@ def test_the_demo_entry_is_the_only_user_of_the_double() -> None:
     assert users == ["serveui.py"], (
         f"应该恰好是 tools/serveui.py 在用演示替身，实际：{users}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 它兼任判官（P9）
+# --------------------------------------------------------------------------- #
+
+
+def _judge_prompt(guide: list[str], answer: str) -> str:
+    from app.benchmark.judge import build_prompt
+
+    return build_prompt(guide, answer)
+
+
+GUIDE = ["要点一：主线是 A", "要点二：事实是 B", "要点三：限定是 C"]
+ANSWER = "要点一：主线是 A；要点二：事实是 B；限定我忘了写。"
+
+
+def test_a_judge_call_does_not_eat_the_discussion_script() -> None:
+    """★ 这是它必须**分开处理**判官调用的全部理由。
+
+    讨论剧本是按**次数**发的（一段两回复）。一次判官调用若吃掉一格，
+    下一次点计划项时替身就"失忆"了 —— 而那看起来像闭环断了，
+    排查方向完全错（会去查前端、查路由，而真正的原因在这里）。
+    """
+    client = _client()
+    client.chat([ChatMessage(role="user", content=_judge_prompt(GUIDE, ANSWER))])
+    # 判官调用之后，第一轮讨论的两条剧本**一条都没少**
+    first = client.chat([ChatMessage(role="user", content="帮我改计划")])
+    second = client.chat([ChatMessage(role="user", content="工具结果回灌")])
+    assert _tool_calls(first) == ["propose_plan_change"]
+    assert _tool_calls(second) == []
+
+
+def test_the_judge_reply_quotes_the_answer_from_the_prompt() -> None:
+    """它引用的必须是**提示词里那段答案的原文** —— 否则"引文核对"没被真的走过。"""
+    from app.benchmark.judge import parse_verdict
+
+    client = _client()
+    reply = client.chat([ChatMessage(role="user", content=_judge_prompt(GUIDE, ANSWER))])
+    verdict = parse_verdict(reply.content or "", guide_size=len(GUIDE), answer=ANSWER)
+    assert verdict.ok
+    assert verdict.verified_hits, "替身至少要给出一条**真能核对过**的命中"
+
+
+def test_the_judge_reply_always_carries_one_fabricated_hit() -> None:
+    """★ 它是唯一能证明"引文核对真的在跑"的办法。
+
+    一个只回真实引用的替身，在"代码根本没核对引文"的实现上同样会满分 ——
+    于是那条最重要的防线从没被验过，而下场是编造的引用被当成命中。
+    """
+    from app.benchmark.judge import parse_verdict
+    from app.agent.scripted import FABRICATED_QUOTE
+
+    client = _client()
+    reply = client.chat([ChatMessage(role="user", content=_judge_prompt(GUIDE, ANSWER))])
+    verdict = parse_verdict(reply.content or "", guide_size=len(GUIDE), answer=ANSWER)
+    assert any(hit.quote == FABRICATED_QUOTE for hit in verdict.downgraded)
+    assert FABRICATED_QUOTE not in ANSWER
+
+
+def test_a_non_judge_prompt_is_left_to_the_script() -> None:
+    """认不出判官调用时必须**原样交回剧本**，不能自己编一个回复。"""
+    client = _client()
+    reply = client.chat([ChatMessage(role="user", content="帮我看看这个计划")])
+    assert _tool_calls(reply) == ["propose_plan_change"]
+
+
+def test_the_double_declares_a_model_name() -> None:
+    """判分要记 `judge_model` —— 没有它，"两次判出不同分"无法追。"""
+    assert _client().model

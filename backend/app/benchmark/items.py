@@ -24,6 +24,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.benchmark.questions import (
+    KIND_KEY_POINTS,
+    KIND_OBSERVATION,
+    KIND_SELF_REPORT,
+    SelfReportQuestion,
+    SpecError,
+    load_self_report,
+    question_kinds,
+    requires_material,
+)
 from app.benchmark.topics import TopicError, require_topics
 
 # --------------------------------------------------------------------------- #
@@ -215,6 +225,13 @@ class BenchItem:
     anchors: dict
     key_points_question: dict | None
     exact_questions: list[dict]
+    #: 自评量表（P11）。**没有材料也没有埋点** —— 它问的是"你平时怎样"，
+    #: 与某篇具体文章无关。选项权重由题目声明，不由模型或界面临时定。
+    self_report_question: SelfReportQuestion | None = None
+    #: 这道题声明带了哪些问题块（`questions.question_kinds`）。
+    #: ★ 存下来是为了让下游**不必重新推断一遍** —— 两处推断会漂移，
+    #: 而漂移的表现是"加载时说它是要点题、计分时按自评算"。
+    kinds: tuple[str, ...] = ()
     raw: dict = field(default_factory=dict, repr=False)
 
     @property
@@ -224,6 +241,10 @@ class BenchItem:
     @property
     def is_anchor(self) -> bool:
         return self.role == "anchor"
+
+    @property
+    def is_observation(self) -> bool:
+        return KIND_OBSERVATION in self.kinds
 
 
 def apply_aliases(raw: dict) -> dict:
@@ -302,6 +323,21 @@ def load_item(
     except TopicError as exc:
         raise ItemSpecError(str(exc)) from exc
 
+    # ----------------------------------------------------------------- #
+    # ★ 规格按**题型**分支（P11）：每道题只对**它自己那一块**负责。
+    #
+    # 一张所有题共用的必填表表达不了自评量表 —— 它没有材料、没有埋点、
+    # 也没有对错。逼它挂一份材料，作者只能编一份假的，而那份假材料
+    # 会被后面的抽样与引文核对当真。
+    # ----------------------------------------------------------------- #
+    kinds = question_kinds(raw)
+    if not kinds:
+        raise ItemSpecError(
+            f"{path.name} 一个可作答的问题块都没有"
+            f"（要有 `key_points_question` / `exact_questions` / "
+            f"`self_report_question` 之一，或 `scoring.rule=observation`）"
+        )
+
     material_text = ""
     material_path: Path | None = None
     if materials_dir is not None:
@@ -310,9 +346,10 @@ def load_item(
             materials_dir / f"{raw['item_id']}.txt",
         ]
         material_path = next((c for c in candidates if c.is_file()), None)
-        if material_path is None and require_material:
+        if material_path is None and require_material and requires_material(kinds):
             raise ItemSpecError(
-                f"{path.name} 找不到对应材料：期望 {candidates[0].name}"
+                f"{path.name} 声明了需要材料的问题块（{'、'.join(kinds)}），"
+                f"但找不到对应材料：期望 {candidates[0].name}"
                 f" 或 {candidates[1].name}（在 {materials_dir}）"
             )
         if material_path is not None:
@@ -321,14 +358,23 @@ def load_item(
     anchors = raw.get("anchors") or {}
     kp = raw.get("key_points_question")
     exact = raw.get("exact_questions") or []
-    if not isinstance(anchors, dict) or not anchors:
-        raise ItemSpecError(f"{path.name} 缺少 `anchors`（埋点）—— 无法核对评分指南")
-    if not isinstance(kp, dict):
-        raise ItemSpecError(f"{path.name} 缺少 `key_points_question`")
-    if not exact:
-        raise ItemSpecError(
-            f"{path.name} 没有 `exact_questions` —— 提取题之外没有可客观判分的题"
-        )
+    if KIND_SELF_REPORT in kinds:
+        self_report = load_self_report(raw["self_report_question"], where=path.name)
+    else:
+        self_report = None
+    if KIND_KEY_POINTS in kinds:
+        if not isinstance(kp, dict):
+            raise ItemSpecError(f"{path.name} 缺少 `key_points_question`")
+        # ★ 埋点只在**要点题**上必填：它存在的理由是核对评分指南里的引文。
+        # 一道只有自评量表的题没有材料，也就没有可核对的引文 ——
+        # 要求它挂埋点，等于要求作者编几条"材料里的原话"。
+        if not isinstance(anchors, dict) or not anchors:
+            raise ItemSpecError(f"{path.name} 声明了要点题，但缺少 `anchors`（埋点）—— 无法核对评分指南")
+        if not exact:
+            raise ItemSpecError(
+                f"{path.name} 声明了要点题，却没有 `exact_questions` —— "
+                f"提取题之外没有可客观判分的题"
+            )
 
     return BenchItem(
         item_id=str(raw["item_id"]),
@@ -351,6 +397,8 @@ def load_item(
         anchors=anchors,
         key_points_question=kp,
         exact_questions=list(exact),
+        self_report_question=self_report,
+        kinds=kinds,
         raw=raw,
     )
 
@@ -396,7 +444,6 @@ __all__ = [
     "SPEC_SAMPLING",
     "TAIL_PUNCT",
     "VALID_DIFFICULTIES",
-    "VALID_FAMILIARITY",
     "VALID_ROLES",
     "apply_aliases",
     "divergence",

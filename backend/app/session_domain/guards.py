@@ -154,6 +154,20 @@ WRITE_GUARDS: tuple[WriteGuard, ...] = (
         "`completed` 不允许再写，是因为总结已经定稿、沉淀提案已经产出",
     ),
     WriteGuard(
+        SessionOperation.WRITE_REFLECTION,
+        frozenset(
+            {SessionState.REVIEW, SessionState.COMPLETED, SessionState.ABANDONED}
+        ),
+        "感想是**复盘之后**的动作（P15），所以执行中（`active`）不开放 —— "
+        "那时想记就写笔记（`POST /notes`，它在所有状态都可写）。"
+        "把这条边界写进状态机而不是留给界面，是因为界面上的按钮拦不住 API："
+        "「什么时候能写感想」必须有一个可穷举的答案。"
+        "`completed` 与 `abandoned` 都开放：回看可以在归档之后很久才发生，"
+        "而放弃一个会话同样值得写下「为什么」。"
+        "另有一条**事实**门槛不在这张表里 —— 没有复盘总结时不允许写，"
+        "见 `reflection._blocked_reason`：那张表管状态，这条管「有没有可对照的东西」",
+    ),
+    WriteGuard(
         SessionOperation.TRANSITION,
         _ALL_STATES,
         "状态转移本身不看状态 —— 它看 `TRANSITIONS` 这张边表。"

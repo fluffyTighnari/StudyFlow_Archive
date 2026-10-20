@@ -48,6 +48,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from app.api.envelope import ItemsResponse
 from app.api.deps import get_session
 from app.session_domain import reads, writes
 
@@ -87,9 +88,24 @@ class AttachmentRead(_Read):
     created_at: str
 
 
-class AttachmentListRead(_Read):
+class AttachmentListRead(ItemsResponse[AttachmentRead]):
+    """`/api/sessions/{id}/attachments` 的响应：统一信封 + 一个兄弟字段。
+
+    ## 它就是这个信封的**出处**
+
+    本轮统一形状时，`{"items": [...]}` 这个约定的原型正是这里 ——
+    因为"这个会话有哪些资料"这个列表**天然需要一个兄弟字段**：是哪个会话的。
+    别的 17 个端点当初都是裸数组，只有这一个是信封 ——
+    而那个"不一致"现在变成了标准，不是因为它新，是因为它**对**。
+
+    ## 为什么用继承而不是重写一遍 items 字段
+
+    `class X(ItemsResponse[AttachmentRead])` 意味着**信封只有一份定义**。
+    重写一遍字段会让"信封"变成两个可以各自漂移的东西 ——
+    而这正是本轮要消灭的那种分叉。
+    """
+
     session_id: str
-    items: list[AttachmentRead]
 
 
 class AttachmentTextRead(_Read):

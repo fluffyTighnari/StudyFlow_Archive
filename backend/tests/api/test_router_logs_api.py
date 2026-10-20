@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from tests.helpers import items
 
 
 def test_logs_are_empty_before_anything_is_written(client: TestClient) -> None:
-    assert client.get("/api/router-logs").json() == []
+    assert items(client.get("/api/router-logs").json()) == []
 
 
 def test_logs_are_newest_first(client: TestClient) -> None:
@@ -14,7 +15,7 @@ def test_logs_are_newest_first(client: TestClient) -> None:
     client.post("/api/preferences", json={"statement": "乙"})
     client.post("/api/preferences", json={"statement": "丙"})
 
-    ids = [log["log_id"] for log in client.get("/api/router-logs").json()]
+    ids = [log["log_id"] for log in items(client.get("/api/router-logs").json())]
     assert ids == ["RL-0003", "RL-0002", "RL-0001"]
 
 
@@ -27,11 +28,11 @@ def test_logs_can_be_filtered_by_canonical_target(client: TestClient, direct) ->
     direct.baseline(variable_id="V-SE", score=3.0)
     direct.baseline(variable_id="V-DC", score=2.0)
 
-    assert len(client.get("/api/router-logs").json()) == 2
-    only_se = client.get("/api/router-logs?target=M1.V-SE").json()
+    assert len(items(client.get("/api/router-logs").json())) == 2
+    only_se = items(client.get("/api/router-logs?target=M1.V-SE").json())
     assert [log["target"] for log in only_se] == ["M1.V-SE"]
     # 旧写法查不到东西 —— 这是刻意的，不是遗漏。
-    assert client.get("/api/router-logs?target=V-SE").json() == []
+    assert items(client.get("/api/router-logs?target=V-SE").json()) == []
 
 
 def test_log_limit_is_bounded(client: TestClient) -> None:
@@ -52,7 +53,7 @@ def test_every_global_write_has_exactly_one_log(client: TestClient, direct) -> N
     })
     direct.baseline(score=3.0)
 
-    logs = client.get("/api/router-logs").json()
+    logs = items(client.get("/api/router-logs").json())
     assert len(logs) == 3
     assert {log["trigger"] for log in logs} == {"R1", "R2"}
     assert all(log["status"] == "applied" for log in logs)

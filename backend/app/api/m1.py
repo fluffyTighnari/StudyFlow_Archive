@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.api.envelope import ItemsResponse, ok
 from app.api.deps import get_router, get_session
 from app.core.errors import NotFound
 from app.global_domain import reads
@@ -36,8 +37,8 @@ def _require_variable(session: Session, variable_id: str) -> None:
         raise NotFound(f"M1 变量不存在：{variable_id}")
 
 
-@router.get("/variables", response_model=list[M1VariableRead])
-def list_variables(session: Session = Depends(get_session)) -> list[M1VariableRead]:
+@router.get("/variables", response_model=ItemsResponse[M1VariableRead])
+def list_variables(session: Session = Depends(get_session)) -> dict[str, list[M1VariableRead]]:
     """11 个变量的定义 + **逐通道**的设计态与当前版本。"""
     out: list[M1VariableRead] = []
     for variable in reads.list_variables(session):
@@ -61,33 +62,33 @@ def list_variables(session: Session = Depends(get_session)) -> list[M1VariableRe
                 )
             )
         out.append(M1VariableRead.from_variable(variable, channels))
-    return out
+    return ok(out)
 
 
-@router.get("/{variable_id}/history", response_model=list[BaselineVersionRead])
+@router.get("/{variable_id}/history", response_model=ItemsResponse[BaselineVersionRead])
 def variable_history(
     variable_id: str,
     channel: EvidenceChannel | None = Query(default=None),
     session: Session = Depends(get_session),
-) -> list[BaselineVersionRead]:
+) -> dict[str, list[BaselineVersionRead]]:
     """全部历史版本（**时间升序**，含已被取代的）。
 
     升序是刻意的：前端的时间轴与「回滚到某版本」的候选列表都按时间读，
     倒序会让调用方到处 `.reverse()`，而某处忘了 reverse 就是一个难以发现的 UI 错序。
     """
     _require_variable(session, variable_id)
-    return [
+    return ok([
         BaselineVersionRead.model_validate(row)
         for row in reads.baseline_history(session, variable_id, channel)
-    ]
+    ])
 
 
-@router.get("/{variable_id}/observations", response_model=list[ChannelObsRead])
+@router.get("/{variable_id}/observations", response_model=ItemsResponse[ChannelObsRead])
 def variable_observations(
     variable_id: str,
     channel: EvidenceChannel | None = Query(default=None),
     session: Session = Depends(get_session),
-) -> list[ChannelObsRead]:
+) -> dict[str, list[ChannelObsRead]]:
     """观测明细（时间倒序）。
 
     §7.3 的「≥2 条独立 Session 证据」是用户会撞上的硬门槛。只给一个计数，
@@ -95,10 +96,10 @@ def variable_observations(
     原样摊开 —— `source_ref` 就是去重口径（同一 Session 记 5 次仍然只算 1 条）。
     """
     _require_variable(session, variable_id)
-    return [
+    return ok([
         ChannelObsRead.model_validate(row)
         for row in reads.list_channel_obs(session, variable_id, channel)
-    ]
+    ])
 
 
 @router.get("/{variable_id}/benchmark-advisory", response_model=AdvisoryRead)

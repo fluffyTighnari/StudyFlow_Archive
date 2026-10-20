@@ -1,0 +1,6 @@
+.TS9iAW_root{
+  flex-direction:column;
+  gap:16px;
+  display:flex}
+.TS9iAW_actions{
+  margin-left:-6px}

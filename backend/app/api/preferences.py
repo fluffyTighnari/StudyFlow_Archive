@@ -13,6 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.api.envelope import ItemsResponse, ok
 from app.api.deps import get_router, get_session, new_ui_intent_id
 from app.global_domain import reads
 from app.global_domain.enums import LifecycleStatus
@@ -31,11 +32,11 @@ router = APIRouter(prefix="/api/preferences", tags=["preferences"])
 PREFERENCE_TARGET = "M2.preferences"
 
 
-@router.get("", response_model=list[M2PreferenceRead])
+@router.get("", response_model=ItemsResponse[M2PreferenceRead])
 def list_preferences(
     include_archived: bool = Query(default=False),
     session: Session = Depends(get_session),
-) -> list[M2PreferenceRead]:
+) -> dict[str, list[M2PreferenceRead]]:
     """偏好列表。默认只给 `active`。
 
     `include_archived=true` 时给全量 —— 归档不是删除：偏好是**时机性**的，
@@ -49,7 +50,7 @@ def list_preferences(
     rows = reads.list_preferences(
         session, None if include_archived else LifecycleStatus.ACTIVE
     )
-    return [M2PreferenceRead.model_validate(row) for row in rows]
+    return ok([M2PreferenceRead.model_validate(row) for row in rows])
 
 
 @router.post("", response_model=SubmitResult, status_code=201)

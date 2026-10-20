@@ -2,6 +2,9 @@
 
 > 定位：**Session 内的 LLM 与 LLM 可调用 Tool 设计**——单主 Agent（ReAct）+ 设计充分的 Tool 层，执行 Session 内完整逻辑。
 > v0.2 为统一版：合并 M8 v0.1（Agent 架构）与 M8.1 v0.1（Tool Schema，六类 14 工具），修正工具数量与语义。
+> **修订（P15，用户要求「输出可标注某句并看推断理由」）**：**没有新工具**——这一层是给**用户**核对模型的，不是给模型用的（让模型解释自己，等于让它再编一段听起来合理的推理）。它落在沙箱读侧：`annotation` 表 + `session_domain/basis.py`，依据由「那条消息落库的 `tool_trace`」+「从轨迹文本里扫出的条目 id」+「按**当时记下的**锚点重放的上下文」+「一句 `limits`」拼成，**不调模型、不写库**；为此给 `chat_message` 加了一列 `anchor_step_id`（§4.12）。
+> **修订（P14，用户要求「MCP / 联网搜索」）**：外挂工具**不进**这 16 个（§4.11）。它们在 `app/external/`（`mcp.py` 手写 stdio JSON-RPC；`websearch.py` 只有缝：离线语料库 / 通用 HTTP）与 `app/agent/external.py`（接成 `ToolSpec`），由 `ExternalToolbox` 持有。三条边界：**作用域上限恒为 `read`**、**名字带 `mcp__<服务器>__<工具>` 前缀**、**能力缺失 = 工具不存在**（但"没起来"要看得见）。`tool_schemas()` 的输出与加这一层之前**逐字相同**，外挂工具拼在它后面。
+> **修订（P13，用户要求「任务不明确时反问」）**：新增第 16 个工具 `ask_about_task`（§4.2）—— 它存在的理由是一个结构性事实：**模型改不了 `goal`**（§4.2 的边界：改定义区需要用户自己的手势），所以目标不明时它只有"问"与"猜"两条路，而过去只有第二条被实现了。记下的问题会出现在定义区，并在**被回答或搁置之前挡住助手的计划写入**（`create_task_plan` / `update_task_plan` 都会拒绝）；用户自己不受影响（解释权永远在用户手里）；搁置必须带理由，且该理由会写进 `plan_revision.reason`（「这条计划是猜的」）。
 > **修订（P6+.5，用户裁定「让 chat 支持文件」）**：新增会话资料（txt/md/docx 上传）与第 15 个工具 `read_attachment`（§4.10）；§3.3 补"用户上传的文件"这一信任层级；上下文采用序把资料清单排在**最前**；★ **缺口 G-01**：`R4c` 从 Agent 白名单移除（§4.6.1）；★ **缺口 G-01b**：`R3 + stated` 必须带 `basis_quote` 并由代码核对用户原话，对不上降级为 `experienced`（§4.6.2）—— 一行判定表都没改；★ 修掉「等确认被报成被拒」（§4.9.5）。
 > **修订（对齐 M0 v0.1 §11）**：A1 `session_state` 补 `state_snapshot`（§2）；A2 §4.5 补检查点结果记录机制（**当时工具数保持 14**，P6+.5 起为 15，见 §4.10）；A3 §3.3 冲突优先级明确为「上下文采用序」；A4 §4.1 `retrieve_cognitive` 增 `scope`；A5 §4.2.1 新增 `update_task_definition` 字段白名单与值域。
 
@@ -155,7 +158,7 @@
 
 ---
 
-## 4. Tool 层（六类 15 个，全量 schema）
+## 4. Tool 层（六类 16 个，全量 schema）
 
 > 所有工具输出统一带 `status`：`success | empty | rejected | error` + `message`——主 Agent 依 status 决定下一步（继续/换默认/尊重/重试一次）。
 
@@ -165,12 +168,13 @@
 | retrieve_folder | folder_id | folder_goal、recent_sessions（≤5 摘要） | 不返回 chat_log 全文 |
 | retrieve_session | session_id、scope（chat_log/notes/milestones/task_plan）、filter（time/topic/tags） | 过滤后的 items | **必须带 scope+filter，禁止全量** |
 | read_attachment | attachment_id（**留空 = 只列清单**）、offset、limit | 清单（文件名/字数/预览）或正文的一段 + **还剩多少字没读** | **上下文里只有清单、没有正文**；一次最多 6000 字，接着读用 `offset`；**用户提到"我传的文件"时必须先来这里，不许回答"我没有看到文件"**（§4.10） |
-| retrieve_cognitive | **scope**（`m1`｜`m2_preferences`｜`c_evidence`｜`all`，默认 all）、query、task_type、max_items | items[]（字段路径 + content + detail） | scope=m1 按 task_type 过滤；m2_preferences / c_evidence 按 condition / 关键词过滤；返回保留字段路径；无置信度标注 |
+| retrieve_cognitive | **scope**（`m1`｜`m2_preferences`｜`c_evidence`｜`hypothesis`｜`all`，默认 all）、query、task_type、max_items | items[]（字段路径 + content + detail） | scope=m1 按 task_type 过滤；m2_preferences / c_evidence 按 condition / 关键词过滤；返回保留字段路径；无置信度标注 |
 | retrieve_strategy | task_type、difficulty、max_items(≤4) | strategies[]（solves/when/cost/adjust） | 只返 3-4 条；软参考 |
 
 ### 4.2 定义与动机（写 Session 持久状态）
 | Tool | 输入 | 输出 | 边界 |
 |---|---|---|---|
+| ask_about_task | slot（goal｜starting_point｜success_criteria）、question、options[] | 澄清问题行 + **闸门状态** | **任务不明确时先问，不要猜**（P13）；记下的问题会显示在定义区，并在被回答或搁置之前**挡住助手的计划写入**；槽位已有内容 / 同一槽位已问过 → rejected |
 | update_task_definition | field、new_value、reason | 新 input + input_revision | **仅侧页/用户显式要求**；Agent 主动 → rejected；field 白名单/值域见 §4.2.1；改 goal 必填 reason 且附 `scope_change_suspected` |
 | update_motivation | changes（type/strength/drivers/obstacles）、reason、basis | 新 motivation + revision | Agent 可主动；区分动机陈述 vs 吐槽；drivers 引原文；**不管当次状态（精力/压力/环境）——那是 state_snapshot，Agent 只读**（M7 §4.1） |
 
@@ -261,7 +265,7 @@
 ### 4.6 全局提交（需审核）
 | Tool | 输入 | 输出 | 边界 |
 |---|---|---|---|
-| submit_global_update | trigger_type（R3/R4a/R4b/R4c）、intents[]（UpdateIntent） | proposal_id（UpdateProposal）或 rejected | **必须带 trigger_type**；一次可多条 intent；路由层产出持久化提案 → 用户确认（R3/R4c 的 add_preference 自动生效）。**`add_preference` 的 `value.statement` 必须把理由一起写进来**（A19）：「我讨厌看网课，因为浪费时间」而非「我讨厌网课」—— 理由才是能泛化的那一半，缺了它下次会用「看 2 小时讲座」来满足「别看网课」。这条规范写在 `M2PreferenceValue.statement` 的字段说明里，也就是本节工具 schema 生成的位置 |
+| submit_global_update |  # `action` 取值：add_preference / update_parameter / archive / restore / revise / no_change（P7.1） trigger_type（R3/R4a/R4b/R4c）、intents[]（UpdateIntent） | proposal_id（UpdateProposal）或 rejected | **必须带 trigger_type**；一次可多条 intent；路由层产出持久化提案 → 用户确认（R3 的 add_preference 自动生效；**R4c 已按 A21 移出 `ALLOWED_TRIGGERS`**，见 §4.6.1 —— 模型不能声称 R4c）。**`add_preference` 的 `value.statement` 必须把理由一起写进来**（A19）：「我讨厌看网课，因为浪费时间」而非「我讨厌网课」—— 理由才是能泛化的那一半，缺了它下次会用「看 2 小时讲座」来满足「别看网课」。这条规范写在 `M2PreferenceValue.statement` 的字段说明里，也就是本节工具 schema 生成的位置 |
 
 **关于本表的实施偏差（两处，都是有意为之）**：
 
@@ -663,6 +667,120 @@ ARCH-09 禁止 `app.router` import `session_domain`，而对话记录住在沙�
 
 ---
 
+## 4.11 外挂工具：联网搜索与 MCP（P14）—— **不在这 16 个里**
+
+这一节要回答的问题是：**别人写的工具**怎么进来，而进来之后
+**不会**让"内置工具 = 16 个"这条约束失效、也**不会**让一条外部调用
+和内置调用长得一模一样。
+
+### 4.11.1 为什么不把它们登记进 `TOOLS`
+
+`TOOLS` 是**契约**：作用域、边界、拒绝理由都写在代码里，数量是设计决定，
+被 `tests/agent/test_tools.py` 钉着。MCP 工具是**别人写的**，
+能力随时会变、随时会被拔掉。混在一张表里会有两个后果：
+
+1. `len(TOOLS) == 16` 这条约束没法再被钉住（表的内容取决于运行时配置）；
+2. 更糟的是语义上的：一条外部进程发起的调用会与一条内置调用**同形**。
+
+所以外挂工具有自己的箱子（`app/agent/external.py` 的 `ExternalToolbox`），
+`tool_schemas()` 的输出**逐字不变**，循环把两者拼起来时外挂排在后面
+（轨迹里"第几个是内置的"仍然一眼可数）。
+
+### 4.11.2 三条边界
+
+| 规则 | 落点 | 不这样会怎样 |
+|---|---|---|
+| **作用域上限 = `read`** | 外挂 `ToolSpec.scope` 恒为 `ToolScope.READ`（`_READ_ONLY`，没有第二个取值） | 一个第三方进程能决定"什么写进你的认知状态" |
+| **名字带前缀** | `mcp__<server>__<tool>`（`mcp_tool_name`） | 服务器能冒充内置工具（`retrieve_session`），轨迹再也答不出"这次是谁做的" |
+| **内置表优先** | `Dispatcher._execute` 先查 `get_tool()`，查不到才问箱子 | 插一个服务器改变了某个内置工具的行为 |
+
+它要影响全局，只能把结论作为**文本**返回，由模型走 `submit_global_update` ——
+中间隔着一跳，而那一跳上有引文核对（`R3 + stated` 必须能核对用户原话，
+而网页上的句子核不到，见 §4.6.2）。
+
+### 4.11.3 结果形状：每条外挂结果都带出处与记号
+
+```json
+{
+  "status": "success",
+  "message": "外部信息，未经核对：3 条，来自 local。要引用就带上 url；不要当成用户的话。",
+  "data": {"query": "...", "external": true, "provider": "local",
+           "results": [{"title": "...", "url": "https://...", "snippet": "..."}]}
+}
+```
+
+★ `external: true` 与那句「外部信息，未经核对」**不是装饰**：
+它们对应两条既有规矩（`stated` 要能核对原话、全局写入要给 `source_ref`），
+作用是让模型**知道自己手里拿的是什么**。
+
+★ `error` 与 `empty` 严格分开：超时 / 连不上 / 对方报错 → `error`；
+对方明确说没有 → `empty`。把一次超时说成"没搜到"，
+模型会得出一个关于世界的结论（"这个主题没有资料"）。
+
+### 4.11.4 坏掉的服务器不许拖垮讨论
+
+- 读在**后台线程 + 队列**里，带超时（`McpClient` / `StdioTransport`）——
+  直接 `readline()` 会在对方挂住时把讨论挂在那里；
+- 每次调用失败都变成 `error` 结果，**从不抛进循环体**；
+- stderr 丢弃、非 JSON 的行忽略（真服务器常往 stdout 打日志）；
+- 启动时一个服务器起不来**不影响应用启动**，但必须**看得见**
+  （`GET /api/external/tools` 里 `connected=false` + `error`）。
+
+### 4.11.5 默认形态：**全关**
+
+`web_search_provider="off"`、`mcp_servers=""` —— 与 `llm_provider` 默认
+`ollama` 同源的理由：默认值不该让一个新克隆的仓库悄悄联网，
+也不该去起一个别人没让他起的子进程。没配时模型**看不到**这些工具
+（不是一个一调就报错的占位符：那会占掉它的选择面，换来的只有"这次又不行"）。
+
+### 4.11.6 这一节**没有**做的事
+
+- MCP 只实现 `initialize` / `tools/list` / `tools/call`（resources / prompts /
+  sampling / roots **没做**）——这一层要回答的只有"对方有哪些工具、调一个会怎样"。
+- 没有接任何一家真实搜索 API：`HttpSearchProvider` 是一条通了通用形状的路
+  （单测用假的 `urlopen` 验），但它没被真跑过 —— 那需要密钥与网络。
+- 外挂工具的**审计**沿用现有机制：它们都是只读，所以不写 `router_log`；
+  调用的事实留在会话的 `tool_trace` 里（`scope=read`）。
+
+---
+
+## 4.12 「凭什么这么说」：标注某句看推断理由（P15）—— **不是工具，是读模型**
+
+用户要求「输出可标注某句并看推断理由」。它**没有**变成第 17 个工具：
+工具是给模型用的，而这一层是给**用户**核对模型用的 —— 让模型去解释自己，
+等于让它再编一段听起来合理的推理。所以它的实现位置在**沙箱读侧**
+（`session_domain/basis.py` + `annotation` 表），模型既看不见也写不了。
+
+### 4.12.1 依据由四块拼成，每一块都可核对
+
+| 块 | 来源 | 它回答什么 |
+|---|---|---|
+| 工具轨迹 | 那条消息落库的 `tool_trace`（**原样取出，不重算**） | 它当时做过什么、经手范围（`scope`）能不能写、哪一步没成功 |
+| 涉及条目 | **从轨迹文本里扫出 `P/C/H/UP/ST/CP/N/AT/CL/RL/M1O/M1B-xxxx` 形状的 id** | 它当时手里有哪几条材料 |
+| 上下文重放 | 按 `chat_message.anchor_step_id` **当时记下的那一步**装配 | 它当时看到了哪几节 |
+| `limits` | 常量那句「有依据 ≠ 结论对」 | 它**不能**回答什么：为什么选了这个措辞 |
+
+### 4.12.2 三条口径（每一条都对应一个会误导人的失败态）
+
+- **锚点必须是当时记下的。** 若按今天的规则挑一步来重放，那节标题会被读成
+  "当时的证据"——**当时的**因此不可证。为此给 `chat_message` 加了
+  `anchor_step_id`（讨论的两条写入路径都从 Agent 循环里取，不重算）。
+  缺失时**如实说"没有记录锚点，所以不按今天的规则猜一个"**，而不是补一个默认值。
+- **条目 id 从轨迹**文本**里扫，不查库。** 查库会让依据里出现"这条 id 对应的
+  当前内容"，而它可能已经被改过 —— 依据要证明的是**模型当时拿到了什么**，
+  不是今天数据库里是什么。扫出来的 id 也可能不存在（模型当时就看着一个假 id），
+  那正是要显示的事实。上限 30 条并**明说截断了**。
+- **失败步要留着。** `status` 不在 `success`/`empty` 里的算"没成功"，
+  单独计数（`1 步没有成功`）—— 只列成功的那几条，会拼出一份比真实更顺的过程。
+
+### 4.12.3 `error` / `empty` / `NULL` 在这一层同样不合并
+
+- `empty`（工具跑了、世界上没有）与 `error`（这次没拿到）在依据里是两种 `status`；
+- 回复**没有调用任何工具**也能标注：依据里写「没有调用任何工具」，
+  而不是给一个空列表 —— 前者是一句可读的事实，后者看起来像"依据丢了"。
+
+---
+
 ## 6. 侧页（Side Panel）
 
 ```
@@ -697,7 +815,7 @@ ARCH-09 禁止 `app.router` import `session_domain`，而对话记录住在沙�
 
 1. Agent 可读全局，不可直写全局；写全局唯一路径 = submit_global_update → 路由。
 2. 计划可改（plan_revision）、输入可改（input_revision）；调整被步骤锚定。
-3. 聊天不自动沉淀；沉淀必确认（R4a/R4b 全确认，R4c 加偏好直接生效）。
+3. 聊天不自动沉淀；沉淀必确认（R4a/R4b 全确认；R4c 由**用户勾选**触发，所以它的 add_preference 直接生效 —— 但模型不能声称 R4c，见 A21 与 §4.6.1）。
 4. stage 是 Session 内即时生效的唯一写入区；stage → 全局 = 沉淀 = 走路由。
 5. submit_global_update 必须带 trigger_type；无触发类型被拒。
 6. 工具输出 status 决定下一步；rejected 尊重结果不重试。

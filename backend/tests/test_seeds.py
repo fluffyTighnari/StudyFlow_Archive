@@ -12,7 +12,12 @@ from app.global_domain.enums import (
     MethodKind,
     MethodPriority,
 )
-from app.global_domain.models import M1Variable, M1VariableChannel, M2Strategy
+from app.global_domain.models import (
+    DomainTopic,
+    M1Variable,
+    M1VariableChannel,
+    M2Strategy,
+)
 from app.global_domain.reads import (
     list_strategies,
     list_variable_channels,
@@ -81,10 +86,17 @@ def test_loading_is_idempotent(session) -> None:
     first = load_all(session)
     second = load_all(session)
     assert first["m1_variable"] == 11
-    assert second == {"m1_variable": 0, "m1_variable_channel": 0, "m2_strategy": 0}
+    assert first["domain_topic"] == 127
+    assert second == {
+        "m1_variable": 0,
+        "m1_variable_channel": 0,
+        "m2_strategy": 0,
+        "domain_topic": 0,
+    }
     assert session.query(M1Variable).count() == 11
     assert session.query(M1VariableChannel).count() == 33
     assert session.query(M2Strategy).count() == 16
+    assert session.query(DomainTopic).count() == 127
 
 
 def test_every_variable_links_at_least_one_p1_method(seeded) -> None:

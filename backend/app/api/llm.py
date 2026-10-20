@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 from app.agent.llm import ChatMessage, LLMError, ModelLister
 from app.agent.llm_factory import make_client_from_profile
 from app.agent.providers import PROVIDERS
+from app.api.envelope import ItemsResponse, ok
 from app.api.deps import get_session
 from app.config import Settings
 from app.llm_config import (
@@ -151,10 +152,10 @@ class DeletedRead(BaseModel):
     active_profile_id: str | None = None
 
 
-@router.get("/providers", response_model=list[ProviderRead])
-def list_providers() -> list[ProviderRead]:
+@router.get("/providers", response_model=ItemsResponse[ProviderRead])
+def list_providers() -> dict[str, list[ProviderRead]]:
     """内置公司目录。**界面据此渲染下拉框**，因此表里没有的服务也能用 `custom`。"""
-    return [
+    return ok([
         ProviderRead(
             provider_id=p.provider_id,
             label=p.label,
@@ -167,7 +168,7 @@ def list_providers() -> list[ProviderRead]:
             known_models=list(p.known_models),
         )
         for p in PROVIDERS
-    ]
+    ])
 
 
 @router.get("/config", response_model=dict[str, Any])
@@ -208,9 +209,9 @@ def _env_file_read() -> bool:
     return bool(_ENV_FILE_KEYS_LOADED)
 
 
-@router.get("/profiles", response_model=list[ProfileRead])
-def list_all(session: Session = Depends(get_session)) -> list[ProfileRead]:
-    return [ProfileRead.of(p) for p in list_profiles(session)]
+@router.get("/profiles", response_model=ItemsResponse[ProfileRead])
+def list_all(session: Session = Depends(get_session)) -> dict[str, list[ProfileRead]]:
+    return ok([ProfileRead.of(p) for p in list_profiles(session)])
 
 
 @router.post("/profiles", response_model=ProfileRead, status_code=201)

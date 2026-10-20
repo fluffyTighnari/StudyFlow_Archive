@@ -627,7 +627,39 @@ def test_the_response_declares_every_field_the_ui_needs(app, client) -> None:
     body = client.post(
         DISCUSS.format(session_id=session_id), json={"message": "我该做什么"}
     ).json()
-    assert set(body) == {"reply", "stop_reason", "steps", "tool_trace", "llm_meta"}
+    assert set(body) == {
+        "reply",
+        "stop_reason",
+        "steps",
+        "tool_trace",
+        "llm_meta",
+        "thinking",
+        "context",
+        "compacted",
+        "compact_error",
+    }
+    # 上下文计量必须**自解释**：界面要显示"用了多少 / 上限多少"，
+    # 而不是拿一个裸数字自己猜分母。
+    #
+    # `compactable` 尤其重要：它为 False 而 `pressure="over"` 时，
+    # 界面该说的是"窗口要满了，但压缩帮不上忙（该调大 num_ctx）"，
+    # 而不是"正在压缩" —— 后者会让用户以为卡住了。
+    assert set(body["context"]) == {
+        "used",
+        "limit",
+        "remaining",
+        "ratio",
+        "pressure",
+        "measured",
+        "live_messages",
+        "compacted_messages",
+        "summaries",
+        "compact_count",
+        "compactable",
+    }
+    # 一次全新对话还没有读数 → `measured=False`，而不是"用量是 0"。
+    # 这两件事相反：后者意味着"什么都没发"。
+    assert body["context"]["pressure"] in {"unmeasured", "ok", "near", "over"}
 
 
 def test_a_rejected_tool_call_still_lands_in_the_trace(app, client) -> None:

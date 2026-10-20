@@ -1,0 +1,44 @@
+{
+  "item_id": "O-1",
+  "variable_id": "V-HSR",
+  "channel": "experienced",
+  "method_id": "M-HSR-05",
+  "role": "regular",
+  "difficulty": "中",
+  "topics": [
+    "BIO-MARINE"
+  ],
+  "time_min": 4,
+  "language": "zh",
+  "media": "text",
+  "prompt": "遇到卡点时你会怎么做（观测：本次作答中的求助与切换行为）",
+  "scoring": {
+    "rule": "observation",
+    "weight_source": "difficulty",
+    "observation_table": {
+      "table_id": "v-hsr-switch-1",
+      "unit": "switch_count",
+      "bands": [
+        {
+          "upper": 1.0,
+          "score": 10.0,
+          "label": "一次就定"
+        },
+        {
+          "upper": 4.0,
+          "score": 7.0,
+          "label": "有来回"
+        },
+        {
+          "upper": null,
+          "score": 4.0,
+          "label": "反复横跳"
+        }
+      ]
+    }
+  },
+  "source": "夹具（不是产品题库）",
+  "license": "个人使用",
+  "status": "verified",
+  "self_report_question": null
+}

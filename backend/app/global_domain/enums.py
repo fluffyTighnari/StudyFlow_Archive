@@ -180,11 +180,23 @@ class TriggerType(StrEnum):
     R4C = "R4c"
     #: 回滚：用户把某 `(变量, 通道)` 的当前版本指回一个旧版本（生成新版本，不删历史）。
     R5 = "R5"
+    #: 声明式写入：用户对自己状态的**直接声明**，而它不产生 `UpdateIntent`。
+    #: 目前只有一处 —— 领域勾选清单（「我熟悉哪些专题」）。
+    R6 = "R6"
 
+
+#: 不产出 `UpdateIntent`、因此**不查判定表**的触发类型。
+#:
+#: 它们的共同点是：携带的**不是**「一个新的取值」，而是别的东西 ——
+#: R5 携带「一个已存在版本的引用」，R6 携带「一份测量参照」。
+#: 没有 `(action, target, basis)` 三元组，判定表就无从查起。
+NON_INTENT_TRIGGERS: frozenset[TriggerType] = frozenset(
+    {TriggerType.R5, TriggerType.R6}
+)
 
 #: 会产出 `UpdateIntent` 的触发类型 —— 也就是**必须**能在 §5.3 判定表里查到结论的那些。
 #: 派生自枚举而非手写清单：新增一个 intent 驱动的触发时会自动要求补表（有测试断言）。
-INTENT_TRIGGERS: frozenset[TriggerType] = frozenset(TriggerType) - {TriggerType.R5}
+INTENT_TRIGGERS: frozenset[TriggerType] = frozenset(TriggerType) - NON_INTENT_TRIGGERS
 
 
 class ProposalSource(StrEnum):
@@ -208,9 +220,47 @@ class ProposalStatus(StrEnum):
 
 
 class IntentAction(StrEnum):
+    """一条 intent 想对全局认知做什么。
+
+    ## P7.1：补齐 C 家族的生命周期（用户裁定）
+
+    用户原话：「假说应该支持删除啊，我们前面不是说好了偏好/方法这种可以手动编辑吗，
+    因为**解释权永远在用户手里**」。
+
+    于是这里从 3 个值变成 6 个值。**这不是"加了三个功能"** —— 它们是同一句话的
+    三个必然推论：认知库里的东西是用户的东西，那他必须能说"这个不要了"
+    （`ARCHIVE`）、"我刚才删错了"（`RESTORE`）、"我说得不对，改成这个"（`REVISE`）。
+
+    ## 为什么不能复用 `add_preference`
+
+    `add_preference` 是**插入**：`max_rows=1`，每次产出一行新记录。
+    用它表达"改这条"会让 id 漂移 —— 而 `router_log.target` 记的是地址，
+    历史日志会指向一条语义已经变了的新行（I2 要求日志指向**真实存在**的全局地址，
+    它管不了"那条地址现在装的是另一件事"）。
+
+    分开的收益很具体：**插入和改写是两种意图，模型填错动作比填错 id 更容易被看出来。**
+    """
+
     ADD_PREFERENCE = "add_preference"
     UPDATE_PARAMETER = "update_parameter"
     NO_CHANGE = "no_change"
+    #: 退场。**行还在，状态改 `archived`** —— 不是物理删除。
+    #:
+    #: 物理删除会让 `router_log` 里那条 `applied` 指向空气，而 I2 的全部意义
+    #: 就是"改了什么都能追回来"。所以「删除」在协议层的含义是"退场"，
+    #: 用户看到的是一次删除，系统留下的是一条可以撤销的状态变更。
+    ARCHIVE = "archive"
+    #: 撤销退场（`archived → active`）。
+    #:
+    #: 没有它，`ARCHIVE` 就是单向的 —— 一次误点会让一条认知永久消失于视野，
+    #: 而"解释权在用户手里"显然也包括"我改主意了"。
+    RESTORE = "restore"
+    #: 改写已有条目（三个槽整体替换）。
+    #:
+    #: **整体替换而不是逐字段补丁**：补丁需要一套"哪些字段可以不动"的规则，
+    #: 而 `condition` 是必填的结构判据 —— 允许"不动它"就等于允许一条没有场景的
+    #: 假说继续存在。整体替换让"提交的表单就是它的全部"。
+    REVISE = "revise"
 
 
 class Precheck(StrEnum):
@@ -279,6 +329,34 @@ class BenchmarkForm(StrEnum):
     FULL = "full"
 
 
+class BenchmarkRunStatus(StrEnum):
+    """一次基准运行的生命周期（用户要求：可中断保存退出、可继续、可重开）。
+
+    ★ **为什么需要显式状态，而不靠 `finished_at IS NULL`**：
+    「还在做」与「我存了盘要走」在 `finished_at` 上是**同一个值** —— 都是 NULL。
+    但它们对用户的含义相反，而且决定了下次进入时那个问题的答案：
+    「继续上次，还是重新开始？」
+
+    只有 NULL 时，系统无法回答这个问题，于是只剩两条坏路：
+    一律当作"继续"（用户明明想重开，却被塞回半截的旧运行），
+    或一律当作"过期"（用户存了盘第二天回来，发现自己白做了一半）。
+    一个字段分不出两件事时，产品就只能在两种错误里选一种。
+
+    `ABANDONED` 单独存在同理：用户点"重新开始"之后，旧运行不是"没做完"，
+    而是**被明确作废的**。混进 `INTERRUPTED` 会让「他中途放弃过几次」
+    这个事实永远读不出来。
+    """
+
+    #: 正在进行。
+    IN_PROGRESS = "in_progress"
+    #: 用户主动"保存并退出" —— 可继续。
+    INTERRUPTED = "interrupted"
+    #: 正常走完并算出了分数。
+    FINISHED = "finished"
+    #: 用户选择重新开始，这一次被明确作废。**不可继续。**
+    ABANDONED = "abandoned"
+
+
 class ResponseQuestionKind(StrEnum):
     """一道题的计分规则（Benchmark v0.3 §5.2）。
 
@@ -296,6 +374,13 @@ class ResponseQuestionKind(StrEnum):
     KEY_POINTS = "key_points"
     #: 行为观测：由**明示换算表**把原始量（秒/次数）映射到 0-10。
     OBSERVATION = "observation"
+    #: 自评量表（P11）：`10 × 各句点数的均值`，选项权重由**题目**声明。
+    #:
+    #: ★ 它产出读数（进 `stated` 通道）。红线 7 针对的是**正误题** ——
+    #: 正误题的分数随能力移动，而自评问的是"你平时怎样"，不随能力移动。
+    #: 把它也排除掉，`stated` 通道会永远拿不到任何读数，
+    #: 而那看起来只是"还没测"。
+    SELF_REPORT = "self_report"
 
 
 class JudgedBy(StrEnum):

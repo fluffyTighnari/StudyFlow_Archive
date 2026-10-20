@@ -299,7 +299,7 @@ def test_history_is_passed_in_by_the_caller_not_guessed(sandbox) -> None:
 def test_every_tool_schema_is_offered_on_every_round(sandbox) -> None:
     llm = FakeLLM([reply("查", call("retrieve_folder")), reply("好")])
     _loop(sandbox, llm).run("看看文件夹")
-    assert all(len(tools) == 15 for tools in llm.tools_seen)
+    assert all(len(tools) == 16 for tools in llm.tools_seen)
 
 
 # --------------------------------------------------------------------------- #

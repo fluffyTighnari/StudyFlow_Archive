@@ -57,6 +57,8 @@ from app.session_domain.enums import (
     ChatRole,
     ChangedBy,
     CheckpointResult,
+    ClarificationStatus,
+    ContextScope,
     InputConfidence,
     Level,
     MilestoneStatus,
@@ -91,6 +93,22 @@ class Folder(Base):
     goal: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: 例如 `["task_type", "material_kind"]`；空表示「不分维度」。
     c_retrieval_dims: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    #: 侧栏里的手动顺序（`Order by: Manual`）。建的时候取「当前最大 + 1」，
+    #: 也就是新建的排在最后 —— 与所有文件管理器一致。
+    #:
+    #: 为什么不用 `created_at` 兼作顺序：用户拖过一次之后，顺序就不再等于创建顺序了。
+    #: 两件事分开存，是"能被改的东西"与"事实"分开的最小代价。
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: 归档（`归档`）—— **这不是会话状态**，是"还要不要出现在侧栏里"。
+    #:
+    #: 与 `session.state` 的区别是本表最容易被搞混的一处：
+    #: `state` 回答"这条学习任务进行到哪了"（有状态机、有理由、有不变式盯着），
+    #: `archived_at` 回答"它现在还要不要占着侧栏那一行"。
+    #: 把归档塞进状态机会让 `TRANSITIONS` 多一条边，而那条边**不改变任何学习含义**。
+    #: 用时间戳而不是布尔：`archived_at` 既能当开关，又能回答"什么时候收起来的"。
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
@@ -117,6 +135,17 @@ class Session(Base):
     )
     #: 乐观锁（含 stage）。初值 1，任何写入 +1。
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: 侧栏里的手动顺序，语义同 `Folder.sort_order`。
+    #:
+    #: ★ 这一列与 `version` **互不相干**：改名 / 归档 / 拖动排序都**不动 `version`**。
+    #: 理由很实际 —— 用户正在对话时在侧栏把自己的会话改个名字，
+    #: 不该让下一次内容写入撞上 409「版本不匹配」。`version` 护的是
+    #: "同一条内容被两个人同时改"，而侧栏整理动作不是内容写。
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: 归档 —— 同 `Folder.archived_at`，**不是**状态机的一个状态（见那里的长注释）。
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
@@ -386,6 +415,84 @@ class PlanCheckpoint(Base):
 
 
 # --------------------------------------------------------------------------- #
+# 澄清问题（任务不明确时反问，P13）
+# --------------------------------------------------------------------------- #
+
+
+class Clarification(Base):
+    """`clarification` = 助手问过的、关于**任务本身**的问题（P13）。
+
+    ## 为什么它不是一条 `chat_message`
+
+    因为它有一个**生命周期**，而对话消息没有：未答的问题**挡住计划修改**
+    （`clarify.plan_gate`）。挂在对话消息上会出两种错，而且都不会报错：
+
+    - 消息被压缩 / 侧边栏被清空（`clear_sidebar`）之后，闸门自己解开了；
+    - 同一条消息里既有问题又有别的闲聊，闸门只能靠"猜哪一句是问题"来判定。
+
+    所以它是一行有状态的东西：`open → answered | dismissed`。
+
+    ## 为什么记着 `asked_by`
+
+    因为这条规矩**只约束助手**：用户自己改计划不走这道闸
+    （解释权在用户手里）。要能区分"谁在问"，否则将来收紧闸门时
+    会把用户自己也拦住 —— 而那种错的表现是"我的计划被一个我没答的问题锁住了"。
+    """
+
+    __tablename__ = "clarification"
+
+    clarification_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("session.session_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: 定义区里的槽位名（`goal` / `starting_point` / `success_criteria`）。
+    #: **必须是 `session_input` 真实存在的列** —— 答案要写进去，不是存着好看。
+    slot: Mapped[str] = mapped_column(String(64), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 候选答案（可空）。给"他会怎么答"一个形状：
+    #: 自由文本的问题，答案质量全看用户那天的心情。
+    options: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[ClarificationStatus] = mapped_column(
+        enum_col(ClarificationStatus, "ck_clarification_status"),
+        nullable=False,
+        default=ClarificationStatus.OPEN,
+    )
+    #: 用户的原话。**只存不改** —— 答案同时会写进定义区，
+    #: 而这里留着的是"他当时是怎么说的"（定义区那一列可能被他后来改写）。
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 「先不管」也是一个决定，所以要留下理由 ——
+    #: 它解释的是"为什么这条计划是按助手的判断排的"。
+    dismiss_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    asked_by: Mapped[ChangedBy] = mapped_column(
+        enum_col(ChangedBy, "ck_clarification_asked_by"),
+        nullable=False,
+        default=ChangedBy.AGENT,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        # ★ 答了就必须有答案。没有这条约束，一个"答过但答案为空"的状态
+        # 会让闸门放行（槽位被写过？）与不写（还是空的）之间反复横跳 ——
+        # 而两种表现都是"计划建在了空槽位上"。
+        CheckConstraint(
+            "status <> 'answered' OR (answer IS NOT NULL AND length(trim(answer)) > 0)",
+            name="ck_clarification_answered_has_text",
+        ),
+        # 搁置也要有理由：它是"这条计划为什么是猜的"的唯一解释。
+        CheckConstraint(
+            "status <> 'dismissed' OR "
+            "(dismiss_reason IS NOT NULL AND length(trim(dismiss_reason)) > 0)",
+            name="ck_clarification_dismissed_has_reason",
+        ),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # 会话内的记录（聊天 / 笔记 / stage / 里程碑 / 总结 / 状态快照）
 # --------------------------------------------------------------------------- #
 
@@ -423,6 +530,47 @@ class ChatMessage(Base):
     #: 非空 = 调过，逐条都在。**不做"只记成功的"** ——
     #: 轨迹要回答的是"它做过什么、被拒绝过什么"，只记成功会变成一份成绩单。
     tool_trace: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    #: **模型自己报的**这次调用的上下文（prompt）token 数（P6+.6）。
+    #:
+    #: ★ 为什么这个字段是整个记忆机制的基石：`num_ctx` 是窗口上限，而
+    #: `prompt_eval_count` 是**实测**的占用 —— 有了它，「当前上下文用了多少」
+    #: 就不需要估算。没有它就只能靠字符数猜，而猜错的方向恰好是最坏的：
+    #: 猜小了会等到装不下才发现（那时模型给一个空回复，见 `OllamaClient`
+    #: 里 `done_reason=length` 那段诊断）。
+    #:
+    #: 只写在 `role=assistant` 上；用户消息没有值 —— 它不是一个测量结果。
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: 这一次生成的字数（`eval_count`）。与 `prompt_tokens` 一起构成用量读数。
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: 这次请求里**命中**提示缓存的 prompt token 数（DeepSeek 的
+    #: `usage.prompt_cache_hit_tokens`）。
+    #:
+    #: ★ `None` ≠ 0：没测到与"一次都没命中"是两件事。本地模型与测试替身
+    #: 不报这两个数，界面因此显示「没测到」而不是「命中率 0%」——
+    #: 后者会让用户以为缓存坏了（而它可能根本没被询问过）。
+    cache_hit_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: 未命中的 prompt token 数（`usage.prompt_cache_miss_tokens`）。同上。
+    cache_miss_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: 思考过程（`message.thinking`）。**与 `content` 分开存**，见下。
+    #:
+    #: 一次真实运行里模型生成了 93 个 token 而 `content` 是空串 ——
+    #: 那 93 个全在 thinking 里。所以 thinking 既是"模型的思考过程"
+    #: （用户明确要求能看到），也是"为什么这条回复是空的"的**唯一解释**。
+    #: 合成一段文本会让两个问题都答不清楚。
+    #:
+    #: 它**不进上下文**（`agent.context` 装配时不带它）：留档是给人看的，
+    #: 而把它喂回模型会让每轮上下文翻倍，还会让模型把自己的旧思路当事实。
+    thinking: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 这条回复**当时锚定在哪一步**（P15）。
+    #:
+    #: 为什么要为"看推断理由"专门记一个锚点：用户问「你凭什么这么说」时，
+    #: 系统要能重放**当时**装配出来的上下文节。而锚点过去没有落库 ——
+    #: 事后只能按**今天**的规则（第一个未完成的步骤）挑一步，
+    #: 挑出来的节标题会被读成"当时的证据"。一个字段换掉这个歧义。
+    #:
+    #: `NULL` = 这条消息写下时还没有这个字段（或侧边栏那种没有会话的路径）。
+    #: 空着的处理方式与别处一致：**说出来**，而不是猜一个填上。
+    anchor_step_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
@@ -431,6 +579,135 @@ class ChatMessage(Base):
         # `retrieve_session` 的检索路径（M0 §6.4）：按会话时间序扫。
         Index("ix_chat_session_created", "session_id", "created_at"),
         CheckConstraint("length(trim(content)) > 0", name="ck_chat_content_present"),
+    )
+
+
+class ContextCompact(Base):
+    """`context_compact` = 一次「把早期对话压成一段摘要」（P6+.6）。
+
+    ## 为什么必须有这张表，而不是在 session 上加一个 `summary` 字段
+
+    用户要求「上下文达到限制自动 compact」。而压缩是**有损**的：
+    它把 N 条原话换成一段概括。于是有两个问题必须能回答：
+
+    1. **它当时忘了什么？** —— 只留一个"当前摘要"字段的话，
+       第二次压缩会覆盖第一次的摘要，而每一次覆盖都让一段对话永久消失。
+       这张表只追加，所以「第 3 次压缩吃掉了 msg 12~31」永远查得到。
+    2. **凭什么说这段摘要是可信的？** —— 摘要是**派生**文本，不是用户说的话。
+       它因此**绝不能被当成证据来源**（"用户说过…"必须能指回原话）。
+       把 `covers_msg_ids` 一并存下来，是为了让"这段话概括的是哪几条原话"
+       随时可核对 —— 这是让派生文本不至于变成无源之言的唯一办法。
+
+    ## 为什么 `scope` 是判别列而不是两张表
+
+    session 与侧边栏用的是**同一套机制**（见 `ContextScope` 的说明）。
+    拆成两张表就要写两遍读、两遍写、两遍测试，而它们的分歧会表现为
+    "两个界面显示的上下文用量算法不一样" —— 那种不一致没人能解释。
+
+    ## 为什么 `prompt_tokens_before` 记的是**实测值**
+
+    它就是触发这次压缩的那次调用的 `prompt_eval_count`。记实测值而不是
+    "压缩前估算"，是因为这个数将来要回答一个很实际的问题：
+    「我调大了窗口，是不是就不用压这么频繁了」—— 那需要真实的历史读数。
+    """
+
+    __tablename__ = "context_compact"
+
+    compact_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    scope: Mapped[ContextScope] = mapped_column(
+        enum_col(ContextScope, "ck_compact_scope"), nullable=False
+    )
+    #: `session_id` 或 `SIDEBAR_SCOPE_ID`。**刻意不加外键** ——
+    #: 侧边栏不是会话，而"给一个判别列加两个可能的外键"在 SQLite 上做不到。
+    #: 会话被删时留下的孤儿压缩记录由 `cleanup` 类逻辑处理（当前会话从不删除）。
+    scope_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: 被这次压缩**吃掉的**消息 id，按原顺序。
+    covers_msg_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    #: 被这次压缩**折进去的旧摘要** id，按原顺序。
+    #:
+    #: ★ 为什么需要它：摘要自己也会累积。若只压缩原文，那么压过 10 次之后
+    #: 上下文里躺着 10 段摘要，而它们加起来可能又超过了窗口 ——
+    #: 此时"没有原文可压了"，机制会卡死在"装不下又压不动"。
+    #: 折叠让摘要层自己也能被压缩，于是机制在任何窗口尺寸下都收得住。
+    #:
+    #: 折叠**不删除**旧行（本表只追加）：`CX-0002` 折了 `CX-0001` 这件事
+    #: 本身要看得到 —— 否则「这段记忆是怎么一步步变短的」无法回答。
+    folds_compact_ids: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 触发这次压缩的那次调用**实测**的 prompt token 数。
+    prompt_tokens_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 当时的窗口上限。它可能变了（用户改了 `num_ctx`），所以必须记当时的值 ——
+    #: 否则"用量 14000"在一台窗口是 8192 的机器上看起来毫无问题。
+    limit_at_time: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 哪一次生成做的压缩。空串 = 配置里没有模型名（本地默认）。
+    model: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+    __table_args__ = (
+        # 读路径永远是"某个 scope 的全部压缩，按时间"。这是那一条。
+        Index("ix_compact_scope_created", "scope", "scope_id", "created_at"),
+        CheckConstraint("length(trim(summary)) > 0", name="ck_compact_summary_present"),
+        CheckConstraint("prompt_tokens_before >= 0", name="ck_compact_tokens_nonneg"),
+        CheckConstraint("limit_at_time > 0", name="ck_compact_limit_positive"),
+    )
+
+
+class SidebarMessage(Base):
+    """`sidebar_message` = 侧边栏那个**常驻通用模型**的对话（P6+.6）。
+
+    ## 为什么是单独一张表，而不是 `chat_message` 加一列
+
+    `chat_message.session_id` 有一条**真外键**指向 `session`。侧边栏不是会话
+    （它没有任务、没有计划、没有状态机、不需要复盘），所以往
+    `chat_message` 里塞一个 `session_id="sidebar"` 会立刻撞上外键 ——
+    而"为了塞进去而把外键删掉"是拿一条真实的数据完整性
+    去换一点代码复用，方向反了。
+
+    ## 为什么复用**压缩表**却另建**消息表**
+
+    这两件事的判据不同：
+
+    - 压缩算法与压缩记录**必须共用**（`context_compact` 上的 `scope` 判别列）。
+      拆成两套就会出现"两个界面显示的上下文用量算法不一样" ——
+      那种不一致没人能解释，而它恰好是用户最在意的那块界面。
+    - 消息存储**不该共用**，因为两者的**归属约束不同**：会话消息属于一个
+      有状态机的会话，侧边栏消息不属于任何东西。硬要合成一张表，就得
+      把"属于会话"这件事从外键降级成一个可为空的列 ——
+      于是"这条消息属于哪个会话"从数据库保证变成了代码自觉。
+
+    一句话：**算法共用，归属各管**。
+
+    ## 为什么它没有状态机
+
+    会话受 `SessionState` 管（写完总结就不能再聊）。侧边栏**没有终态** ——
+    它永远可以聊，这正是"常驻"的含义。给它加一个状态机只会多出
+    一个"什么时候算结束"的假问题。
+    """
+
+    __tablename__ = "sidebar_message"
+
+    msg_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    role: Mapped[ChatRole] = mapped_column(
+        enum_col(ChatRole, "ck_sidebar_message_role"), nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    #: 与 `chat_message` 逐字相同的四个字段，含义也相同 —— 见那里的说明。
+    tool_trace: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    thinking: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+    __table_args__ = (
+        Index("ix_sidebar_message_created", "created_at"),
+        CheckConstraint("length(trim(content)) > 0", name="ck_sidebar_message_content"),
     )
 
 
@@ -502,6 +779,106 @@ class ChatAttachment(Base):
     __table_args__ = (
         CheckConstraint("length(trim(text)) > 0", name="ck_attachment_text_present"),
         CheckConstraint("bytes_len > 0", name="ck_attachment_bytes_positive"),
+    )
+
+
+class SessionAnnotation(Base):
+    """`annotation` = 用户在某一条助手回复上**标注一句话**并问「为什么这么说」（P15）。
+
+    ## 它回答的是什么问题
+
+    用户看到助手写的一句「你更适合先把概念过一遍再做题」，想追问：
+    **凭什么这么说？** 而这个问题有两种回答方式，只有一种是对的：
+
+    - ✗ 让模型再生成一段听起来合理的解释 —— 那是**新编的理由**，
+      与它当时真实的依据可能毫无关系，而用户分不出来；
+    - ✓ 把**当时真的发生过的东西**摊开：这条回复背后的工具轨迹
+      （读了哪几条、被拒绝过什么）、从里面能抽出的条目 id、
+      以及**现在重放**的上下文节（并标明这是重放的，不是当时的快照）。
+
+    这张表存的是**用户的那个问题**（哪一句、问什么），
+    而"推断理由"是**现算**的（`session_domain/basis.py`）——
+    理由不是一句话，是一组可核对的事实，存下来只会过期。
+
+    ## `quote` 必须能在那条消息里**逐字找到**
+
+    这是这张表唯一的硬约束，也是它区别于"评论区"的地方：
+    标注的意义是"这句话是谁说的、在哪条消息里"，
+    所以引文核对走的是与 `basis_quote`（M8 §4.6.2）**同一套**逻辑。
+    对不上的引用一律拒收 —— 否则界面会出现一条指向不存在内容的标注。
+    """
+
+    __tablename__ = "annotation"
+
+    annotation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("session.session_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: 被标注的那条消息。**只能是助手说的**（见 `writes.annotate_message`）。
+    msg_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_message.msg_id", ondelete="CASCADE"), nullable=False
+    )
+    #: 用户选中的那一句（原文片段，逐字）。
+    quote: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 用户想问什么。可空 —— 「就问问为什么」是一个完整的意图。
+    question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+    __table_args__ = (
+        CheckConstraint("length(trim(quote)) > 0", name="ck_annotation_quote_present"),
+        Index("ix_annotation_message", "msg_id"),
+    )
+
+
+class SessionReflection(Base):
+    """`reflection` = 复盘之后按指引写下的感想（P15）。
+
+    ## 为什么它单独一张表，而不是塞进 `note`
+
+    笔记与感想在这里**长度、形状、用途**都不同：
+
+    - 一条笔记是"随手记下的一件事"，`tags` 可空、`content` 一段文字；
+    - 一条感想是**按四要素组织**的产物，它要能被逐项读出
+      （哪一项是"原因"、哪一项是"下次改变"），因为 `V-PAR` 的
+      `measured` 通道声明的正是「复盘产物的四要素完整度」。
+      把四段话拼成一坨存进 `note.content`，那个"完整度"就只能靠再解析一遍 ——
+      而解析一段自然语言来回答"他写没写原因"，是另一种猜。
+
+    ## 为什么 `answers` 存 JSON 而不是四列
+
+    四要素是**测量设计**里的东西（`_题库采购清单` §7），它有可能会变
+    （多一项、少一项、换个说法）。四个列意味着每次调整都要一次迁移，
+    而 JSON 里的键可以让新旧两种感想共存：老的没有 `why` 就是没有。
+    `content` 仍然是**拼好的正文**，因为那是给人看、也会进上下文的那一份。
+
+    ## 硬约束
+
+    - `answers` 至少要有一项非空，或 `content` 非空（库层 CHECK 管不到 JSON，
+      所以这条由 `writes.write_reflection` 把关）—— 空的感想不写；
+    - `summary_id` 指向写它时对照的那一份复盘总结：**感想是对复盘的补充**，
+      "他在哪份总结之后写的"是这句话唯一的时间锚。
+    """
+
+    __tablename__ = "reflection"
+
+    reflection_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("session.session_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: 写这条感想时对照的那份复盘总结。**可空**：总结可能被删（未来若允许）。
+    summary_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: 四要素的答案 `{what_happened, expected_gap, why, next_change}`。
+    answers: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    #: 拼好的正文（给人看、也可能进上下文的那一份）。
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+    __table_args__ = (
+        CheckConstraint("length(trim(content)) > 0", name="ck_reflection_content_present"),
     )
 
 

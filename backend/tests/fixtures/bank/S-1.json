@@ -1,0 +1,62 @@
+{
+  "item_id": "S-1",
+  "variable_id": "V-SE",
+  "channel": "stated",
+  "method_id": "M-SE-01",
+  "role": "regular",
+  "difficulty": "易",
+  "topics": [
+    "BIO-MARINE"
+  ],
+  "time_min": 3,
+  "language": "zh",
+  "media": "text",
+  "prompt": "下面几句话，哪些像平时的你？",
+  "scoring": {
+    "rule": "self_report",
+    "weight_source": "difficulty"
+  },
+  "source": "夹具（不是产品题库）",
+  "license": "个人使用",
+  "status": "verified",
+  "self_report_question": {
+    "prompt": "下面几句话，哪些像平时的你？",
+    "options": [
+      {
+        "value": "never",
+        "label": "从不",
+        "weight": 0.0
+      },
+      {
+        "value": "sometimes",
+        "label": "偶尔",
+        "weight": 0.34
+      },
+      {
+        "value": "often",
+        "label": "经常",
+        "weight": 0.67
+      },
+      {
+        "value": "always",
+        "label": "总是",
+        "weight": 1.0
+      }
+    ],
+    "statements": [
+      {
+        "no": 1,
+        "text": "读完一段密集材料后，我能说出它的主线"
+      },
+      {
+        "no": 2,
+        "text": "我能注意到容易被忽略的限定条件"
+      },
+      {
+        "no": 3,
+        "text": "我常常读到一半才发现自己没抓住重点",
+        "reverse": true
+      }
+    ]
+  }
+}

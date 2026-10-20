@@ -52,7 +52,24 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 #:   因此它同样**不得**依赖 Router：多一条依赖就多一条绕过判定表的路。
 #: - `sedimentation.py`：沙箱 → 全局的唯一接口，它的两个端点**必须**依赖 Router。
 SANDBOX_API_MODULES = frozenset(
-    {"folders.py", "sessions.py", "sedimentation.py", "discuss.py", "attachments.py"}
+    {
+        "folders.py",
+        "sessions.py",
+        "sedimentation.py",
+        "discuss.py",
+        "attachments.py",
+        #: ★ P6+.6：`sidebar.py` 属于沙箱域。
+        #:
+        #: 判断依据是**它写哪张表**：`sidebar_message` 的 provenance 是
+        #: `sandbox_record`，`context_compact` 是 `append_only`。两者都不是
+        #: 权威状态 —— 侧边栏的对话不参与上下文采用之外的任何决策，
+        #: 而它要写全局**只能**走 `submit_global_update`（提案 → 用户确认），
+        #: 那条路在 agent 的交接层里自带 Router 与令牌。
+        #:
+        #: 和 `discuss.py` 完全同构：那个端点也不依赖 Router，
+        #: 却能通过同一个交接层产出全局提案。
+        "sidebar.py",
+    }
 )
 
 #: **基础设施域** API 模块：P6.x 引入的第三类。
@@ -78,10 +95,15 @@ INFRA_API_MODULES = frozenset({"llm.py"})
 #: `test_infra_modules_declare_only_infra_prefixes` 校验。
 INFRA_PREFIXES = frozenset({"/api/llm"})
 
-#: 沙箱域 API 唯一允许挂载的两个路径前缀。**由测试校验每个沙箱模块声明的
+#: 沙箱域 API 唯一允许挂载的路径前缀。**由测试校验每个沙箱模块声明的
 #: `APIRouter(prefix=...)` 都在这个集合里**，见
 #: `test_sandbox_modules_declare_only_sandbox_prefixes`。
-SANDBOX_PREFIXES = frozenset({"/api/folders", "/api/sessions"})
+#:
+#: ★ `/api/sidebar` 之所以属于沙箱域而不是自己开第三类：它跟
+#: `/api/sessions` 是**同一个域的两个入口** —— 都写沙箱表、都不需要治理语义。
+#: 给它开一类"侧边栏域"会让这份文件里的每一条域断言都要加一个分支，
+#: 而那个分支回答的问题（"侧边栏的写要不要过 Router"）与沙箱域完全一样。
+SANDBOX_PREFIXES = frozenset({"/api/folders", "/api/sessions", "/api/sidebar"})
 
 
 def _is_sandbox_route(path: str) -> bool:
@@ -419,7 +441,7 @@ def test_audit_log_endpoint_is_read_only() -> None:
 
 
 def test_no_second_write_path_to_preferences_or_evidence() -> None:
-    """审一遍**全局域**的全部写端点：只允许五条。
+    """审一遍**全局域**的全部写端点：只允许这些。
 
     如果哪天多出一条「删除偏好」的端点而没有配套的治理语义，
     这条测试会拦下来 —— 它要的就是逼出那个设计讨论，而不是让实现悄悄溜过去。
@@ -428,6 +450,13 @@ def test_no_second_write_path_to_preferences_or_evidence() -> None:
     不再列进这份清单。它们不写全局，因此不属于"通往偏好/证据的第二条路"。
     但清单本身一个字都没放松：全局域的写端点仍然是精确的集合，
     新增一条就必须同时更新这里和设计说明。
+
+    ★ **基准块（本轮）一次加了 6 条，这是全局写入面的一次真实扩大** ——
+    不是"顺手多写了点东西"。它们的共同点是：都经过 Router 写入全局域
+    （`benchmark_run` / `benchmark_response` / `domain_profile`），
+    且都在 `PROVENANCE` 里逐张表表了态。其中 `domains` 是 **R6**：
+    过 Router 记账、但**不过判定表**（它是测量的参照，不是关于特质的断言）。
+    这条测试要求的就是有人把这个讨论写下来 —— 现在写在这里。
     """
     writes = {
         (sorted(route.methods)[0], route.path)
@@ -439,9 +468,36 @@ def test_no_second_write_path_to_preferences_or_evidence() -> None:
     assert writes == {
         ("POST", "/api/preferences"),
         ("POST", "/api/evidence"),
+        # 假说（P7）。它与上一条是**一对**而不是一条带参数：
+        # 两个端点各自只装一种可信度，于是"他试没试过"由他点了哪个表单决定，
+        # 不由调用方传参决定。合成一条 + `kind` 参数会让调用方替用户判断。
+        ("POST", "/api/hypotheses"),
+        # ↓ P7.1：条目生命周期（归档 / 编辑 / 恢复），两族逐条同构。
+        #   它们的共同点：都经 Router、都走判定表、都**不是物理删除**。
+        ("DELETE", "/api/evidence/{evidence_id}"),
+        ("PUT", "/api/evidence/{evidence_id}"),
+        ("POST", "/api/evidence/{evidence_id}/restore"),
+        ("DELETE", "/api/hypotheses/{hypothesis_id}"),
+        ("PUT", "/api/hypotheses/{hypothesis_id}"),
+        ("POST", "/api/hypotheses/{hypothesis_id}/restore"),
         ("POST", "/api/proposals"),
         ("POST", "/api/proposals/{proposal_id}/resolve"),
         ("POST", "/api/m1/{variable_id}/rollback"),
+        # 领域勾选清单（R6，过 Router 记账、不过判定表）
+        ("POST", "/api/benchmark/domains"),
+        # 基准运行的生命周期（不进判定表：运行记录是断言的依据，不是断言）
+        ("POST", "/api/benchmark/runs"),
+        ("POST", "/api/benchmark/runs/{run_id}/status"),
+        ("POST", "/api/benchmark/runs/{run_id}/restart"),
+        ("POST", "/api/benchmark/runs/{run_id}/responses"),
+        ("POST", "/api/benchmark/runs/{run_id}/finish"),
+        # ↓ P9：**计分**。它同样是全局写入（改写 `benchmark_response` 的计分五列），
+        #   所以必须经 Router。与上面几条的区别是它改的是**已有的那一行**，
+        #   而不是追加 —— 这是刻意的：计分是对同一次作答的重新判定，
+        #   追加会让"他答了几题"越算越大（而那正是最小题数的分母）。
+        #   它只改分数与判官痕迹，`raw_answer` 一个字都不动：
+        #   判分变了要能看出来**是判分变了**，不是他改了答案。
+        ("POST", "/api/benchmark/runs/{run_id}/score"),
     }
 
     # **反向也钉一遍**：确认上面那条"排除"真的排掉了东西。
@@ -579,12 +635,48 @@ def test_the_openapi_document_can_still_be_generated() -> None:
         # 37 → 44：P6.x 的模型调用配置（`/api/llm/*`，7 条路径）。
         # 44 → 46：P6+.5 的会话资料（`/api/sessions/{id}/attachments` 与
         #         `.../attachments/{attachment_id}`，2 条路径承载 4 个方法）。
+        # 46 → 55：基准块（`/api/benchmark/*`，9 条路径）——
+        #         领域勾选清单 3 条（`domains` / `domains/history` / `state`）
+        #         + 运行生命周期 6 条。**这是后端第一次能真的跑一次基准测试**：
+        #         在此之前 `benchmark_run` 表只有一个测试在写它。
         # 这个数字是给人看的**同步锚**：路径数变了就必须来改一次，
         # 顺带想起"文档里那个数字也要改"。
-        assert len(paths) == 46, f"路径数变了（现在是 {len(paths)}）：请同步文档里的数字"
+        # 55 → 59：侧边栏常驻模型（`/api/sidebar/*`，4 条路径）——
+        #         `state` / `context` / `discuss` / `messages`。
+        #         **这是侧边栏第一次真的是一个功能**：此前那 8 条需求
+        #         （常驻、有记忆、自动 compact、显示 token、能写偏好…）
+        #         全部卡在"没有端点"上。
+        # 这个数字是给人看的**同步锚**：路径数变了就必须来改一次，
+        # 顺带想起"文档里那个数字也要改"。
+        # 59 → 60：假说（`/api/hypotheses`，P7 语义拆分）。
+        #         **这不是"多了一个功能"，是把一条一直能走通、但要走通只能
+        #         把 `experienced` 谎报成 `stated` 的路补上了名字。**
+        #         同一轮里 `C.evidence` + `stated` 由「自动生效」变成「拒绝」。
+        # ★ P7.1：+4 条路径（两族各自的 `{id}` 与 `{id}/restore`）=
+        #   归档 / 编辑 / 恢复。用户裁定「解释权永远在用户手里」，
+        #   于是 C 证据与假说都拿到了完整的条目生命周期。
+        #   P13：+4 条路径前缀（`GET|POST /clarifications` 与
+        #   `/{id}/answer`、`/{id}/dismiss`）—— 澄清问题（任务不明确时反问）。
+        #   P14：0 条 —— 外挂能力只加了 `GET /api/external/tools`（在 70 之内）。
+        #   P15：+2 条路径（`GET|POST /annotations` 与
+        #   `GET|DELETE /annotations/{id}`）—— 标注某句 + 看推断理由。
+        #   ★ 注意 POST+GET 是**同一条路径**：路径数因此只涨 2，不是 4。
+        #   P15 续：+2 条路径（`GET /reflection` 指引 与
+        #   `GET|POST /reflections` 感想）—— 复盘之后按指引写感想。
+        #   ★ 单数 `reflection` 是**指引**（现在该怎么写），
+        #     复数 `reflections` 是**写下的那些**。刻意不合成一条路径：
+        #     合并会得到一个「GET 有时返回指引、有时返回列表」的端点。
+        # 74 → 76：侧栏整理（`PATCH|DELETE /api/folders/{id}` 与
+        #         `PATCH|DELETE /api/sessions/{id}`）—— **两条路径承载四个方法**。
+        #         为什么"挪一位"塞进 `PATCH` 的 `move` 字段而不是单开 `/{id}/move`：
+        #         挪动是对同一个资源的修改，不是一种新动作；顺带省掉两条路径，
+        #         也让"改名 + 归档 + 挪动"能在**一个请求**里原子完成。
+        #         ★ 这一组里 `PATCH` **改不了 `state`**：状态只能走 `/transitions`。
+        #         那不是省事，是"归档 ≠ 放弃"这条口径的结构保证。
+    assert len(paths) == 76, f"路径数变了（现在是 {len(paths)}）：请同步文档里的数字"
 
-        stream = paths["/api/sessions/{session_id}/discuss/stream"]["post"]
-        assert "200" in stream["responses"], "流式路由没有声明 200 响应"
+    stream = paths["/api/sessions/{session_id}/discuss/stream"]["post"]
+    assert "200" in stream["responses"], "流式路由没有声明 200 响应"
 
 
 def test_app_factory_is_reusable_with_independent_databases() -> None:
@@ -593,3 +685,91 @@ def test_app_factory_is_reusable_with_independent_databases() -> None:
     second = _app()
     assert first is not second
     assert isinstance(first, FastAPI)
+
+
+# --------------------------------------------------------------------------- #
+# 列表响应的统一信封
+# --------------------------------------------------------------------------- #
+
+
+def test_every_list_endpoint_uses_the_envelope() -> None:
+    """★ 所有列表端点的数组都必须在 `items` 下 —— 一个裸数组都不许有。
+
+    ## 这条测试为什么必须存在
+
+    形状统一这件事**没有别的地方会守**：每个端点的单测都对着自己的形状写，
+    每个都「符合自己的约定」。而形状不一致的代价由**调用方**付 ——
+    他写第 18 个列表页时又要看一眼文档，看错的表现是
+    `data.map is not a function`：一个离出错点很远的运行时错误。
+
+    ## 判据是「数组在 items 下」，不是「信封里只有 items」
+
+    `/api/sessions/{id}/attachments` 合法地带着 `session_id` 兄弟字段，
+    而「信封能装兄弟字段」正是引入信封的**理由**（总数 / 下一页 / 用了什么过滤）。
+    我第一版写成了 `set(body) == {"items"}`，于是那个端点被自己的设计判成缺陷 ——
+    **检查比设计更严，是一种更难发现的错误。**
+
+    ## 为什么它比「形状一致」强
+
+    「混用了 N 种形状」只能说**有问题**，说不出**该是什么样**，于是它可以一直红着。
+    钉住「必须是 items」才是一条能拦住回归的检查 ——
+    新加一个裸数组端点会立刻变红，而不必靠记性。
+    """
+    spec = _app().openapi()
+    components = spec["components"]["schemas"]
+
+    bare: list[str] = []
+    suspicious: list[str] = []
+    enveloped: dict[str, str] = {}
+    for path, operations in spec["paths"].items():
+        for method, operation in operations.items():
+            schema = (
+                ((operation.get("responses") or {}).get("200") or {})
+                .get("content", {})
+                .get("application/json", {})
+                .get("schema")
+                or {}
+            )
+            where = f"{method.upper()} {path}"
+            if schema.get("type") == "array":
+                bare.append(where)
+                continue
+            name = (schema.get("$ref") or "").rsplit("/", 1)[-1]
+            component = components.get(name) or {}
+            properties = component.get("properties") or {}
+            if component.get("x-mouxue-envelope") == "items":
+                enveloped[where] = name
+                continue
+            # 「只有一条数组字段」的对象也算列表端点 —— 否则
+            # 有人把信封写成 `{"rows": [...]}` 就能绕过上面那条裸数组检查。
+            # `BenchmarkPlanRead` 有 9 个字段，因此**不会**被这条误伤。
+            arrays = [
+                key
+                for key, value in properties.items()
+                if value.get("type") == "array"
+            ]
+            if len(properties) == 1 and len(arrays) == 1:
+                suspicious.append(f"{where}（字段 {arrays[0]!r}）")
+
+    assert bare == [], (
+        "这些端点返回裸数组，必须是 {\"items\": [...]}：\n  " + "\n  ".join(bare)
+    )
+    assert suspicious == [], (
+        "这些端点看起来是列表端点，但没有用 ItemsResponse：\n  "
+        + "\n  ".join(suspicious)
+        + "\n（继承 `ItemsResponse[...]` 即可，它会带上 `x-mouxue-envelope` 标记）"
+    )
+    assert len(enveloped) == 21, (
+        f"列表端点数变了（现在 {len(enveloped)} 个）：新增列表端点必须用 "
+        f"`ItemsResponse[...]`，同时更新 tools/e2echeck.py 的 LIST_ENDPOINTS"
+    )
+    # 信封里的 `items` 必须是**具体的**条目 schema，不能退化成 `Any` / 无类型数组 ——
+    # 统一形状不该拿类型精度去换。这条同时允许"信封 + 兄弟字段"
+    # （`AttachmentListRead` 就带着 `session_id`，而那是信封存在的理由）。
+    for where, name in enveloped.items():
+        items_schema = components[name]["properties"]["items"]
+        ref = (items_schema.get("items") or {}).get("$ref")
+        assert isinstance(ref, str), (
+            f"{where} 的信封里 items 没有具体条目类型（{items_schema}）—— "
+            f"统一形状不该拿类型精度去换"
+        )

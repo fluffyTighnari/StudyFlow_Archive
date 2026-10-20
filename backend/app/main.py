@@ -17,8 +17,11 @@ from pydantic import BaseModel
 from app.api import errors as api_errors
 from app.api import (
     attachments,
+    benchmark,
     discuss,
     evidence,
+    external,
+    hypotheses,
     llm,
     folders,
     m1,
@@ -27,7 +30,9 @@ from app.api import (
     router_logs,
     sedimentation,
     sessions,
+    sidebar,
 )
+from app.agent.external import build_toolbox
 from app.agent.llm import LLMClient
 from app.agent.llm_factory import make_client_from_profile, make_client_from_settings
 from app.config import Settings
@@ -110,12 +115,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
                 app.state.active_llm_profile = profile.profile_id
         app.state.settings = settings
+        # 外挂能力（联网搜索 / MCP）。**默认是空箱子** —— 没配就没有。
+        # 组装本身**永不抛**（见 `agent/external.build_toolbox`）：
+        # 一个坏的外挂配置不该让整个应用起不来。
+        app.state.external = build_toolbox(settings)
         # 一次讨论的步数预算。**配置说了它管这件事，就必须真的由它管** ——
         # 一个没人读的配置项比没有这个配置项更坏：它让"调过了"变成一句空话。
         app.state.agent_max_steps = settings.agent_max_steps
         try:
             yield
         finally:
+            # 外挂工具持有**子进程**：不关掉的话，服务停了它们还活着。
+            toolbox = getattr(app.state, "external", None)
+            if toolbox is not None:
+                toolbox.close()
             engine.dispose()
 
     app = FastAPI(
@@ -140,6 +153,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         m1,
         preferences,
         evidence,
+        hypotheses,
         proposals,
         router_logs,
         folders,
@@ -148,6 +162,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sedimentation,
         discuss,
         llm,
+        benchmark,
+        sidebar,
+        external,
     ):
         app.include_router(module.router)
 

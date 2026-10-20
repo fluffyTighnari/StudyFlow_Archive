@@ -38,8 +38,10 @@ from sqlalchemy.orm import Session as DbSession
 
 from app.agent.tools import ToolContext, ToolResult, ToolStatus
 from app.core.ids import next_intent_id
+from app.core.quotes import MIN_QUOTE_CHARS, normalize_for_quote
 from app.db import DbSequenceStore
 from app.router import Router, SubmitRequest, UpdateIntent
+from app.router.registry import TargetClass, resolve_target
 from app.session_domain import reads as session_reads
 from app.session_domain.enums import ChatRole
 
@@ -85,20 +87,13 @@ ALLOWED_TRIGGERS = ("R3", "R4a", "R4b")
 #: 一句 `我` 会匹配到任何一段用户文本，于是校验形同虚设、而它会显得"通了"。
 #: 4 个字是一个折中：真实的口语声明（"我记不住"）够长，
 #: 而"我"、"好的"这种碰巧命中的碎片不够长。
-MIN_BASIS_QUOTE_CHARS = 4
-
-
-def _normalize_for_quote(text: str) -> str:
-    """比对引用时把空白全部去掉。
-
-    理由：模型转述的时候会在标点/换行上跟原话有出入，
-    而**空白不承载含义**。去掉它以后，"我记不住，一次 50 个太多了" 与
-    "我记不住，一次50个太多了" 能对上，而**任何一个字的差别仍然对不上**。
-    这就是这条校验的边界：**它比的是"用户有没有说过这些话"，
-    不是"模型复述得像不像"** —— 所以宁可让它在措辞差异上失败（降级为确认），
-    也不能放松到"意思像就算"。
-    """
-    return "".join(text.split())
+#:
+#: ★ 实现搬到了 `app.core.quotes`（P9）—— 因为**要点判官也要用同一套口径**
+#: （它声明的每条命中都要附用户答案里的原话，而那句话要核对得上）。
+#: 两处各写一遍的话，会出现"路由层认了某句引用、判分层不认"这种
+#: 没人能解释的分歧。这里的名字保留下来，因为它在 5 处调用点里出现过。
+MIN_BASIS_QUOTE_CHARS = MIN_QUOTE_CHARS
+_normalize_for_quote = normalize_for_quote
 
 
 def verify_stated_quote(db: DbSession, session_id: str, quote: str) -> tuple[bool, str]:
@@ -143,6 +138,26 @@ def verify_stated_quote(db: DbSession, session_id: str, quote: str) -> tuple[boo
     )
 
 
+def _is_hypothesis_target(item: dict[str, Any], ctx: ToolContext) -> bool:
+    """这条 intent 是不是要写进假说表。
+
+    ★ 用 `resolve_target` 判，而不是比字符串 `== "C.hypothesis"`。
+    `C.hypothesis.XXX` 这类带后缀的地址同样指向假说表（`target_for_*` 的
+    命名空间允许子地址），字符串相等会漏掉它们，而漏掉的结果是
+    "该拒绝的没拒绝"，正好是最不该出错的方向。
+
+    `resolve_target` 返回 `None` 表示未注册 —— 那是判定表的事，
+    交给 Router 报错，这里只回答"是不是假说"。
+    """
+    if item.get("action") == "no_change":
+        return False
+    target = item.get("target")
+    if not isinstance(target, str):
+        return False
+    resolved = resolve_target(target)
+    return resolved is not None and resolved.target_class is TargetClass.HYPOTHESIS
+
+
 def submit_global_update(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     """`submit_global_update` 的真实执行体 —— 工具层故意没有这个 handler。"""
     trigger = args["trigger_type"]
@@ -185,6 +200,22 @@ def submit_global_update(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
                 )
             )
             if not ok:
+                # ★ P7：假说这条路**不能降级**，只能拒绝。
+                #
+                # 降级的用途是"把一条可能对的观察从『已是事实』挪到『等人确认』"。
+                # 而假说表按定义只装他**自己说**的话 —— `C.hypothesis` + `experienced`
+                # 是判定表专门拒绝的一格。于是"降级"在这里会产出一条注定被拒的
+                # intent，模型收到的错误信息会是「假说不接受 experienced」，
+                # 而真正的问题其实是「你没有他的原话」。
+                # 让错误信息指向真正的原因，比让它指向机制细节有用得多。
+                if _is_hypothesis_target(item, ctx):
+                    return ToolResult(
+                        ToolStatus.REJECTED,
+                        f"第 {index} 条想写成假说（`C.hypothesis`），但引用验证没过"
+                        f"（{why}）。假说记录的是**他自己说的**「我想试试 X」，"
+                        "所以必须带上他在这次对话里的原话。如果你只是猜他会想试 —— "
+                        "别写，先问他一句「要不要试试……」，他答应了再写。",
+                    )
                 # ★ 降级，而不是拒绝。理由：这条认知**可能真的对**，
                 # 只是模型没资格替用户声称它 —— 那正是"进待确认队列"这个出口的用途。
                 # 拒绝会让模型丢掉一条可能正确的观察；降级只把它从

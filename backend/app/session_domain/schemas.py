@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -22,6 +22,7 @@ from app.session_domain.enums import (
     ChatRole,
     ChangedBy,
     CheckpointResult,
+    ClarificationStatus,
     InputConfidence,
     Level,
     MilestoneStatus,
@@ -63,12 +64,36 @@ class FolderRead(_ReadModel):
     goal: str | None = None
     c_retrieval_dims: list[str] | None = None
     created_at: datetime
+    #: 侧栏手动顺序（`Order by: Manual`）。
+    sort_order: int = 0
+    #: 归档时刻 —— **不是状态**（见 `models.Folder.archived_at`）。
+    archived_at: datetime | None = None
+    #: 派生：`max(会话创建, 该会话最后一条聊天)`。不落列，所以永远不会是旧值。
+    updated_at: datetime
+    #: 未归档的会话数 / 其中处于 `active` 的个数（侧栏上的小数字）。
+    session_count: int = 0
+    active_session_count: int = 0
 
 
 class FolderCreate(_WriteModel):
     name: str = Field(min_length=1, max_length=200)
     goal: str | None = None
     c_retrieval_dims: list[str] | None = None
+
+
+class FolderPatch(_WriteModel):
+    """侧栏对文件夹的整理动作：改名 / 归档 / 挪一位。
+
+    四个字段都是"不传就不动"，所以 `archived: false` 与不传 `archived`
+    是两件不同的事 —— 前者是取消归档，后者是"别碰它"。
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    goal: str | None = None
+    archived: bool | None = None
+    #: 在同层里挪一位。**没有 `sort_order` 这个可写字段**：顺序由服务端
+    #: 重编号决定，客户端不参与算数（否则两个客户端各算各的，就会撞在一起）。
+    move: Literal["up", "down"] | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -86,10 +111,28 @@ class SessionRead(_ReadModel):
     activated_at: datetime | None = None
     completed_at: datetime | None = None
     abandoned_at: datetime | None = None
+    #: 侧栏手动顺序（同一文件夹内比较才有意义）。
+    sort_order: int = 0
+    #: 归档时刻 —— **不是 `state`**。归档的会话可以有任意 `state`。
+    archived_at: datetime | None = None
+    #: 派生：`max(创建, 最后一条聊天)`。
+    updated_at: datetime
     #: 当前状态下**可以**转到哪些状态。界面按钮直接由它渲染 ——
     #: 这样"哪些按钮该出现"只有一处答案（`guards.TRANSITIONS`），
     #: 而不是前端也维护一份状态机。
     allowed_transitions: list[str] = Field(default_factory=list)
+
+
+class SessionPatch(_WriteModel):
+    """侧栏对会话的整理动作：改名 / 归档 / 挪一位。
+
+    ★ **不包含 `state`**：状态只能走 `/transitions`（带理由、带审计、
+    受 `WRITE_GUARDS` 约束）。如果这里也能改 `state`，那条边表就白建了。
+    """
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    archived: bool | None = None
+    move: Literal["up", "down"] | None = None
 
 
 class SessionCreate(_WriteModel):
@@ -155,6 +198,61 @@ class InputUpdate(_WriteModel):
     intent_raw: str | None = None
     intent_confidence: InputConfidence | None = None
     reason: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# 澄清问题：任务不明确时反问（P13）
+# --------------------------------------------------------------------------- #
+
+
+class ClarificationAsk(_WriteModel):
+    """问一个关于任务本身的问题。
+
+    `slot` 只能是定义区真实存在的字段（`goal` / `starting_point` /
+    `success_criteria`）—— 答案要真的写进去，不是存着好看。
+    """
+
+    slot: str = Field(min_length=1, max_length=64)
+    question: str = Field(min_length=1)
+    #: 候选答案。给"他会怎么答"一个形状：
+    #: 纯自由文本的问题，答案质量全看他那天的心情。
+    options: list[str] | None = None
+    asked_by: ChangedBy = ChangedBy.AGENT
+
+
+class ClarificationAnswer(_WriteModel):
+    answer: str = Field(min_length=1)
+    expected_version: int = Field(ge=1)
+
+
+class ClarificationDismiss(_WriteModel):
+    #: 必填 —— 它是"这条计划为什么是按助手判断排的"的唯一解释。
+    reason: str = Field(min_length=1)
+
+
+class ClarificationRead(_ReadModel):
+    clarification_id: str
+    session_id: str
+    slot: str
+    question: str
+    options: list[str] | None = None
+    status: ClarificationStatus
+    answer: str | None = None
+    dismiss_reason: str | None = None
+    asked_by: ChangedBy
+    created_at: datetime
+    resolved_at: datetime | None = None
+
+
+class ClarificationAnswerRead(_ReadModel):
+    """回答的结果 = **问题 + 更新后的定义区**。
+
+    两件东西一起返回，因为"答案到底写进定义区了没有"是这套机制
+    唯一会出错的地方：只返回问题的话，前端还得再拉一次才知道它落到哪了。
+    """
+
+    clarification: ClarificationRead
+    input: InputRead
 
 
 # --------------------------------------------------------------------------- #
@@ -353,6 +451,29 @@ class ChatMessageRead(_ReadModel):
     #: 它随读模型一起给出来，是因为用户明确要求「我能看到它做了什么」——
     #: 而理由写在正文里、动作写在轨迹里，两者的区别正是「理由 ≠ 事实」那条教训。
     tool_trace: list[dict[str, Any]] | None = None
+    #: 模型的完整思考过程（P6+.6）。普通聊天与不思考的模型为 `None`。
+    #:
+    #: ★ 它与正文**分开**给出来，理由与 `tool_trace` 同源但更强：
+    #: 思考是**推理**，正文是**结论**，而本项目从头到尾在区分
+    #: 「理由 ≠ 事实」。合并成一个字段会让界面无法只显示结论，
+    #: 也会让模型自己的猜测在下一次读回时看起来像是它说过的话。
+    thinking: str | None = None
+    #: 这次回复**实测**消耗的上下文（P6+.6）。
+    #:
+    #: 它是"当前上下文用了多少"的**唯一**来源 —— 模型每次调用都报
+    #: `prompt_eval_count`，所以这个问题有真实答案，不需要估算。
+    #: `None` = 没测到（与 0 相反：0 意味着"什么都没发"）。
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    #: 命中 / 未命中的 prompt token（DeepSeek 的 usage 里给）。
+    #: **`None` = 没测到**，不是 0 —— 界面据此显示「没测到」。
+    cache_hit_tokens: int | None = None
+    cache_miss_tokens: int | None = None
+    #: 这条回复**当时锚定在哪一步**（P15）。`None` = 没记录（旧消息）。
+    #:
+    #: 它随读模型一起给出来，因为「看推断理由」要用它重放当时的上下文 ——
+    #: 界面拿不到它就只能按今天的规则猜一步，而那会显示成"当时的证据"。
+    anchor_step_id: str | None = None
     created_at: datetime
 
 
@@ -372,6 +493,85 @@ class NoteRead(_ReadModel):
 class NoteCreate(_WriteModel):
     content: str = Field(min_length=1)
     tags: list[str] | None = None
+
+
+class AnnotationRead(_ReadModel):
+    """一条句子标注 + **它的推断理由**（P15）。
+
+    `basis` 与标注同一次返回，是为了让界面点一下就出东西 ——
+    理由不是一句话，而是一组可核对的事实（工具轨迹、条目 id、重放的节标题）。
+    """
+
+    annotation_id: str
+    msg_id: str
+    quote: str
+    question: str | None = None
+    created_at: datetime
+    #: 现算的依据（`session_domain/basis.explain`）。**不落库**：
+    #: 落下来就会过期（会话状态一变，"它当时能看到什么"就被这份快照顶替了）。
+    basis: dict[str, Any]
+
+
+class AnnotationCreate(_WriteModel):
+    """标注一句话。
+
+    `quote` 必须是那条回复里**逐字存在**的一段 —— 由 `writes.annotate_message`
+    核对，对不上直接 422。前端负责把选中文字原样送回来。
+    """
+
+    msg_id: str = Field(min_length=1)
+    quote: str = Field(min_length=1)
+    question: str | None = None
+
+
+class DeletedAnnotationRead(_ReadModel):
+    """删除结果。**返回被删掉的那一条**（与资料删除同一约定）。
+
+    为什么不是 204：本项目「写端点必须声明响应模型」这条规矩不允许
+    一个没有响应体的写端点 —— 而那不是形式主义，界面确实要能从响应里
+    确认"删的是哪一句"（同一个会话里可以有好几条标注）。
+    """
+
+    deleted: AnnotationRead
+
+
+class ReflectionGuideRead(_ReadModel):
+    """「写感想」的指引：四要素 + 这次会话里与每项相关的事实。
+
+    ★ 它不是一份通用问卷：每一条 `facts` 都来自这次会话真实的数据
+    （计划进度、用户自己写的完成判据、过程记录、笔记）。
+    固定的四句话贴给任何会话都成立，因此也帮不上任何忙。
+    """
+
+    session_id: str
+    items: list[dict[str, Any]]
+    #: 还没写的那几项（**不是分数**：它只回答"还差哪几块"）。
+    missing: list[str]
+    #: 已经写了几条感想。
+    existing: int
+    #: 现在不建议写的原因（空串 = 可以写）。
+    blocked_reason: str
+    elements_note: str
+
+
+class ReflectionRead(_ReadModel):
+    reflection_id: str
+    #: 写这条感想时对照的那份复盘总结。`None` = 那份总结已不存在。
+    summary_id: str | None = None
+    answers: dict[str, str] | None = None
+    content: str
+    created_at: datetime
+
+
+class ReflectionCreate(_WriteModel):
+    """写一条感想。`answers` 按四要素给，`content` 不填时由它拼出来。
+
+    ★ 两者都允许：有人愿意分项填（那样"完整度"是可读的），
+    有人只想写一段话。但**至少要有一个** —— 空的感想不写。
+    """
+
+    answers: dict[str, str] | None = None
+    content: str | None = None
 
 
 class MilestoneRead(_ReadModel):
@@ -404,11 +604,14 @@ class SummaryCreate(_WriteModel):
 
 
 __all__ = [
+    "AnnotationCreate",
+    "AnnotationRead",
     "ChatMessageCreate",
     "ChatMessageRead",
     "CheckpointDraftIn",
     "CheckpointRead",
     "CheckpointRecord",
+    "DeletedAnnotationRead",
     "FolderCreate",
     "FolderRead",
     "InputRead",
@@ -426,6 +629,9 @@ __all__ = [
     "PlanRead",
     "PlanRevisionRead",
     "PlanRevise",
+    "ReflectionCreate",
+    "ReflectionGuideRead",
+    "ReflectionRead",
     "SessionCreate",
     "SessionRead",
     "SnapshotRead",

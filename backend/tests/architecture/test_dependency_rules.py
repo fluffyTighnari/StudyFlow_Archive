@@ -369,6 +369,39 @@ def test_arch12_allows_the_handoff_module_itself(tmp_path: Path) -> None:
     assert violations == [], format_violations(violations)
 
 
+def test_detects_arch13_external_layer_reaching_back_into_the_agent(tmp_path: Path) -> None:
+    """外挂能力层只提供**能力**，不提供**用法**（P14 新增）。
+
+    `app/external` 是"MCP / 搜索是什么"，`app/agent/external.py` 是
+    "它们以什么姿态出现在模型面前"。后者 import 前者是正常的，
+    反过来成环 —— 更要紧的是：一旦 `app.external` 能 import `app.agent`，
+    「一个第三方服务器能碰到什么」就从一句可核对的话
+    变成一件要跨模块读才能回答的事，而那一层存在的全部意义就是回答它。
+    """
+    for module_path in (
+        "from app.agent.tools import ToolSpec\n",
+        "from app.agent.external import ExternalToolbox\n",
+        "from app.api.external import router\n",
+        "import app.router.service\n",
+        "from app.session_domain import reads\n",
+    ):
+        violations = _violations(tmp_path, {"external/mcp.py": module_path})
+        assert "ARCH-13" in {v.rule_id for v in violations}, module_path
+
+
+def test_arch13_allows_the_external_layer_to_stand_alone(tmp_path: Path) -> None:
+    """它当然可以只依赖 `app.core`（错误类型、通用工具）—— 那是它的底座。"""
+    violations = _violations(
+        tmp_path,
+        {
+            "external/mcp.py": (
+                "import json\nfrom app.core.errors import DomainError\n"
+            )
+        },
+    )
+    assert violations == [], format_violations(violations)
+
+
 def test_unparseable_file_is_a_hard_failure_not_a_pass(tmp_path: Path) -> None:
     """语法错误必须抛错，**绝不能**被当成「零违规 = 通过」。
 

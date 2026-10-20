@@ -243,6 +243,34 @@ class FakeLLM:
         #: 每一次 `stream` 调用发出去的帧（测试用来断言"真的分了帧"）。
         self.deltas: list[list[LLMDelta]] = []
 
+    def _fabricate_meta(
+        self, messages: Sequence[ChatMessage], reply: LLMReply
+    ) -> dict[str, Any]:
+        """★ 替身也要报用量，因为用量**确实参与了一个真实决定**。
+
+        P6+.6 之前 `FakeLLM` 返回的 `meta` 是空的 —— 那时它是纯诊断信息，
+        空着无所谓。现在 `prompt_eval_count` 是**上下文压缩的唯一触发条件**，
+        于是空着就意味着"整条压缩链路在替身上永远走不到"，
+        而 `tools/e2echeck.py` 正是用替身跑的：那一步会永远报"用量没回填"。
+
+        真实模型报的是它自己数出来的 token。替身没有分词器，所以这里给一个
+        **与提示长度成比例的确定性数字**。这不是在生产代码里估算 ——
+        生产代码从不估算，它只读模型给的值（见 `agent/context.py`）。
+        替身给不出真值时，给一个**形状正确**的值，
+        好让"回填 → 计量 → 判断"这条链路能被端到端走通。
+
+        刻意用 `len(content)` 而不是 `len(str(messages))`：
+        后者会把 dataclass 的 repr 也算进去，于是数字随字段名长度变化 ——
+        那种"用量"没人能解释它为什么变了。
+        """
+        prompt_chars = sum(len(m.content or "") for m in messages)
+        return {
+            **reply.meta,
+            "prompt_eval_count": prompt_chars,
+            "eval_count": len(reply.content or ""),
+            "fake": True,
+        }
+
     def chat(
         self, messages: Sequence[ChatMessage], *, tools: Sequence[ToolSchema] = ()
     ) -> LLMReply:
@@ -253,7 +281,8 @@ class FakeLLM:
                 f"FakeLLM 的脚本用完了（已经调用 {len(self.seen)} 次）—— "
                 "循环比脚本预期的多走了一步"
             )
-        return self._script.pop(0)
+        scripted = self._script.pop(0)
+        return replace(scripted, meta=self._fabricate_meta(messages, scripted))
 
     def stream(
         self, messages: Sequence[ChatMessage], *, tools: Sequence[ToolSchema] = ()
@@ -1052,6 +1081,11 @@ class OpenAICompatClient:
             "done_reason": choice.get("finish_reason"),
             "eval_count": usage.get("completion_tokens"),
             "prompt_eval_count": usage.get("prompt_tokens"),
+            # 缓存读数：DeepSeek 会在 usage 里给这两项（命中 / 未命中的 prompt
+            # token）。别的提供方没有这两项 —— 那种情况下它们保持 `None`，
+            # 界面显示「没测到」，绝不当成 0。
+            "cache_hit_tokens": usage.get("prompt_cache_hit_tokens"),
+            "cache_miss_tokens": usage.get("prompt_cache_miss_tokens"),
             "total_duration_ms": None,  # 这个协议不报耗时
         }
         return LLMReply(
@@ -1158,6 +1192,8 @@ class OpenAICompatClient:
                     "done_reason": finish_reason,
                     "eval_count": usage.get("completion_tokens"),
                     "prompt_eval_count": usage.get("prompt_tokens"),
+                    "cache_hit_tokens": usage.get("prompt_cache_hit_tokens"),
+                    "cache_miss_tokens": usage.get("prompt_cache_miss_tokens"),
                     "total_duration_ms": None,
                 },
             )

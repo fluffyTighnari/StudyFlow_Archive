@@ -373,12 +373,17 @@ def test_score_out_of_range_is_rejected(router) -> None:
 
 
 def test_c_evidence_without_condition_is_rejected(router) -> None:
-    """M2 §4.4 第 3 条：无适用条件的陈述是偏好，不是 C 证据。"""
+    """M2 §4.4 第 3 条：无适用条件的陈述是偏好，不是 C 证据。
+
+    ★ 这里用 `experienced` 而不是 `stated`：P7 之后 `C.evidence + stated`
+    会在**更早一步**被拒（"那是一条假说"），于是这条测试会以一个错误的理由
+    通过 —— 它要验证的是 `condition` 缺失，不是 basis 选错。
+    """
     bad = intent(
         action="add_preference",
         target="C.evidence",
         value=c_value(condition="   "),
-        basis="stated",
+        basis="experienced",
     )
     result = router.precheck(TriggerType.R1, bad)
     assert result.verdict is Precheck.MUST_REJECT
@@ -506,10 +511,19 @@ def test_the_gesture_check_would_actually_catch_r4c() -> None:
 
     # 并且确认「C 证据也走 add_preference」这个事实没变 ——
     # 上一条注释里的说法要是错了，这个测试会红。
+    #
+    # ★ P7.1：`IntentAction` 从 3 个值变成 6 个。新增的三个是**条目生命周期**
+    #   动作（归档 / 恢复 / 改写），不是新的"写入种类" ——
+    #   `archive` / `restore` / `revise` 都不产生一行新记录，它们处置已有的行。
+    #   所以上面那句"没有 add_evidence 这个 action"依然成立：
+    #   **想让一条做法进库，仍然只有 `add_preference` 一条路。**
     assert {action.value for action in IntentAction} == {
         "add_preference",
         "update_parameter",
         "no_change",
+        "archive",
+        "restore",
+        "revise",
     }
 
 

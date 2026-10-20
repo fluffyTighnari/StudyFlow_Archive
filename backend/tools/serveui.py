@@ -139,7 +139,39 @@ def main() -> int:
         default=None,
         help="覆盖 Settings.llm_model（在本地试不同模型时省得改环境变量）",
     )
+    parser.add_argument(
+        "--items-dir",
+        default=None,
+        help="题库目录。默认用仓库里的 `items/`（那是**外部信息·渐进补**，"
+        "现在还不完整）—— 想验证抽题机制本身，指向一份完整的题库："
+        "`--items-dir tests/fixtures/bank`（由 tools.makefixturebank 生成）",
+    )
+    parser.add_argument(
+        "--materials-dir",
+        default=None,
+        help="材料目录。只在 --items-dir 也给了的时候生效；"
+        "不给我会按 `--items-dir` 的同级 `materials/` 猜 —— 猜错的表现是"
+        "「题库里每道题都找不到材料」，而那句话不指向真正的原因",
+    )
+    parser.add_argument(
+        "--web-search-corpus",
+        default=None,
+        help="打开**联网搜索**（离线语料库版）：给它一份 JSON 语料库，"
+        "`web_search` 就会出现在工具清单里。不给 = 没有这个工具"
+        "（默认，也是「新克隆的仓库不联网」那条约束的落点）",
+    )
+    parser.add_argument(
+        "--mcp",
+        default=None,
+        help="接一个 MCP 工具服务器：`名字=命令行`（也可用 `;` 分隔多个）。"
+        "例：`--mcp \"demo=python -m tools.fake_mcp_server\"`。"
+        "外挂工具一律只读、名字带 `mcp__<名字>__` 前缀 —— 见 app/external/",
+    )
     args = parser.parse_args()
+    if args.materials_dir is None and args.items_dir:
+        args.materials_dir = str(
+            pathlib.Path(args.items_dir).resolve().parent / "materials"
+        )
 
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{args.db}",
@@ -151,6 +183,23 @@ def main() -> int:
         llm_provider="fake" if args.llm in ("fake", "bridge") else args.llm,
         **({"llm_model": args.model} if args.model else {}),
         llm_think={"auto": None, "true": True, "false": False}[args.think],
+        **(
+            {
+                "items_dir": args.items_dir,
+                "materials_dir": args.materials_dir,
+            }
+            if args.items_dir
+            else {}
+        ),
+        # 外挂能力（默认全关）。`--mcp` 的 `;` 分隔在命令行上比 JSON 好写，
+        # 而 `load_servers` 那两种写法（JSON / `名字=命令`）都认 ——
+        # 这里只把分隔符换成换行，不引入第三种格式。
+        **(
+            {"web_search_provider": "local", "web_search_corpus": args.web_search_corpus}
+            if args.web_search_corpus
+            else {}
+        ),
+        **({"mcp_servers": args.mcp.replace(";", "\n")} if args.mcp else {}),
     )
     app = create_app(settings)
 

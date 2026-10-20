@@ -47,6 +47,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from app.agent.dispatch import Dispatcher, ToolTraceEntry
 from app.agent.events import AgentEvent, EventType, StageName
+from app.agent.external import ExternalToolbox
 from app.agent.llm import (
     ChatMessage,
     LLMClient,
@@ -56,7 +57,7 @@ from app.agent.llm import (
     context_truncation_note,
     thinking_without_answer_note,
 )
-from app.agent.tools import GESTURE_PLAN_CHANGE, tool_schemas
+from app.agent.tools import GESTURE_PLAN_CHANGE, ToolScope, tool_schemas
 from app.session_domain import reads as session_reads
 from app.session_domain.context import DiscussionContext, assemble_discussion_context
 
@@ -91,6 +92,12 @@ class DiscussionResult:
     steps: int
     traces: tuple[ToolTraceEntry, ...] = ()
     llm_meta: dict[str, Any] = field(default_factory=dict)
+    #: 模型这一轮的**全部思考内容**，按发生顺序拼接（P6+.6）。
+    #:
+    #: 为什么落库而不是只发流：流式的 `thinking` 帧只在那一次连接里存在，
+    #: 刷新页面就没了。而"它当时为什么这么答"是一个**事后**才会问的问题，
+    #: 事后问的东西必须留着。空串 = 这一轮的模型没有思考过程（不是错误）。
+    thinking: str = ""
 
     @property
     def ok(self) -> bool:
@@ -332,7 +339,7 @@ def _render_context(
         or ["- （还没有任何基线读数）"]
     )
 
-    lines += ["", "## 个性化证据（C）"]
+    lines += ["", "## 个性化证据（C）—— 他**试过**，验证有效"]
     lines += (
         [
             f"- [{item.evidence_id}] 当{item.condition}时，{item.effect}（{item.strength}）"
@@ -340,6 +347,31 @@ def _render_context(
         ]
         or ["- （没有）"]
     )
+
+    # ★ 这一节的标题必须把「未验证」写在读的人会看到的位置。
+    #
+    # 它与上一节结构完全同形（都是「当 X 时做 Y」），而**同形的东西最容易被
+    # 当成同一种东西**。所以差别不能只存在于上下文组装代码里：
+    # 标题写「未验证」，每条再带 `未验证` 前缀，同一个事实说两遍 ——
+    # 因为这一节唯一的失败形态就是"被当成证据用"。
+    lines += [
+        "",
+        "## 假说 —— 他**说过想试、但还没试过**的具体做法（**未验证，不是依据**）",
+    ]
+    lines += (
+        [
+            f"- [{item.hypothesis_id}]（未验证）当{item.condition}时，{item.effect}"
+            f"{f'（来自会话 {item.source_session_id}）' if item.source_session_id else ''}"
+            for item in ctx.hypotheses
+        ]
+        or ["- （没有）"]
+    )
+    if ctx.hypotheses:
+        lines += [
+            "  用法：**可以主动提议**「你之前说想试试这个，要不要放在这一步？」"
+            "但不要把它当成已证明有效的做法直接排进计划。"
+            "要翻更多，用 retrieve_cognitive(scope=\"hypothesis\")。",
+        ]
 
     lines += ["", "## 方法候选（参考，不是约束）"]
     lines += (
@@ -382,19 +414,94 @@ class AgentLoop:
         *,
         max_steps: int = 8,
         user_gestures: frozenset[str] = frozenset(),
+        external: ExternalToolbox | None = None,
     ) -> None:
         self.db = db
         self.session_id = session_id
         self.client = client
         self.max_steps = max_steps
+        #: 外挂能力（联网搜索 / MCP）。`None` = 没有 —— 默认形态，
+        #: 也是"新克隆的仓库不会悄悄联网、不会去起子进程"的那条约束。
+        self.external = external
         # 留存原始手势：**渲染层与工具层必须读同一个来源**。
         # 只把它们交给 Dispatcher 是不够的 —— 那样渲染层就得自己再推一遍
         # "用户到底点没点"，而两处推导一旦分叉，就会出现
         # "授权给了、模型不知道自己有权"（那次 27B）或反过来。
         self.user_gestures = user_gestures
-        self.dispatcher = Dispatcher(
-            db, session_id, user_gestures=user_gestures
+        #: 这一次讨论锚定在哪一步。`_open_context` 里写入（P15）。
+        #:
+        #: 为什么留在实例上而不是回给调用方：调用方（`api/discuss.py`）
+        #: 拿到 `LoopResult` 时已经写完了助手消息，而**锚点是那条消息的属性**。
+        #: 让它从这里取，比让端点再算一遍 `resolve_anchor` 更可信 ——
+        #: 算两遍意味着两处可能给出不同的答案，而其中一个会进留档。
+        self.last_anchor: str = ""
+        # 走 `_make_dispatcher` 而不是直接 `Dispatcher(...)`：
+        # 子类（侧边栏）要换成"没有会话"的那种，而**这次调用发生在基类
+        # `__init__` 里**，所以它必须是一个可覆写的方法在 MRO 里被找到。
+        self.dispatcher = self._make_dispatcher()
+
+    # ----------------------------------------------------------------- #
+    # ★ 可覆写的五个决定（P6+.6）
+    #
+    # `_walk` 是一份循环体，会话与侧边栏共用。它唯一"绑死会话"的地方就是
+    # 下面这五个 —— 把它们抽成方法而不是**复制一份循环体**，
+    # 是因为两份循环体会在"某条路上修了、另一条忘了"的时候安静地分叉，
+    # 而那正是本项目反复栽的那类缺陷（`run` / `run_stream` 那条注释同理）。
+    #
+    # 五个这个数字本身是一条证据：它说明"会话"这个概念在循环里的
+    # 落点确实只有这么多。如果将来它变成八个，那说明循环在长胖，
+    # 而不是说明该再多加几个钩子。
+    # ----------------------------------------------------------------- #
+
+    def _system_prompt(self) -> str:
+        return SYSTEM_PROMPT
+
+    def _open_context(self, step_id: str | None) -> tuple[str, int, str]:
+        """`(锚点, 计划版本, 渲染好的上下文段)`。"""
+        anchor = self.resolve_anchor(step_id)
+        # ★ 把锚点**留在实例上**（P15）：这条回复的留档要能回答
+        # "它当时是在哪一步上讨论的"。不记的话，事后重放上下文只能按
+        # **今天**的锚点规则挑一步，而那一节标题会被读成"当时的证据"。
+        self.last_anchor = anchor
+        context = assemble_discussion_context(self.db, self.session_id, anchor)
+        body = _render_context(
+            context,
+            # **与工具层读同一个来源**（`self.user_gestures`）——
+            # 这是"端点给了授权、模型却不知道自己有权"那类缺陷的结构性防线：
+            # 两处判断同一个变量，就不可能给出不一致的答案。
+            click_gesture=GESTURE_PLAN_CHANGE in self.user_gestures,
+            clicked_step_id=step_id,
         )
+        return anchor, context.plan_version, body
+
+    def _tool_schemas(self) -> list[ToolSchema]:
+        """内置工具 + 外挂工具（联网搜索 / MCP）。
+
+        外挂工具**不进** `M8_TOOL_NAMES` 那张表：内置工具是这套系统的一部分
+        （作用域、边界、拒绝理由都写在这里），外挂工具是别人写的、
+        随时会变、随时会被拔掉。`tool_schemas()` 那个固定的顺序因此保持不动，
+        外挂工具排在它后面 —— 轨迹里"第几个是内置的"仍然一眼可数。
+        """
+        return [*tool_schemas(), *self._external_schemas(None)]
+
+    def _external_schemas(
+        self, scopes: frozenset[ToolScope] | None
+    ) -> list[ToolSchema]:
+        if self.external is None:
+            return []
+        return [spec.schema() for spec in self.external.specs(scopes)]
+
+    def _make_dispatcher(self) -> Dispatcher:
+        return Dispatcher(
+            self.db,
+            self.session_id,
+            user_gestures=self.user_gestures,
+            external=self.external,
+        )
+
+    def _context_footer(self) -> str:
+        """贴在上下文段末尾的一句提醒。会话为空；侧边栏用它说明"没有会话"。"""
+        return ""
 
     def run(
         self,
@@ -463,38 +570,37 @@ class AgentLoop:
         `run` 直接把生成器驱动到底、取那个值。
         """
         self._seq = 0
-        anchor = self.resolve_anchor(step_id)
-        context = assemble_discussion_context(self.db, self.session_id, anchor)
+        anchor, plan_version, context_body = self._open_context(step_id)
+        body = context_body + self._context_footer()
         yield self._emit(
             EventType.STAGE,
             0,
             {
                 "name": StageName.READ_CONTEXT.value,
                 "anchor": anchor,
-                "plan_version": context.plan_version,
+                "plan_version": plan_version,
             },
         )
 
         messages: list[ChatMessage] = [
-            ChatMessage.system(SYSTEM_PROMPT),
-            ChatMessage.system(
-                _render_context(
-                    context,
-                    # **与工具层读同一个来源**（`self.user_gestures`）——
-                    # 这是"端点给了授权、模型却不知道自己有权"那类缺陷的结构性防线：
-                    # 两处判断同一个变量，就不可能给出不一致的答案。
-                    click_gesture=GESTURE_PLAN_CHANGE in self.user_gestures,
-                    clicked_step_id=step_id,
-                )
-            ),
+            ChatMessage.system(self._system_prompt()),
+            ChatMessage.system(body),
             *history,
             ChatMessage.user(user_message),
         ]
-        schemas = tool_schemas()
+        schemas = self._tool_schemas()
         last_content = ""
         # 已经拒绝过、而且原样又来一次的调用。见模块开头第 4 种停止理由。
         rejected_signatures: set[str] = set()
         meta: dict[str, Any] = {}
+        #: 这一轮讨论里模型想过的全部内容，按发生顺序拼起来。
+        #: 用户明确要求"展示完整思考过程"，而流式那条路只在当时发出去 ——
+        #: 刷新页面之后就没了。落库它才有"回看它当时怎么想的"。
+        #:
+        #: 挂在实例上（而不是局部变量）是因为 `_result` 要用它，而
+        #: `_result` 有 5 个调用点 —— 把 thinking 加成第六个参数会让
+        #: 每个调用点都多一个"和我无关"的实参，而漏传的那个不会有任何报错。
+        self._thinking_parts: list[str] = []
 
         for step in range(1, self.max_steps + 1):
             yield self._emit(
@@ -513,6 +619,11 @@ class AgentLoop:
                 )
 
             meta = dict(reply.meta)
+            if reply.thinking:
+                # 累加而不是覆盖：一轮讨论里模型可能想了多次（每次工具调用前后
+                # 各想一次），而用户要看的"它的思考过程"是全过程。
+                # 覆盖会让界面上只剩下最后一次思考，看起来像它从没犹豫过。
+                self._thinking_parts.append(reply.thinking)
             if reply.content.strip():
                 last_content = reply.content.strip()
 
@@ -649,7 +760,18 @@ class AgentLoop:
             steps=steps,
             traces=tuple(self.dispatcher.traces),
             llm_meta=meta,
+            thinking=self.thinking,
         )
+
+    @property
+    def thinking(self) -> str:
+        """到现在为止模型想过的全部内容。
+
+        公开它是因为流式端点需要在**断线**那条路上也能留档 ——
+        那时 `DiscussionResult` 还没产生（循环被中断了），
+        但已经想过的东西不该丢。与 `dispatcher.traces` 同一个姿态。
+        """
+        return "\n\n".join(getattr(self, "_thinking_parts", []))
 
     def resolve_anchor(self, step_id: str | None) -> str:
         """讨论锚定到哪一步。**必须在任何模型调用之前定下来。**

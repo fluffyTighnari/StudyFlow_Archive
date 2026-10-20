@@ -170,6 +170,36 @@ def test_approved_intent_with_blocker_is_still_rejected(router, seeded) -> None:
     assert "无法绕过的前置条件" in outcome.reason
     assert current_baseline_version(seeded, "V-SE", EvidenceChannel.EXPERIENCED) is None
 
+    # ★ 日志必须如实说"用户**同意过**"。
+    #
+    # 同一个"被拒"有两种成因，而它们在审计上相反：
+    #   · 用户否决 → 用户说不要
+    #   · 用户同意、但前置条件绕不过 → 用户要，系统挡了
+    # 两者都写成 `user_confirmed=False` 时，这一行的 `reasoning` 会写着
+    # "用户已同意，但…"，而 `user_confirmed` 说"没同意" —— **自相矛盾**。
+    # 半年后查"他到底同意过没有"，唯一能信的就是这个布尔字段。
+    log = log_for(seeded, "I-1")
+    assert log.user_confirmed is True, "用户点过同意，日志却说他没同意"
+    assert log.status is RouterLogStatus.REJECTED
+
+
+def test_a_user_veto_is_recorded_as_not_confirmed(router, seeded) -> None:
+    """★ 上一条的反面：**用户否决**必须记成 `user_confirmed=False`。
+
+    没有这一条，"恒为 True"的实现也能让上面那条测试通过 ——
+    而恒为 True 同样是在说谎，只是方向相反。
+    """
+    submitted = router.submit(
+        request("R4A", m1_intent("I-1", variable="V-SE", basis="experienced"))
+    )
+    result = router.resolve(submitted.proposal_id, [decision("I-1", False, "我不想写")]
+    )
+    (outcome,) = result.results
+    assert outcome.status is IntentStatus.REJECTED
+    log = log_for(seeded, "I-1")
+    assert log.user_confirmed is False, "用户否决了，日志却说他说同意"
+    assert "我不想写" in log.reasoning
+
 
 def test_blocker_clears_once_two_independent_sessions_are_recorded(
     router, seeded, token

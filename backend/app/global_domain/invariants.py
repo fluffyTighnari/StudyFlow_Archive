@@ -51,6 +51,7 @@ from app.global_domain.enums import (
 from app.global_domain.models import (
     CEvidence,
     CEvidenceRevision,
+    DomainProfile,
     M1BaselineCurrent,
     M1BaselineVersion,
     M1ChannelObs,
@@ -106,6 +107,11 @@ PROVENANCE: dict[str, Provenance] = {
     "c_evidence": Provenance(
         "router_log_id", "权威认知状态：C 条目会参与后续的上下文采用"
     ),
+    "hypothesis": Provenance(
+        "router_log_id",
+        "权威认知状态：假说**不参与装配**，但它会进上下文（标为猜想），"
+        "因此『他什么时候说想试什么』必须可追溯 —— 而追溯的落点仍是日志",
+    ),
     "c_evidence_revision": Provenance(
         "router_log_id", "append-only 修订史：当前无人写（编辑/归档待裁定，缺口 A14），但机制先立着"
     ),
@@ -139,8 +145,24 @@ PROVENANCE: dict[str, Provenance] = {
         "run 在开始时创建、结束时补分；response 在每题作答后立刻落，"
         "所以中途中断的运行也能留下「答到哪一题」这个事实",
     ),
-    "update_proposal": Provenance("ledger", "提案账本：由 Router 创建，其痕迹体现在引用它的日志上"),
-    "update_intent": Provenance("ledger", "意图账本：同上，I5 校验「已应用的意图 ⇄ 已应用的日志」"),
+    "domain_topic": Provenance(
+        "catalog",
+        "主题表（目录数据）：随版本发布的静态清单，运行时无人可写。"
+        "源在 `app/seeds/domain_topics.json`，本表由 `seeds.loader` 物化 —— "
+        "它存在的理由是写入层需要它来校验勾选里的 id 是否真的存在，"
+        "而 ARCH-05 不允许 `app.global_domain` 去 import 那份 JSON 的读取器"
+        "（`app.benchmark.topics`）",
+    ),
+    "domain_profile": Provenance(
+        "router_log_id",
+        "领域勾选档案（用户裁定 岔路 A = 乙）：口径与 `m2_preference` **完全相同** —— "
+        "两者都是用户对自己状态的直接声明，而"
+        "「用户声明即事实，因此更需要知道它是什么时候被谁写进来的」。"
+        "它不过 `PRECHECK_TABLE`（它是测量的**参照**，不是关于特质的**断言**），"
+        "但**照记 RouterLog** —— 记账与裁定是两件事，"
+        "而「不裁定」绝不能被读成「不留痕」",
+    ),
+    "update_proposal": Provenance("ledger", "提案账本：由 Router 创建，其痕迹体现在引用它的日志上"),    "update_intent": Provenance("ledger", "意图账本：同上，I5 校验「已应用的意图 ⇄ 已应用的日志」"),
     "router_log": Provenance("ledger", "审计日志本身 —— 让日志给自己留痕是无穷回归"),
     "id_sequence": Provenance("infrastructure", "顺序号分配表，与领域无关（见 app/db.py）"),
     "llm_profile": Provenance(
@@ -163,6 +185,18 @@ PROVENANCE: dict[str, Provenance] = {
     ),
     "input_revision": Provenance(
         "append_only", "定义区修订史本身：只追加，旧值因此不可能被抹掉"
+    ),
+    "clarification": Provenance(
+        "sandbox_record",
+        "★ 澄清问题（任务不明确时反问，P13）：它是**过程的痕迹**，不是关于用户的断言。"
+        "三个理由说明为什么它不需要审计："
+        "① 它只影响本会话的计划能不能改（闸门），不进任何全局表；"
+        "② 它的答案**同时写进定义区**并留下 `input_revision` —— "
+        "也就是说「我据此认定了什么」那一笔痕记在定义区的修订史上，"
+        "而这里留的是「我问过、他什么时候答的」；"
+        "③ 一行有生命周期（open → answered | dismissed）且**不删除**："
+        "搁置也要写理由（库层 CHECK），所以「这条计划为什么是猜的」永远答得出。"
+        "边界测试：`tests/session/test_clarify.py` 钉住「答完定义区真的有内容」",
     ),
     "session_motivation": Provenance(
         "revision",
@@ -206,6 +240,33 @@ PROVENANCE: dict[str, Provenance] = {
         "对话原文：**原始记录不该被修订** —— 聊天记录一旦可改，"
         "「我当时到底说了什么」就失去意义。要改口就在新消息里改口",
     ),
+    "annotation": Provenance(
+        "sandbox_record",
+        "★ 句子标注（输出可标注某句并看推断理由，P15）：它是**用户对助手的追问**，"
+        "不是关于用户的断言，也不改变任何权威状态。"
+        "三个理由说明为什么它不需要审计："
+        "① 它指向一条消息里逐字存在的一段（`writes.annotate_message` 核对，"
+        "对不上直接 422），所以它不可能凭空捏造一句谁都没说过的话；"
+        "② 它**只读**：`basis.explain` 不写库、不调模型，"
+        "理由是现算的（工具轨迹 + 条目 id + 重放的节标题），"
+        "所以「凭什么这么说」的回答里没有一句是新编的；"
+        "③ 它可以被用户删掉（解释权在用户手里），而删除不影响任何别的东西。"
+        "边界测试：`tests/session/test_annotations.py` 钉住三条拒绝",
+    ),
+    "reflection": Provenance(
+        "sandbox_record",
+        "★ 复盘之后的感想（P15）：它是**用户自己写的字**，不是系统对他的断言 —— "
+        "所以它不需要审计，但它的形状有理由："
+        "① 按四要素（发生了什么 / 预期差异 / 原因 / 下次改变）分项存，"
+        "因为 `V-PAR` 的 `measured` 通道声明的正是「复盘产物的四要素完整度」——"
+        "拼成一坨存，那个「完整度」就只能靠再解析一段自然语言来回答；"
+        "② 它**只落在会话里**：要变成全局认知仍然只有一条路（沉淀 → Router），"
+        "所以它不进 `router_log` 也不需要令牌；"
+        "③ 两道门槛写在代码里：状态必须在 `review`/`completed`/`abandoned`，"
+        "且必须**已经复盘过**（有一条 `session_summary`）—— "
+        "否则「感想」与「总结」会变成同一件事的两个入口。"
+        "边界测试：`tests/session/test_reflection.py` 钉住两道门槛与空感想",
+    ),
     "note": Provenance(
         "sandbox_record",
         "会话笔记：同上。它是草稿纸，不是声明 —— 声明走的是沉淀 → 路由那条路",
@@ -241,6 +302,30 @@ PROVENANCE: dict[str, Provenance] = {
         "因为它描述的是**当时的状态**而不是一条会参与计划的声明；"
         "而它永不进 M1（M1 §5.5），所以也没有权威状态需要留痕",
     ),
+    "sidebar_message": Provenance(
+        "sandbox_record",
+        "★ 侧边栏常驻模型的对话（P6+.6）：与原话同理 —— "
+        "**原始记录不该被修订**。它与 `chat_message` 分表的理由见 `SidebarMessage` 的"
+        "类文档（归属约束不同），但留痕姿态完全一致：追加、不改写。"
+        "它没有任何进入全局的路径 —— 侧边栏要写全局也得走 `submit_global_update`，"
+        "而那一步的痕迹记在 `router_log` 上",
+    ),
+    "context_compact": Provenance(
+        "append_only",
+        "★ 对话压缩记录（P6+.6）：把早期原话换成一段摘要。**它是本系统里"
+        "唯一一种「有损的可追溯」**，所以它同时要满足两件相反的事："
+        "① 压掉的原话**一行都没删**（仍在 `chat_message` 里，"
+        "`covers_msg_ids` 指得出是哪几条）；"
+        "② 每一次压缩**各留一行**，包括被后来的压缩折叠掉的那些 —— "
+        "只留一个「当前摘要」字段会让每次覆盖都永久埋掉一段对话，"
+        "而「它当时忘了什么」这个问题就再也答不上来。"
+        "`append_only` 这个 kind 在这里的含义正是：**只增不改，"
+        "且旧行不因为被折叠而失去意义**（`folds_compact_ids` 记的是折叠关系）。"
+        "★ 另有一条边界由结构保证：摘要是**派生文本**，"
+        "它拿不出 `chat_message.msg_id`，因此任何「用户说过…」的全局写入"
+        "都不可能以它为来源 —— 见 `agent/context.py` 与"
+        "`tests/agent/test_context_memory.py` 里那条断言",
+    ),
 }
 
 #: I1 逐行校验的表：`(模型, 主键属性名①, 表名)`。
@@ -252,6 +337,9 @@ I1_ROW_LEVEL: tuple[tuple[Any, str], ...] = (
     (M2Preference, "pref_id"),
     (CEvidence, "evidence_id"),
     (CEvidenceRevision, "rev_id"),
+    # 领域勾选清单：**用户声明即事实**，与 `m2_preference` 同族 ——
+    # 所以它照受 I1 的逐行校验（见 PROVENANCE 里的理由）。
+    (DomainProfile, "profile_id"),
 )
 
 #: 不做逐行日志校验的表（从 `PROVENANCE` **派生**，不手写第二份清单）。

@@ -120,6 +120,49 @@ class ChatRole(StrEnum):
     ASSISTANT = "assistant"
 
 
+class ClarificationStatus(StrEnum):
+    """一个**关于任务本身**的问题走到了哪一步（P13）。
+
+    ★ 三种状态而不是"答了/没答"两种：第三种 `dismissed` 是
+    「用户决定先不管」，它**允许**计划继续往下走，但计划上会带着
+    "这是按助手判断排的"。把它压成"没答"等于逼用户回答一个他不想回答的问题；
+    而把它压成"答了"会伪造一条关于他的事实。
+    """
+
+    OPEN = "open"
+    ANSWERED = "answered"
+    DISMISSED = "dismissed"
+
+
+class ContextScope(StrEnum):
+    """一段「有记忆的对话」住在哪里。
+
+    ★ 这里只有两个取值，而它们的区别**不在技术实现上**（两者都是
+    消息表 + 压缩记录 + 同一套计量），在于**它与什么绑在一起**：
+
+    | | `session` | `sidebar` |
+    |---|---|---|
+    | 生命周期 | 跟着这个子任务，完了就归档 | **常驻**，不属于任何子任务 |
+    | 复盘 | 有（`active → review → completed` 闸门） | **没有** —— 它不是一个任务 |
+    | 沉淀 | 能把经历变成全局认知 | 也能写偏好，但那是"直接说"，不是"沉淀" |
+    | 压缩 | 有 | 有（同一套机制） |
+
+    两者共用 `ContextCompact` 与 `agent.context` 的算法。**不拆成两套**：
+    拆开之后"压缩到哪里去了、还剩多少预算"会有两个答案，
+    而用户在两个界面里看到的计量会开始不一致 —— 那种不一致没人能解释。
+    """
+
+    SESSION = "session"
+    SIDEBAR = "sidebar"
+
+
+#: 侧边栏那个常驻会话的 `scope_id`。
+#:
+#: 它是一个**单例**（用户只有一个侧边栏对话），所以用一个固定常量而不是
+#: 分配出来的 id。这样"它存在吗"这个问题有一个不依赖查询的答案。
+SIDEBAR_SCOPE_ID = "sidebar"
+
+
 class SessionOperation(StrEnum):
     """**能被状态机拒绝的写操作**。
 
@@ -147,6 +190,9 @@ class SessionOperation(StrEnum):
     ADD_MILESTONE = "add_milestone"
     COMPLETE_MILESTONE = "complete_milestone"
     WRITE_SUMMARY = "write_summary"
+    #: 写感想（复盘之后按指引写，P15）。**只允许在整理期与终态** ——
+    #: 它是复盘之后的动作，而执行中想记就写笔记（见 `guards` 那一行的理由）。
+    WRITE_REFLECTION = "write_reflection"
     TRANSITION = "transition"
 
 

@@ -85,6 +85,19 @@ MAX_EVIDENCE = 12
 #: 会明确写出"还有 N 份没列在这里"。
 MAX_ATTACHMENTS = 20
 
+#: 假说的条数上限（P7）。**刻意远小于 `MAX_EVIDENCE` 的 12。**
+#:
+#: 两个理由，第二个是主要的：
+#: 1. 假说会无限积累 —— 每句"我想试试 X"都是一条，而删不掉（归档端点待裁定，
+#:    缺口 A14）。证据相反，只有真的做过的事才会留下痕迹。
+#: 2. **假说的作用是"提醒"，不是"依据"。** 一屏 12 条想试的东西，
+#:    模型会开始把它们当成素材来安排 —— 而 3 条、且明确标着 `verified=false`，
+#:    更像"他最近提过这几件想做的事"，而不是一份可用的方法清单。
+#:
+#: 被截断的假说**不会消失**：`retrieve_cognitive(scope="hypothesis")` 能取全，
+#: 而"我想试试之前的猜想"那句话本来就是靠这个工具满足的。
+MAX_HYPOTHESES = 3
+
 
 # --------------------------------------------------------------------------- #
 # 包的结构
@@ -169,11 +182,38 @@ class BaselineItem(BaseModel):
 
 
 class EvidenceItem(BaseModel):
+    """一条**已验证**的具体做法：他试过，有效。"""
+
     evidence_id: str
     statement: str
     condition: str
     effect: str
     strength: str
+
+
+class HypothesisItem(BaseModel):
+    """一条**未验证**的具体做法：他说过想试，还没试（P7）。
+
+    ## 为什么 `verified` 是恒假的字段而不是省掉
+
+    因为这一节与 `evidence` 那一节在结构上太像了（同样是 condition + effect），
+    而**像的东西最容易被当成一样的东西用**。一个显式的
+    `verified: bool = False` 让"这条不是证据"这件事出现在数据里，
+    而不只出现在这一节的标题里 —— 标题会被长上下文淹没，字段不会。
+
+    这就是用户要的"更详细的明确语义"：不是多说几句提醒，
+    而是让类型自己说明它是什么。
+    """
+
+    hypothesis_id: str
+    statement: str
+    condition: str
+    effect: str
+    #: **恒为 False。** 存在的意义见上面。写成一个有默认值的字段而不是常量，
+    #: 是为了让它出现在序列化结果里（模型看得见），而不是只在提示词里。
+    verified: bool = False
+    #: 他是在哪次会话里说的。可空（UI 手写的没有来源会话）。
+    source_session_id: str | None = None
 
 
 class StrategyItem(BaseModel):
@@ -230,6 +270,10 @@ class DiscussionContext(BaseModel):
     attachments: list[AttachmentRef]
     baseline: list[BaselineItem]
     evidence: list[EvidenceItem]
+    #: ★ 他**想试但还没试**的做法（P7）。**不进装配** —— 它出现在这里
+    #: 是为了让模型能主动提「你之前说想试试这个」，而不是为了当依据。
+    #: 每条都带 `verified=False`，于是"它不是证据"这件事在数据里就成立。
+    hypotheses: list[HypothesisItem]
     strategies: list[StrategyItem]
     step_history: list[StepVersion]
     situation: Situation
@@ -386,6 +430,20 @@ def assemble_discussion_context(
     )
 
     # ---- 3. stage：只有"还未定归宿"的条目才相关 ---- #
+    #
+    # ★ P7 把 `keywords` / `_matches` 提到了这里（原先定义在证据那一节）。
+    # 因为现在有**两处**要问"这一条和当前步骤对不对得上"——证据与假说。
+    # 两份实现迟早会对不上，而它们对不上的表现是"同一条经验在证据里进了、
+    # 在假说里没进"，那种不对称没人能解释。
+    strategies, not_chosen = _strategies_for_step(db, step)
+    keywords = [row.name for row in strategies]
+    if session_row.title:
+        keywords.append(session_row.title)
+
+    def _matches(item) -> bool:
+        haystack = f"{item.condition}\n{item.effect}\n{item.statement}"
+        return any(keyword and keyword in haystack for keyword in keywords)
+
     active_stage = reads.list_stage_items(
         db, session_id, statuses=frozenset({StageItemStatus.ACTIVE})
     )
@@ -400,6 +458,37 @@ def assemble_discussion_context(
             dropped_examples=[
                 f"{item.item_id}（{item.status.value}）"
                 for item in settled[:MAX_EXCLUSION_EXAMPLES]
+            ],
+        )
+    )
+
+    # ---- 3b. 假说：他说过想试、但还没试过的做法（P7）---- #
+    #
+    # **刻意紧挨着 stage（同为 precedence=3）** —— 两者是同一句话的两种形态：
+    # 「想试但还没定」在这个会话里是 stage 条目，在全局认知里是假说。
+    # 把它们放在一起，模型看到的就是一处对照：
+    #   stage：本次想试的      → 可以现在就安排
+    #   假说：以前说过想试的    → 只能提议，不能当依据
+    # 而"假说"这一节存在的原因，正是用户那句「我想试试之前的猜想」——
+    # 假说如果只躺在 `/api/hypotheses` 里，模型永远想不起它。
+    hypotheses_all = global_reads.list_hypotheses(db)
+    matched_hypotheses = [item for item in hypotheses_all if _matches(item)]
+    not_matched_hypotheses = [item for item in hypotheses_all if not _matches(item)]
+    kept_hypotheses = matched_hypotheses[:MAX_HYPOTHESES]
+    over_cap_hypotheses = matched_hypotheses[MAX_HYPOTHESES:]
+    sections.append(
+        SectionReport(
+            name="假说（想试但还没验证的做法）",
+            precedence=3,
+            item_count=len(kept_hypotheses),
+            dropped_count=len(not_matched_hypotheses) + len(over_cap_hypotheses),
+            dropped_examples=[
+                f"{item.hypothesis_id}（与本步骤的策略/任务类型不匹配）"
+                for item in not_matched_hypotheses[:MAX_EXCLUSION_EXAMPLES]
+            ]
+            + [
+                f"{item.hypothesis_id}（超出 {MAX_HYPOTHESES} 条上限）"
+                for item in over_cap_hypotheses[:MAX_EXCLUSION_EXAMPLES]
             ],
         )
     )
@@ -435,16 +524,7 @@ def assemble_discussion_context(
         )
     )
 
-    strategies, not_chosen = _strategies_for_step(db, step)
     evidence_all = global_reads.list_active_evidence(db)
-    keywords = [row.name for row in strategies]
-    if session_row.title:
-        keywords.append(session_row.title)
-
-    def _matches(item) -> bool:
-        haystack = f"{item.condition}\n{item.effect}\n{item.statement}"
-        return any(keyword and keyword in haystack for keyword in keywords)
-
     matched = [item for item in evidence_all if _matches(item)]
     unmatched = [item for item in evidence_all if not _matches(item)]
     kept = matched[:MAX_EVIDENCE]
@@ -549,6 +629,17 @@ def assemble_discussion_context(
             )
             for item in kept
         ],
+        hypotheses=[
+            HypothesisItem(
+                hypothesis_id=item.hypothesis_id,
+                statement=item.statement,
+                condition=item.condition,
+                effect=item.effect,
+                verified=False,
+                source_session_id=item.source_session_id,
+            )
+            for item in kept_hypotheses
+        ],
         strategies=[
             StrategyItem(
                 strategy_id=row.strategy_id,
@@ -573,7 +664,7 @@ def assemble_discussion_context(
             "0. 会话资料（用户上传的文件清单；正文按需用 read_attachment 取）",
             "1. 用户偏好（硬约束优先于软偏好；硬约束永不截断）",
             "2. 检查点（本步骤的验收标准；另外任何判过 fail 的也进 —— 那是改计划的证据）",
-            "3. stage（本次想试、还没定归宿的）",
+            "3. stage（本次想试、还没定归宿的）与假说（他以前说过想试、还没验证的做法）",
             "4. M1 基线（按通道，不合成）与 C 证据（条件能对上才进）",
             "5. M2 策略库（这一步相关的）",
         ],

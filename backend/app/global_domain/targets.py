@@ -33,9 +33,37 @@ M1_TARGET_PREFIX = "M1."
 M2_TARGET_ROOT = "M2.preferences"
 #: C 证据的单一 target 根。
 C_TARGET_ROOT = "C.evidence"
+#: 假说的单一 target 根（P7，语义拆分）。
+#:
+#: ★ 它**刻意留在 C 命名空间里**，而不是单开第五个字母。原因是假说与证据
+#: 是同一个家族的两种状态：「当 X 时做 Y」这条具体做法，他试过了就是证据，
+#: 只是说了就是假说。`classify_target` 因此对两者都返回 `C`
+#: （I2 只问"这是不是一个我们认识的全局地址"，不问"它有多可信"）。
+#:
+#: 而 `TargetClass` 把它们分成两类 —— **地址说家族，target 类说可信度**。
+#: 合成一个的话，判定表里就写不出「`stated` 只能进假说、`experienced` 只能进证据」
+#: 这条规则，而那正是这一轮要补的语义。
+C_HYPOTHESIS_ROOT = "C.hypothesis"
+#: 领域勾选清单的单一 target 根（用户裁定 岔路 A = 乙）。
+#:
+#: ★ 它是**第四个**全局命名空间，而这不是顺手加的：领域清单是全局状态，
+#: 它会被每次抽题读到，因此"它什么时候被谁改成什么样"必须可追溯 ——
+#: 而追溯的落点就是 RouterLog 的 target。I2 要求"已应用的日志必须指向
+#: 一个真实存在的全局地址"，于是问题被逼了出来：这份清单的地址是什么？
+#: 答案不能是 `M2.preferences`（那是偏好）也不能是 `M1.*`（那是变量读数）。
+#:
+#: 与 M2/C 同为**集合根**而不是逐项地址：清单是一个整体（一次提交就是
+#: 一次完整的勾选），不存在"改清单里的第 3 项"这种操作。
+D_TARGET_ROOT = "D.checklist"
 
-#: 三个全局命名空间的根，按长度降序（匹配时先长后短，避免前缀互相吃掉）。
-TARGET_ROOTS: tuple[str, ...] = (M2_TARGET_ROOT, C_TARGET_ROOT, M1_TARGET_PREFIX)
+#: 全局命名空间的根，按长度降序（匹配时先长后短，避免前缀互相吃掉）。
+TARGET_ROOTS: tuple[str, ...] = (
+    C_HYPOTHESIS_ROOT,
+    M2_TARGET_ROOT,
+    C_TARGET_ROOT,
+    D_TARGET_ROOT,
+    M1_TARGET_PREFIX,
+)
 
 
 class TargetNamespace(StrEnum):
@@ -44,6 +72,8 @@ class TargetNamespace(StrEnum):
     M1 = "m1"
     M2 = "m2"
     C = "c"
+    #: 领域勾选清单。
+    D = "d"
     #: 不属于任何已注册命名空间 —— 调用方必须拒绝。
     UNKNOWN = "unknown"
 
@@ -69,8 +99,14 @@ def classify_target(target: str) -> TargetNamespace:
     """
     if target == M2_TARGET_ROOT or target.startswith(M2_TARGET_ROOT + "."):
         return TargetNamespace.M2
+    # ★ 假说与证据同属 C 家族（见 `C_HYPOTHESIS_ROOT` 的说明）。
+    # 顺序无所谓（两个根没有前缀包含关系），但都必须在 M1 之前判完。
     if target == C_TARGET_ROOT or target.startswith(C_TARGET_ROOT + "."):
         return TargetNamespace.C
+    if target == C_HYPOTHESIS_ROOT or target.startswith(C_HYPOTHESIS_ROOT + "."):
+        return TargetNamespace.C
+    if target == D_TARGET_ROOT or target.startswith(D_TARGET_ROOT + "."):
+        return TargetNamespace.D
     if target.startswith(M1_TARGET_PREFIX) and len(target) > len(M1_TARGET_PREFIX):
         return TargetNamespace.M1
     return TargetNamespace.UNKNOWN

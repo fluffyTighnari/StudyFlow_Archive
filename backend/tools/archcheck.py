@@ -142,6 +142,16 @@ RULES: tuple[Rule, ...] = (
         "ARCH-01（非路由层不得引用 global_domain.writes）与 ARCH-03（令牌签发入口唯一）——"
         "读得到契约、拿不到令牌，仍然写不进任何东西。",
     ),
+    Rule(
+        "ARCH-13",
+        r"^app\.external(?:\.|$)",
+        r"^app\.(?:agent|api|router|session_domain|benchmark|global_domain)(?:\.|$)",
+        "外挂能力层（P14）只提供**能力**，不提供**用法**："
+        "「MCP 是什么」不该知道「我们的工具表长什么样」。"
+        "接成 ToolSpec 那一步在 `app/agent/external.py`，方向是 agent → external。"
+        "反过来 import 会成环，更要紧的是会让「一个第三方服务器能碰到什么」"
+        "变成一件要跨模块读才能回答的事 —— 而那一层存在的全部意义就是把这个问题回答清楚。",
+    ),
 )
 
 

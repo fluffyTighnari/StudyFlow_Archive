@@ -12,8 +12,15 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from app.db import default_database_url
+
+#: 仓库根目录。**用文件位置推，不用 cwd** ——
+#: 服务可能从仓库根启动，也可能从 `backend/` 启动，而
+#: "题库在哪"不该取决于这件事（`../items` 在两种启动方式下指向不同地方，
+#: 而症状是"题库突然空了"，不是一句报错）。
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -97,6 +104,36 @@ class Settings:
     #: Agent 循环的步数上限（缺口 C6：循环必须有预算，否则一次跑飞要人工杀进程）。
     agent_max_steps: int = 8
 
+    #: 题库目录（Benchmark v0.3 §6.1）。
+    #:
+    #: ★ **为什么它进 Settings 而不是写死在抽题代码里**：
+    #: 题池是**外部信息·渐进补**的一部分 —— 它会从 7 道长到几百道，
+    #: 而"现在只有 7 道"与"抽题机制坏了"必须能分开。
+    #: 目录可换之后，验证抽题机制可以用一份**完整的小题库**，
+    #: 而不必等真的题池写完 —— 否则"抽题做完了没有"就永远只能靠人转述。
+    items_dir: str = field(default_factory=lambda: str(REPO_ROOT / "items"))
+    materials_dir: str = field(default_factory=lambda: str(REPO_ROOT / "materials"))
+
+    # ------------------------------------------------------------------ #
+    # 外挂能力（MCP / 联网搜索）。**默认全关。**
+    #
+    # 与 `llm_provider` 默认 `ollama` 同源的理由：默认值不该让一个新克隆的
+    # 仓库**悄悄联网**出去，也不该去起一个别人没让他起的子进程。
+    # 打开它们必须是一件由人显式做的事（`MOUXUE_WEB_SEARCH_PROVIDER` 等）。
+    # ------------------------------------------------------------------ #
+    #: `off` | `local` | `http`。`off` 时模型**看不到** `web_search` 这个工具。
+    web_search_provider: str = "off"
+    #: `local` 用的语料库（离线、确定性；端到端与测试用它）。
+    web_search_corpus: str = ""
+    #: `http` 用的端点：`POST {query, limit}` → `{results: [{title, url, snippet}]}`。
+    web_search_endpoint: str = ""
+    web_search_api_key: str = ""
+    #: MCP 服务器。JSON 数组 `[{"name","command","cwd?"}]`，
+    #: 或一行一条的 `名字=命令行`（手写配置时更省事）。空 = 不接任何服务器。
+    mcp_servers: str = ""
+    #: 单次 MCP 调用的超时（秒）。
+    mcp_timeout: float = 20.0
+
     @classmethod
     def from_env(cls) -> Settings:
         # **先读 `.env`，再读环境变量** —— 且环境变量优先（`load_env` 保证）。
@@ -135,4 +172,24 @@ class Settings:
             agent_max_steps=int(
                 os.environ.get("MOUXUE_AGENT_MAX_STEPS", cls.agent_max_steps)
             ),
+            items_dir=os.environ.get(
+                "MOUXUE_ITEMS_DIR", str(REPO_ROOT / "items")
+            ),
+            materials_dir=os.environ.get(
+                "MOUXUE_MATERIALS_DIR", str(REPO_ROOT / "materials")
+            ),
+            web_search_provider=os.environ.get(
+                "MOUXUE_WEB_SEARCH_PROVIDER", cls.web_search_provider
+            ),
+            web_search_corpus=os.environ.get(
+                "MOUXUE_WEB_SEARCH_CORPUS", cls.web_search_corpus
+            ),
+            web_search_endpoint=os.environ.get(
+                "MOUXUE_WEB_SEARCH_ENDPOINT", cls.web_search_endpoint
+            ),
+            web_search_api_key=os.environ.get(
+                "MOUXUE_WEB_SEARCH_API_KEY", cls.web_search_api_key
+            ),
+            mcp_servers=os.environ.get("MOUXUE_MCP_SERVERS", cls.mcp_servers),
+            mcp_timeout=float(os.environ.get("MOUXUE_MCP_TIMEOUT", cls.mcp_timeout)),
         )

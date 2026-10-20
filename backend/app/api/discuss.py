@@ -52,6 +52,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterable, Iterator
+from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -59,7 +60,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
+from app.agent.context import build_memory, build_meter, record_usage
 from app.agent.events import AgentEvent, EventType
+from app.agent.external import ExternalToolbox
 from app.agent.llm import ChatMessage, LLMClient
 from app.agent.llm_factory import make_client_from_profile
 from app.agent.loop import AgentLoop, StopReason
@@ -67,16 +70,22 @@ from app.agent.tools import GESTURE_PLAN_CHANGE
 from app.api.deps import get_session
 from app.db import session_scope
 from app.session_domain import reads, writes
-from app.session_domain.enums import ChatRole
+from app.session_domain.enums import ChatRole, ContextScope
 
 router = APIRouter(prefix="/api/sessions", tags=["discuss"])
 
-#: 翻几轮上下的原话。
+#: ★ **已废弃**：历史不再是"最近 N 条原话"。
 #:
-#: **不是越多越好**：这是一个"讨论当前这一步"的界面，不是长对话。
-#: 六条足够让「对，就按刚才说的改」这类指代落地，而再多会把
-#: 真正重要的上下文（约束、stage、基线）挤到后面去。
-HISTORY_LIMIT = 6
+#: P6+.6 之前这里是 `HISTORY_LIMIT = 6`，取最近 6 条。它的坏处不是记得少，
+#: 而是**记忆的形状是错的**：第 7 轮之前说过的约束、约定一律消失，
+#: 而消失是**静默**的 —— 模型不会说"我不记得了"，它会基于残缺的上下文
+#: 给出一个看起来正常的回答。用户看到的现象是"聊着聊着它开始胡说"，
+#: 而原因（六条窗口）在界面上没有任何痕迹。
+#:
+#: 现在由 `agent.context.build_memory` 装配：能放多少放多少，
+#: 放不下的压成摘要，并把用量摊开给用户看。
+#: 这个常量留着是为了让"它曾经是 6"这件事可查 —— 与 `_history` 同理。
+HISTORY_LIMIT_DEPRECATED = 6
 
 
 class _Request(BaseModel):
@@ -133,6 +142,14 @@ class DiscussResponse(_Request):
     `stop_reason` 是**必须出现**的字段，不是诊断信息：
     「它说完了」与「它用完步数了」是两件对用户含义完全不同的事，
     界面要据此显示不同的话，而不能都渲染成一段正常回复。
+
+    `thinking` 与 `context` 是 P6+.6 新增的，两者都是**用户明确要求的东西**：
+
+    - `thinking`：完整思考过程。此前它只存在于流式帧里，刷新就没了。
+    - `context`：token 用量与当前上下文状态（`ContextMeter.as_dict()`）。
+      **每次响应都带** —— 用户要的是"时刻显示"，而不是"点一下才查"。
+      做成一个独立端点会让界面必须额外发一次请求，于是它迟早会不同步；
+      放在这里，它天然与这次回复是同一时刻的读数。
     """
 
     reply: str
@@ -141,6 +158,15 @@ class DiscussResponse(_Request):
     #: 这次讨论里系统实际执行过的工具调用 —— 用户明确要求能看到它做了什么。
     tool_trace: list[TraceItem] = Field(default_factory=list)
     llm_meta: dict[str, Any] = Field(default_factory=dict)
+    #: 模型的完整思考过程（可能为空 —— 不思考的模型就是没有）。
+    thinking: str = ""
+    #: 这次讨论**之后**的上下文状态。见 `agent.context.ContextMeter`。
+    context: dict[str, Any] = Field(default_factory=dict)
+    #: 这一次讨论触发了一次上下文压缩 → 这是那条压缩记录的 id。
+    compacted: str | None = None
+    #: 压缩失败的原因。**不吞掉**：失败会让上下文继续膨胀，
+    #: 而下一次就撞上真正的装不下。
+    compact_error: str | None = None
 
 
 def get_llm_client(request: Request) -> LLMClient:
@@ -195,6 +221,16 @@ def get_agent_max_steps(request: Request) -> int:
     return int(getattr(request.app.state, "agent_max_steps", 8))
 
 
+def get_external_toolbox(request: Request) -> ExternalToolbox | None:
+    """外挂能力（联网搜索 / MCP）。**默认 `None`** —— 没配就没有。
+
+    与 `get_agent_max_steps` 同类：端点在**构造循环时**读它一次。
+    工具箱在进程启动时组装好、活到进程结束（它持有子进程），
+    所以这里不重建、也不在这里关 —— 那是 `lifespan` 的事。
+    """
+    return getattr(request.app.state, "external", None)
+
+
 @router.post("/{session_id}/discuss", response_model=DiscussResponse)
 def discuss(
     session_id: str,
@@ -202,12 +238,22 @@ def discuss(
     session: Session = Depends(get_session),
     client: LLMClient = Depends(get_llm_client),
     max_steps: int = Depends(get_agent_max_steps),
+    external: ExternalToolbox | None = Depends(get_external_toolbox),
 ) -> DiscussResponse:
     # 会话不存在 → 404；没有计划 → 404 `not_found`（`require_plan` 抛的）。
     # **在任何 LLM 调用之前**先把它查出来：让一次注定失败的请求不花掉模型的时间。
     reads.get_session(session, session_id)
 
-    history = _history(session, session_id)
+    # ★ 记忆：必要时先压缩，再取要带进上下文的那些消息。
+    # 顺序是"先压后取"，理由见 `agent.context.build_memory` ——
+    # 反过来的话，这次调用仍然带着即将被压掉的原话，注定还是超线。
+    memory = build_memory(
+        session,
+        ContextScope.SESSION,
+        session_id,
+        client=client,
+        limit=getattr(client, "num_ctx", 0) or 0,
+    )
 
     # **先写用户那句话**，再跑循环。
     #
@@ -233,8 +279,9 @@ def discuss(
         client,
         max_steps=max_steps,
         user_gestures=frozenset(gestures),
+        external=external,
     )
-    result = loop.run(body.message, step_id=body.step_id, history=history)
+    result = loop.run(body.message, step_id=body.step_id, history=memory.history)
 
     # 循环保证 `reply` 非空（空回复归到 `llm_error`）。这里不再加一层兜底：
     # 一个"理论上到不了"的分支写在这里，会让人以为它是可达的，
@@ -248,6 +295,22 @@ def discuss(
         # 而不必为此加一个字段或一张表。
         tags=[f"stop:{result.stop_reason.value}"],
         tool_trace=[entry.as_dict() for entry in result.traces] or None,
+        thinking=result.thinking or None,
+        prompt_tokens=result.llm_meta.get("prompt_eval_count"),
+        completion_tokens=result.llm_meta.get("eval_count"),
+        cache_hit_tokens=result.llm_meta.get("cache_hit_tokens"),
+        cache_miss_tokens=result.llm_meta.get("cache_miss_tokens"),
+        # ★ 锚点落库（P15）：事后"看推断理由"要能重放**当时**的上下文节。
+        # 它从循环上取（`_open_context` 里写的），不在这里重算一遍 ——
+        # 算两遍意味着两处可能给出不同的答案，而其中一个会进留档。
+        anchor_step_id=loop.last_anchor or None,
+    )
+
+    # ★ 用量回填：把这次**实测**的 prompt token 数落到刚写的那条助手消息上。
+    # 下一轮就靠它判断"该不该压缩" —— 这是整个记忆机制唯一的读数来源。
+    record_usage(session, ContextScope.SESSION, session_id, meta=result.llm_meta)
+    after = build_meter(
+        session, ContextScope.SESSION, session_id, limit=getattr(client, "num_ctx", 0) or 0
     )
 
     return DiscussResponse(
@@ -256,22 +319,24 @@ def discuss(
         steps=result.steps,
         tool_trace=[TraceItem(**entry.as_dict()) for entry in result.traces],
         llm_meta=result.llm_meta,
+        thinking=result.thinking,
+        context=after.as_dict(),
+        compacted=memory.new_compact_id,
+        compact_error=memory.compact_error,
     )
 
 
 def _history(session: Session, session_id: str) -> list[ChatMessage]:
-    """翻出最近几轮的原话，**在写入新消息之前**调用。
+    """**已废弃**：历史现在由 `agent.context.build_memory` 装配。
 
-    这正是 `AgentLoop.run` 让调用方传 `history` 的原因：循环无法自己判断
-    "查到的最后一条是不是我刚收到的那条"，而猜错的表现是模型看见自己
-    刚说的话被重复两遍，然后开始复读。
+    留着这个函数是因为流式端点仍有一个调用点；它返回的是
+    "没被压掉的原文 + 摘要头"，也就是 `build_memory` 的结果。
+    刻意不再自己截最近 N 条 —— 那个硬截断正是 P6+.6 要修的东西。
     """
-    rows = reads.list_chat_messages(session, session_id)[-HISTORY_LIMIT:]
-    return [
-        ChatMessage(role=row.role.value, content=row.content)
-        for row in rows
-        if row.content.strip()
-    ]
+    raise NotImplementedError(
+        "历史装配统一走 agent.context.build_memory —— "
+        "不要在这里重新引入'取最近 N 条'的截断。"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -393,7 +458,7 @@ def stream_events(
     #: 告诉用户"为什么没有回答"的信息。
     last_seq = 0
 
-    def _persist(reply: str, stop: str, traces: list[dict[str, Any]]) -> None:
+    def _persist(reply: str, stop: str, traces: list[dict[str, Any]], meta: dict[str, Any]) -> None:
         nonlocal written
         if written:
             return
@@ -405,7 +470,18 @@ def stream_events(
             role=ChatRole.ASSISTANT,
             tags=[f"stop:{stop}"],
             tool_trace=traces or None,
+            # thinking 与用量**在每一条留档路径上都要写**，包括断线与异常 ——
+            # 那两条路恰恰是最需要解释"它当时在想什么"的。
+            thinking=loop.thinking or None,
+            prompt_tokens=meta.get("prompt_eval_count"),
+            completion_tokens=meta.get("eval_count"),
+            cache_hit_tokens=meta.get("cache_hit_tokens"),
+            cache_miss_tokens=meta.get("cache_miss_tokens"),
+            # 锚点在这条路上**同样要写**（P15）：断线/异常那两条留档路径
+            # 恰恰最需要回答"它当时站在哪一步上说话"。
+            anchor_step_id=loop.last_anchor or None,
         )
+        record_usage(session, ContextScope.SESSION, session_id, meta=meta)
 
     try:
         events = loop.run_stream(message, step_id=step_id, history=history)
@@ -413,10 +489,33 @@ def stream_events(
             for event in events:
                 last_seq = event.seq
                 if event.type is EventType.DONE:
+                    meta = dict(event.data.get("llm_meta") or {})
                     _persist(
                         str(event.data["reply"]),
                         str(event.data["stop_reason"]),
                         list(event.data["tool_trace"]),
+                        meta,
+                    )
+                    # ★ 把上下文用量**加进收官帧**。用户要的是"时刻显示"，
+                    # 而流式路径下这是唯一一个"这次讨论结束了"的时刻 ——
+                    # 让他为了看用量再发一次请求，界面就必然有一段时间
+                    # 显示的是上一轮的读数（而它看起来是对的）。
+                    #
+                    # 不新开一帧：`done` 是这条流的终态，在它之后再发东西
+                    # 会让"seq 严格递增"与"done 即结束"这两条契约互相矛盾。
+                    meter = build_meter(
+                        session,
+                        ContextScope.SESSION,
+                        session_id,
+                        limit=getattr(loop.client, "num_ctx", 0) or 0,
+                    )
+                    event = replace(
+                        event,
+                        data={
+                            **event.data,
+                            "context": meter.as_dict(),
+                            "thinking": loop.thinking,
+                        },
                     )
                 yield event.to_sse()
         finally:
@@ -433,6 +532,10 @@ def stream_events(
             DISCONNECTED_NOTE,
             StopReason.CLIENT_DISCONNECTED.value,
             [entry.as_dict() for entry in loop.dispatcher.traces],
+            # 断线时拿不到 `llm_meta`（循环还没收官），所以用量为空 ——
+            # 那是对的：这一次调用的读数确实没拿到，
+            # 而"没拿到"与"用量是 0"是相反的两件事。
+            {},
         )
         raise
     except Exception as exc:  # noqa: BLE001 - 见下面的说明
@@ -454,6 +557,7 @@ def stream_events(
             f"（这次讨论中断了，没有得出结论。原因：{kind}: {exc}）",
             StopReason.INTERNAL_ERROR.value,
             [entry.as_dict() for entry in loop.dispatcher.traces],
+            {},
         )
         yield AgentEvent(
             type=EventType.ERROR,
@@ -474,6 +578,7 @@ def discuss_stream(
     session: Session = Depends(get_session),
     client: LLMClient = Depends(get_llm_client),
     max_steps: int = Depends(get_agent_max_steps),
+    external: ExternalToolbox | None = Depends(get_external_toolbox),
 ) -> StreamingResponse:
     """与 `/discuss` 同一次讨论，但**过程也发出来**。
 
@@ -500,7 +605,13 @@ def discuss_stream(
     """
     reads.get_session(session, session_id)
 
-    history = _history(session, session_id)
+    memory = build_memory(
+        session,
+        ContextScope.SESSION,
+        session_id,
+        client=client,
+        limit=getattr(client, "num_ctx", 0) or 0,
+    )
     # 与 `/discuss` 完全同一个顺序与理由：先写用户那句话（它不该因为
     # 模型或写入的失败而消失），并且让状态机在花掉一次模型调用之前就拒绝。
     writes.add_chat_message(session, session_id, content=body.message, role=ChatRole.USER)
@@ -515,6 +626,7 @@ def discuss_stream(
         client,
         max_steps=max_steps,
         user_gestures=frozenset(gestures),
+        external=external,
     )
     # 预检：锚点定不下来（没有计划 / 计划里没有步骤）就不要开始流。
     loop.resolve_anchor(body.step_id)
@@ -524,7 +636,7 @@ def discuss_stream(
         loop,
         message=body.message,
         step_id=body.step_id,
-        history=history,
+        history=memory.history,
     )
     return EventStreamResponse(
         frames,

@@ -12,21 +12,28 @@ ARCH-08 禁止本层 import `app.global_domain.models`，ARCH-01 禁止它 impor
 判据不是路径名而是 `response_class` 是 `StreamingResponse` 的子类，
 且流式端点的名单在测试里是**显式列出**的。
 
-## 端点清单（46 条路径 / 57 个「方法+路径」对，按模块分组）
+## 端点清单（74 条路径 / 94 个「方法+路径」对，按模块分组）
 
 | 模块 | 端点 |
 |---|---|
 | 全局·基线 | `GET /api/m1/variables`（逐通道覆盖，无「变量总分」）· `/{id}/history` · `/{id}/observations` · `/{id}/benchmark-advisory`（§5.4，**响应里没有阻断字段**）· `POST /{id}/rollback`（R5：生成新版本，不删历史） |
 | 全局·偏好与证据 | `GET/POST /api/preferences`（R1 直写偏好，同样经 Router）· `GET/POST /api/evidence`（C 条目，`condition` 必填） |
+| 全局·假说 | `GET/POST /api/hypotheses` · `PUT /{id}` · `DELETE /{id}` · `POST /{id}/restore`（P7 语义拆分：**想试 / 试过** 是两种东西） |
 | 全局·提案 | `POST /api/proposals`（提交意图）· `GET /api/proposals` · `GET /{id}`（含逐条 intent 的系统判定）· `POST /{id}/resolve`（逐条裁决） |
 | 全局·审计 | `GET /api/router-logs`（统一审计日志，**只读，没有写接口**） |
+| 基准 | `GET/POST /api/benchmark/domains`（两次勾选）· `GET /domains/history` · `GET /plan` · `GET/POST /runs` · `GET /runs/{id}` · `POST /runs/{id}/status`（中断 / 继续 / 重开）· `POST /runs/{id}/responses` · `POST /runs/{id}/score` · `POST /runs/{id}/finish` · `POST /runs/{id}/restart` · `GET /api/benchmark/state` |
+| 外挂能力 | `GET /api/external/tools`（P14：**只读** · 名字带前缀 · 缺失时说明原因。**没有写接口**，外挂工具永远进不了认知四表） |
 | 沙箱·文件夹与会话 | `GET/POST /api/folders` · `GET/POST /api/sessions` · `GET /{id}/state`（侧页唯一数据入口）· `POST /{id}/transitions` |
 | 沙箱·定义区 | `PATCH /{id}/input` · `GET /{id}/input/revisions` · `PATCH /{id}/motivation` · `GET /{id}/motivation/revisions` · `PATCH /{id}/snapshot` |
 | 沙箱·计划 | `POST /{id}/plan` · `GET /{id}/plan` · `PUT /{id}/plan`（改版本）· `GET /{id}/plan/revisions` · `PATCH .../steps/{step_id}` · `PATCH .../checkpoints/{cp_id}` · `GET .../steps/{step_id}/context`（讨论上下文包） |
 | 沙箱·过程记录 | `POST /{id}/stage` · `PATCH /{id}/stage/{item_id}` · `POST /{id}/chat` · `POST /{id}/notes` · `POST /{id}/milestones` · `POST /{id}/milestones/{mid}/complete` · `POST /{id}/summary` |
+| 沙箱·反问 | `GET/POST /{id}/clarifications` · `POST /{id}/clarifications/{cid}/answer` · `POST /{id}/clarifications/{cid}/dismiss`（P13：问题**有后果** —— 未答未搁置时挡住助手的计划写入） |
+| 沙箱·标注 | `POST/GET /{id}/annotations` · `GET/DELETE /{id}/annotations/{aid}`（P15：标注助手回复里的**某一句**看推断理由。依据是那条消息落库时的真实轨迹，**不调模型、不写库**） |
+| 沙箱·感想 | `GET /{id}/reflection`（**指引**：四要素 + 这次会话的真实数据）· `POST/GET /{id}/reflections`（写下的那些。P15：★ 单复数刻意不合并 —— 合并会得到一个「GET 有时返回指引、有时返回列表」的端点） |
 | 沙箱·讨论 | `POST /{id}/discuss`（一次性）· `POST /{id}/discuss/stream`（**SSE**） |
 | 沙箱·资料 | `POST /{id}/attachments`（**请求体就是文件字节**，文件名走查询参数）· `GET /{id}/attachments`（清单，**不含正文**）· `GET /{id}/attachments/{aid}`（分段读正文）· `DELETE /{id}/attachments/{aid}`（连同磁盘原件） |
 | 沙箱·沉淀（已声明的交接口） | `POST /{id}/sediment`（`dry_run=true` 必须逐条列示将要写什么）· `POST /{id}/complete` |
+| 侧边栏（**常驻，无会话能力**） | `GET /api/sidebar/state` · `GET /api/sidebar/context` · `POST /api/sidebar/discuss` · `DELETE /api/sidebar/messages`（工具只有 `READ` + `GLOBAL` 作用域，**一个会话工具都没有**） |
 | 基础设施 | `GET /api/llm/providers` · `/config` · `/profiles`（增删改查 / `activate` / `models` / `probe`）—— **第三类域**：不经 Router、不碰认知四表 |
 | 元 | `GET /api/health` |
 

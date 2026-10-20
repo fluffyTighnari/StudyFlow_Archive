@@ -31,6 +31,7 @@ from app.global_domain.enums import (
     AdvisoryLevel,
     EvidenceChannel,
     IntentStatus,
+    NON_INTENT_TRIGGERS,
     RouterLogStatus,
     TriggerType,
 )
@@ -285,9 +286,9 @@ def test_criterion_3_inferred_parameter_update_is_always_rejected(
     触发源直接遍历整个 `TriggerType`，因此**将来新增的触发源自动纳入覆盖** ——
     红线 3 若在新触发源上漏掉，这里会红，而不需要有人记得回来加参数。
 
-    R5（回滚）不产出 intent，会走到 `precheck.evaluate` 的显式 `ValueError`；
-    那同样是「没写进去」，与红线 3 的结论一致，但不该被算作红线 3 拦下的，
-    故单独断言。
+    R5（回滚）与 R6（领域勾选清单）都**不产出 intent**，会走到 `precheck.evaluate`
+    的显式 `ValueError`；那同样是「没写进去」，与红线 3 的结论一致，
+    但不该被算作红线 3 拦下的，故单独断言。
     """
     try:
         result = router.submit(
@@ -305,7 +306,7 @@ def test_criterion_3_inferred_parameter_update_is_always_rejected(
             )
         )
     except ValueError as exc:
-        assert trigger is TriggerType.R5, exc
+        assert trigger in NON_INTENT_TRIGGERS, exc
     else:
         assert result.results[0].status is IntentStatus.REJECTED, result.results[0].reason
         if trigger is TriggerType.R1:

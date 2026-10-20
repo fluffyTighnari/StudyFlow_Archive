@@ -35,14 +35,27 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.api.envelope import ItemsResponse, ok
 from app.api.deps import get_session
+from app.core.errors import InvalidField, NotFound
+from app.session_domain import basis as basis_module
+from app.session_domain import reflection as reflection_module
 from app.session_domain import reads, state, writes
 from app.session_domain.context import DiscussionContext, assemble_discussion_context
+from app.session_domain.enums import ChangedBy, ClarificationStatus
 from app.session_domain.schemas import (
+    AnnotationCreate,
+    AnnotationRead,
     ChatMessageCreate,
     ChatMessageRead,
     CheckpointRead,
     CheckpointRecord,
+    ClarificationAnswer,
+    ClarificationAnswerRead,
+    ClarificationAsk,
+    ClarificationDismiss,
+    DeletedAnnotationRead,
+    ClarificationRead,
     InputRead,
     InputRevisionRead,
     InputUpdate,
@@ -58,7 +71,11 @@ from app.session_domain.schemas import (
     PlanRead,
     PlanRevisionRead,
     PlanRevise,
+    ReflectionCreate,
+    ReflectionGuideRead,
+    ReflectionRead,
     SessionCreate,
+    SessionPatch,
     SessionRead,
     SnapshotRead,
     SnapshotUpdate,
@@ -80,15 +97,67 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 # --------------------------------------------------------------------------- #
 
 
-@router.get("", response_model=list[SessionRead])
+@router.get("", response_model=ItemsResponse[SessionRead])
 def list_sessions(
     folder_id: str | None = Query(default=None),
+    include_archived: bool = Query(
+        default=False,
+        description="是否把归档的会话也列出来。侧栏默认看不到它们（另有「已归档」区）。",
+    ),
     session: Session = Depends(get_session),
-) -> list[SessionRead]:
-    return [
-        state.build_session_read(session, row.session_id)
-        for row in reads.list_sessions(session, folder_id=folder_id)
-    ]
+) -> dict[str, list[SessionRead]]:
+    rows = reads.list_sessions(
+        session, folder_id=folder_id, include_archived=include_archived
+    )
+    # 一次把"最后一条聊天"读全，避免每条会话各查一次（N+1）。
+    last_chat = reads.last_chat_at_by_session(session)
+    return ok([
+        state.build_session_read(
+            session, row.session_id, last_chat_at=last_chat.get(row.session_id)
+        )
+        for row in rows
+    ])
+
+
+@router.patch("/{session_id}", response_model=SessionRead)
+def patch_session(
+    session_id: str, body: SessionPatch, session: Session = Depends(get_session)
+) -> SessionRead:
+    """侧栏整理：改名 / 归档 / 挪一位。
+
+    ★ 这里**改不了 `state`**。状态只能走 `/transitions` ——
+    那条路带理由、带审计、受 `WRITE_GUARDS` 约束。如果 PATCH 也能改状态，
+    那张边表（`guards.TRANSITIONS`）就形同虚设。
+    """
+    updates = body.model_dump(exclude_unset=True)
+    if not updates:
+        raise InvalidField(
+            "这个请求什么都没改（title / archived / move 至少要给一个）。",
+            detail={"field": None},
+        )
+    if "title" in updates:
+        writes.rename_session(
+            session, session_id, title=updates["title"] or ""
+        )
+    if "archived" in updates:
+        writes.archive_session(
+            session, session_id, archived=bool(updates["archived"])
+        )
+    if updates.get("move"):
+        writes.move_session(session, session_id, direction=updates["move"])
+    return state.build_session_read(session, session_id)
+
+
+@router.delete("/{session_id}", response_model=dict[str, int])
+def delete_session(
+    session_id: str, session: Session = Depends(get_session)
+) -> dict[str, int]:
+    """删除一条会话，连同它的对话 / 计划 / 批注 / 资料。
+
+    返回 `{"deleted_sessions": 1, "deleted_chat_messages": n}` ——
+    界面用这个数字确认"删掉的是哪一条、里面有多少对话"。
+    """
+    return writes.delete_session(session, session_id)
 
 
 @router.post("", response_model=SessionRead, status_code=201)
@@ -137,6 +206,104 @@ def transition(
 
 
 # --------------------------------------------------------------------------- #
+# 澄清问题：任务不明确时反问（P13）
+# --------------------------------------------------------------------------- #
+
+
+@router.get(
+    "/{session_id}/clarifications",
+    response_model=ItemsResponse[ClarificationRead],
+)
+def list_clarifications(
+    session_id: str,
+    status: str | None = None,
+    session: Session = Depends(get_session),
+) -> dict[str, list[ClarificationRead]]:
+    """这个会话问过的、关于任务本身的问题。**未答的排在最前**。
+
+    ★ 为什么要有这个读端点：那个问题**挡着计划修改**。
+    如果界面上看不见它，"计划改不了"就变成了一个没有原因的现象 ——
+    而用户会以为是坏了，而不是"它在等我说一句话"。
+    """
+    rows = reads.list_clarifications(
+        session, session_id, only_open=(status == ClarificationStatus.OPEN.value)
+    )
+    return {"items": [ClarificationRead.model_validate(row) for row in rows]}
+
+
+@router.post(
+    "/{session_id}/clarifications",
+    response_model=ClarificationRead,
+    status_code=201,
+)
+def ask_about_task(
+    session_id: str,
+    body: ClarificationAsk,
+    session: Session = Depends(get_session),
+) -> ClarificationRead:
+    """记下一个关于任务的问题。
+
+    两个刻意的拒绝（都在 `writes.ask_about_task` 里）：
+    槽位已经有内容、或同一个槽位已经有一个没答的问题。
+    """
+    row = writes.ask_about_task(
+        session,
+        session_id,
+        slot=body.slot,
+        question=body.question,
+        options=body.options,
+        asked_by=ChangedBy.AGENT,
+    )
+    return ClarificationRead.model_validate(row)
+
+
+@router.post(
+    "/{session_id}/clarifications/{clarification_id}/answer",
+    response_model=ClarificationAnswerRead,
+)
+def answer_clarification(
+    session_id: str,
+    clarification_id: str,
+    body: ClarificationAnswer,
+    session: Session = Depends(get_session),
+) -> ClarificationAnswerRead:
+    """回答 → **真的写进定义区**（带修订史），并让闸门放开。
+
+    ★ 返回的是「问题 + 更新后的定义区」两件东西：
+    只返回问题的话，前端还得再拉一次定义区才知道答案落到哪了，
+    而"答案到底写进去了没有"正是这套机制唯一会出错的地方。
+    """
+    item, input_row = writes.answer_clarification(
+        session,
+        session_id,
+        clarification_id,
+        answer=body.answer,
+        expected_version=body.expected_version,
+    )
+    return ClarificationAnswerRead(
+        clarification=ClarificationRead.model_validate(item),
+        input=InputRead.model_validate(input_row),
+    )
+
+
+@router.post(
+    "/{session_id}/clarifications/{clarification_id}/dismiss",
+    response_model=ClarificationRead,
+)
+def dismiss_clarification(
+    session_id: str,
+    clarification_id: str,
+    body: ClarificationDismiss,
+    session: Session = Depends(get_session),
+) -> ClarificationRead:
+    """「先不管」。计划可以继续改，但会带着「这是按助手判断排的」。"""
+    row = writes.dismiss_clarification(
+        session, session_id, clarification_id, reason=body.reason
+    )
+    return ClarificationRead.model_validate(row)
+
+
+# --------------------------------------------------------------------------- #
 # 任务定义区
 # --------------------------------------------------------------------------- #
 
@@ -161,15 +328,15 @@ def update_input(
     return InputRead.model_validate(row)
 
 
-@router.get("/{session_id}/input/revisions", response_model=list[InputRevisionRead])
+@router.get("/{session_id}/input/revisions", response_model=ItemsResponse[InputRevisionRead])
 def list_input_revisions(
     session_id: str, session: Session = Depends(get_session)
-) -> list[InputRevisionRead]:
+) -> dict[str, list[InputRevisionRead]]:
     """定义区改动史（append-only）。「我当初怎么说的 / 后来改成了什么」在这里。"""
-    return [
+    return ok([
         InputRevisionRead.model_validate(row)
         for row in reads.list_input_revisions(session, session_id)
-    ]
+    ])
 
 
 # --------------------------------------------------------------------------- #
@@ -199,15 +366,15 @@ def update_motivation(
 
 
 @router.get(
-    "/{session_id}/motivation/revisions", response_model=list[MotivationRevisionRead]
+    "/{session_id}/motivation/revisions", response_model=ItemsResponse[MotivationRevisionRead]
 )
 def list_motivation_revisions(
     session_id: str, session: Session = Depends(get_session)
-) -> list[MotivationRevisionRead]:
-    return [
+) -> dict[str, list[MotivationRevisionRead]]:
+    return ok([
         MotivationRevisionRead.model_validate(row)
         for row in reads.list_motivation_revisions(session, session_id)
-    ]
+    ])
 
 
 # --------------------------------------------------------------------------- #
@@ -328,16 +495,16 @@ def revise_plan(
 
 
 @router.get(
-    "/{session_id}/plan/revisions", response_model=list[PlanRevisionRead]
+    "/{session_id}/plan/revisions", response_model=ItemsResponse[PlanRevisionRead]
 )
 def list_plan_revisions(
     session_id: str, session: Session = Depends(get_session)
-) -> list[PlanRevisionRead]:
+) -> dict[str, list[PlanRevisionRead]]:
     plan = reads.require_plan(session, session_id)
-    return [
+    return ok([
         PlanRevisionRead.model_validate(row)
         for row in reads.list_plan_revisions(session, plan.plan_id)
-    ]
+    ])
 
 
 @router.patch("/{session_id}/plan/steps/{step_id}", response_model=StepRead)
@@ -476,6 +643,152 @@ def add_note(
     """写笔记。**唯一在终态仍可写的操作**（用户裁定）。"""
     row = writes.add_note(session, session_id, content=body.content, tags=body.tags)
     return NoteRead.model_validate(row)
+
+
+@router.post("/{session_id}/annotations", response_model=AnnotationRead, status_code=201)
+def annotate_message(
+    session_id: str,
+    body: AnnotationCreate,
+    session: Session = Depends(get_session),
+) -> AnnotationRead:
+    """标注助手说的某一句话，并**当场**拿回它的推断理由（P15）。
+
+    ★ 为什么理由与标注同一次返回：用户点「为什么这么说」时想要的是
+    **立刻**看到依据。分两步（先记标注、再查理由）会让界面出现
+    "标注成功了，理由是空的"这种中间态，而那个中间态最容易被读成
+    「它没有依据」。
+
+    ★ `basis` 是**现算**的、不落库。落下来就会过期 ——
+    会话状态一变，那份快照就从"当时的依据"变成"一份旧文档"，
+    而它看起来仍然像是当时的证据（见 `session_domain/basis.py` 的模块文档）。
+    """
+    row = writes.annotate_message(
+        session,
+        session_id,
+        msg_id=body.msg_id,
+        quote=body.quote,
+        question=body.question,
+    )
+    return _annotation_read(session, row)
+
+
+@router.get("/{session_id}/annotations", response_model=ItemsResponse[AnnotationRead])
+def list_annotations(
+    session_id: str,
+    session: Session = Depends(get_session),
+) -> ItemsResponse[AnnotationRead]:
+    """这个会话里的全部标注（含各自的依据）。"""
+    rows = reads.list_annotations(session, session_id)
+    return ItemsResponse[AnnotationRead](
+        items=[_annotation_read(session, row) for row in rows]
+    )
+
+
+@router.get(
+    "/{session_id}/annotations/{annotation_id}", response_model=AnnotationRead
+)
+def get_annotation(
+    session_id: str,
+    annotation_id: str,
+    session: Session = Depends(get_session),
+) -> AnnotationRead:
+    """重新算一次这条标注的依据（**重放**，所以可能与第一次看到的不同）。"""
+    row = reads.get_annotation(session, session_id, annotation_id)
+    if row is None:
+        raise NotFound(
+            "没有这条标注。",
+            detail={"session_id": session_id, "annotation_id": annotation_id},
+        )
+    return _annotation_read(session, row)
+
+
+@router.delete(
+    "/{session_id}/annotations/{annotation_id}",
+    response_model=DeletedAnnotationRead,
+)
+def delete_annotation(
+    session_id: str,
+    annotation_id: str,
+    session: Session = Depends(get_session),
+) -> DeletedAnnotationRead:
+    """删掉一条标注。**解释权在用户手里**：标错了、或不想追问了。
+
+    返回被删掉的那一条（连同它当时的依据）—— 界面据此确认"删的是哪一句"。
+    """
+    row = reads.get_annotation(session, session_id, annotation_id)
+    if row is None:
+        raise NotFound(
+            "没有这条标注。",
+            detail={"session_id": session_id, "annotation_id": annotation_id},
+        )
+    payload = _annotation_read(session, row)
+    writes.delete_annotation(session, session_id, annotation_id)
+    return DeletedAnnotationRead(deleted=payload)
+
+
+@router.get("/{session_id}/reflection", response_model=ReflectionGuideRead)
+def reflection_guide(
+    session_id: str,
+    session: Session = Depends(get_session),
+) -> ReflectionGuideRead:
+    """「写感想」的指引：四要素 + **这次会话里与每项相关的事实**（P15）。
+
+    ★ 指引由代码生成、不调模型：固定的四句话贴给任何会话都成立，
+    因此也帮不上任何忙。这里每一条 `facts` 都来自真实数据
+    （计划进度、你自己写的完成判据、过程记录、笔记）。
+
+    `blocked_reason` 非空时**照样 200** —— "现在还不该写"是一条答案，
+    不是一个错误；界面据此显示原因而不是一个禁用的按钮。
+    """
+    guide = reflection_module.build_guide(session, session_id)
+    return ReflectionGuideRead(**guide.as_dict())
+
+
+@router.post("/{session_id}/reflections", response_model=ReflectionRead, status_code=201)
+def write_reflection(
+    session_id: str,
+    body: ReflectionCreate,
+    session: Session = Depends(get_session),
+) -> ReflectionRead:
+    """写一条感想。两道门槛：状态（`review`/`completed`/`abandoned`）+ **已复盘过**。"""
+    row = writes.write_reflection(
+        session, session_id, answers=body.answers, content=body.content
+    )
+    return ReflectionRead.model_validate(row)
+
+
+@router.get("/{session_id}/reflections", response_model=ItemsResponse[ReflectionRead])
+def list_reflections(
+    session_id: str,
+    session: Session = Depends(get_session),
+) -> ItemsResponse[ReflectionRead]:
+    """这个会话里的全部感想（一次会话可以有几次回看）。"""
+    rows = reads.list_reflections(session, session_id)
+    return ItemsResponse[ReflectionRead](
+        items=[ReflectionRead.model_validate(row) for row in rows]
+    )
+
+
+def _annotation_read(session: Session, row: Any) -> AnnotationRead:
+    """标注 + 依据。依据要**读那条消息**（轨迹在消息上）。
+
+    ★ 显式构造 DTO，不走 `model_validate(row)`：`basis` 不是这一行的字段
+    （它是现算的），而"响应里的每一个字段都来自哪里"必须一眼看得出。
+    """
+    message = reads.get_chat_message(session, row.msg_id)
+    basis: dict[str, Any] = {}
+    if message is not None:
+        basis = basis_module.explain(
+            session, message, quote=row.quote, question=row.question or ""
+        ).as_dict()
+    return AnnotationRead(
+        annotation_id=row.annotation_id,
+        msg_id=row.msg_id,
+        quote=row.quote,
+        question=row.question,
+        created_at=row.created_at,
+        basis=basis,
+    )
 
 
 @router.post("/{session_id}/milestones", response_model=MilestoneRead, status_code=201)

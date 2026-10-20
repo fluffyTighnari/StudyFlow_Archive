@@ -37,6 +37,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session as DbSession
 
+from app.agent.external import ExternalToolbox
 from app.agent.llm import ToolCall
 from app.agent.tools import ToolContext, ToolResult, ToolScope, ToolStatus, get_tool
 from app.core.errors import (
@@ -104,7 +105,22 @@ class ToolTraceEntry:
 
 
 class Dispatcher:
-    """一次讨论（一个会话、一段用户手势）里的工具执行器。"""
+    """一次讨论（一个会话或侧边栏、一段用户手势）里的工具执行器。
+
+    ## ★ P6+.6：为什么加了 `scopes` 与 `in_sidebar`
+
+    侧边栏常驻模型**没有当前会话**，所以它不能用需要会话的工具。
+    挡住它们的机制有两层，而且是**故意的两层**：
+
+    1. **模型根本看不见**：`tool_schemas(SIDEBAR_TOOL_SCOPES)` 不发给它。
+       这是主要的防线 —— 一个从未出现在工具清单里的工具，模型几乎不会去调。
+    2. **调了也会被拒**：`self.scopes` 在这里再挡一次（见 `_execute`）。
+
+    只留第一层是不够的：模型会编工具名（`retrieve_session` 这种它见过的
+    名字尤其容易），而那时若放它进 handler，它会拿到一个哨兵 `session_id`
+    去查一个不存在的会话。**"看不见"是概率，"拒绝"是保证** ——
+    本项目反复出现的教训是：**只靠"它不会那么做"的防线，迟早会被走到。**
+    """
 
     def __init__(
         self,
@@ -112,16 +128,39 @@ class Dispatcher:
         session_id: str,
         *,
         user_gestures: frozenset[str] = frozenset(),
+        #: 允许的作用域。`None` = 全部（会话讨论用的就是它）。
+        scopes: frozenset[ToolScope] | None = None,
+        #: 这次执行发生在侧边栏里 —— 没有当前会话。
+        in_sidebar: bool = False,
+        #: 外挂工具（联网搜索 / MCP）。**默认没有**。
+        #: 它只在"内置表里找不到这个名字"时才被查到 ——
+        #: 内置工具的名字因此**不可能**被外挂工具顶掉（前缀是第二道保险）。
+        external: ExternalToolbox | None = None,
     ) -> None:
         self.db = db
         self.session_id = session_id
-        row = session_reads.get_session(db, session_id)
-        self._ctx = ToolContext(
-            db=db,
-            session_id=session_id,
-            folder_id=row.folder_id,
-            user_gestures=user_gestures,
-        )
+        self.scopes = frozenset(ToolScope) if scopes is None else scopes
+        self.in_sidebar = in_sidebar
+        self.external = external
+        if in_sidebar:
+            # 侧边栏：**不查会话**（它不存在），folder 也没有默认值。
+            # `folder_id=None` 会让 `retrieve_folder` 要求显式给一个 ——
+            # 那是对的：侧边栏不属于任何文件夹，"当前文件夹"在那里没有意义。
+            self._ctx = ToolContext(
+                db=db,
+                session_id=session_id,
+                folder_id=None,
+                user_gestures=user_gestures,
+                in_sidebar=True,
+            )
+        else:
+            row = session_reads.get_session(db, session_id)
+            self._ctx = ToolContext(
+                db=db,
+                session_id=session_id,
+                folder_id=row.folder_id,
+                user_gestures=user_gestures,
+            )
         #: 按调用顺序累积。调用方（循环 / API 层）负责把它写进 `chat_message.tool_trace`。
         self.traces: list[ToolTraceEntry] = []
 
@@ -148,17 +187,28 @@ class Dispatcher:
 
     def _scope_of(self, name: str) -> str:
         spec = get_tool(name)
+        if spec is None and self.external is not None:
+            spec = self.external.get(name)
         return spec.scope.value if spec is not None else "unknown"
 
     def _execute(self, call: ToolCall) -> ToolResult:
         spec = get_tool(call.name)
+        if spec is None and self.external is not None:
+            # ★ **内置表优先**：外挂工具只在内置表里找不到时才被查到。
+            # 这保证了一件事：插一个 MCP 服务器**不可能**改变任何内置工具的行为。
+            # （第二道保险是 `mcp__<server>__<tool>` 那个前缀。）
+            spec = self.external.get(call.name)
         if spec is None:
             # 把可用工具名列出来 —— 只说"没有这个工具"会让模型反复试别的错名字。
             from app.agent.tools import TOOLS
 
+            external_names = (
+                [s.name for s in self.external.specs()] if self.external else []
+            )
+            available = "、".join([*TOOLS, *external_names])
             return ToolResult(
                 ToolStatus.REJECTED,
-                f"没有叫 `{call.name}` 的工具。可用的有：{'、'.join(TOOLS)}。",
+                f"没有叫 `{call.name}` 的工具。可用的有：{available}。",
             )
 
         problems = validate_arguments(spec.parameters, call.arguments)
@@ -168,6 +218,18 @@ class Dispatcher:
                 f"`{call.name}` 的参数不对，因此没有执行："
                 + "；".join(problems)
                 + "。改好参数再来一次。",
+            )
+
+        if spec.scope not in self.scopes:
+            # 第二层防线（见类文档）。它必须给出**为什么**，而不是"不允许"——
+            # 模型能照着"这个工具需要一个具体的会话"改口（换一个能用的工具，
+            # 或者显式给出 session_id），而"不允许"它只能反复试。
+            return ToolResult(
+                ToolStatus.REJECTED,
+                f"`{call.name}` 在这里用不了：它需要一个**具体的会话**，"
+                f"而这次对话（{self.session_id}）不绑定任何会话。"
+                "要么换成不需要会话的工具，要么在参数里显式给出 `session_id`。",
+                {"scope": spec.scope.value},
             )
 
         if spec.scope is ToolScope.GLOBAL:

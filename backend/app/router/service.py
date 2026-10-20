@@ -34,8 +34,10 @@ from app.core.errors import NotFound, ValidationRejected, VersionConflict
 from app.core.ids import next_proposal_id, next_router_log_id
 from app.db import DbSequenceStore
 from app.global_domain.enums import (
+    Basis,
     BaselineConfidence,
     BenchmarkForm,
+    BenchmarkRunStatus,
     Completeness,
     EvidenceChannel,
     IntentAction,
@@ -62,11 +64,15 @@ from app.global_domain.reads import (
 from app.global_domain.writes import (
     add_intent,
     append_benchmark_response,
+    append_domain_profile,
     append_router_log,
     create_benchmark_run,
     create_proposal,
     finalize_benchmark_run,
+    record_anchor_baseline,
     rollback_baseline_version,
+    set_benchmark_run_status,
+    set_benchmark_response_score,
     set_intent_status,
     set_proposal_status,
 )
@@ -84,15 +90,23 @@ from app.router.contracts import (
     SubmitResult,
     UpdateIntent,
 )
-from app.router.policies import c_policy, m1_policy, m2_policy, noop_policy
+from app.router.policies import (
+    c_policy,
+    hypothesis_policy,
+    m1_policy,
+    m2_policy,
+    noop_policy,
+)
 from app.router.policies.base import (
     PolicyContext,
     PolicyError,
     PolicyRefused,
 )
+from app.global_domain.targets import D_TARGET_ROOT
 from app.router.policies.benchmark_advisory import evaluate_benchmark_advisory
 from app.router.registry import (
     POLICY_C,
+    POLICY_HYPOTHESIS,
     POLICY_M1,
     POLICY_M2,
     POLICY_NOOP,
@@ -107,6 +121,7 @@ _POLICIES = {
     POLICY_M1: m1_policy,
     POLICY_M2: m2_policy,
     POLICY_C: c_policy,
+    POLICY_HYPOTHESIS: hypothesis_policy,
     POLICY_NOOP: noop_policy,
 }
 
@@ -220,12 +235,12 @@ class Router:
         method_id: str,
         item_ids: list[str],
         seed: int,
-        domains: list[dict],
+        topic_snapshot: list[dict],
         completeness: Completeness,
         app_version: str | None = None,
         note: str | None = None,
     ) -> str:
-        """开一次基准运行，返回 `run_id`。
+        """开一次基准运行，返回 `run_id`。状态起点是 `in_progress`。
 
         **为什么不放进判定表**：判定表回答的是「这条关于用户的断言准不准入」，
         而一次运行记录本身**不是断言** —— 它是断言的依据。把它塞进判定表
@@ -246,11 +261,104 @@ class Router:
             method_id=method_id,
             item_ids=item_ids,
             seed=seed,
-            domains=domains,
+            topic_snapshot=topic_snapshot,
             completeness=completeness,
             app_version=app_version,
             note=note,
         ).run_id
+
+    def set_benchmark_run_status(
+        self,
+        *,
+        run_id: str,
+        target: BenchmarkRunStatus,
+        reason: str | None = None,
+    ):
+        """中断 / 继续 / 作废一次运行。
+
+        **三种用户动作走同一个方法**，因为它们是同一个东西的三个取值：
+        「这次测试现在算什么状态」。拆成三个方法会让
+        `RUN_STATUS_TRANSITIONS` 那张表被绕过 —— 每个方法各写各的判断，
+        而漏掉一条非法迁移是看不见的。
+        """
+        return set_benchmark_run_status(
+            self._token,
+            self._session,
+            run_id=run_id,
+            target=target,
+            reason=reason,
+        )
+
+    def set_domain_profile(
+        self,
+        *,
+        familiar: list[str],
+        interested: list[str],
+        reason: str | None = None,
+    ) -> str:
+        """写入一版领域勾选清单（G-04 = 乙），返回 `profile_id`。
+
+        ## 为什么不过判定表，却仍然记日志
+
+        判定表回答「这条关于用户的断言准不准入」。而这份清单**不是断言** ——
+        它是测量的**参照**：「我熟悉生物学」是用户对自己状态的直接声明，
+        不是系统推断出来的结论。把它塞进判定表会逼出一个荒唐的问题：
+        「你熟悉什么，需要系统批准吗」。
+
+        这与 `start_benchmark_run` 不进判定表是同一个理由（G-03 的先例）。
+        但两者的**记账**不同：运行记录用 `source_ref`（分数指向它），
+        而勾选清单用 `R6` + 一条 RouterLog —— 理由与 `m2_preference` 完全相同：
+        「用户声明即事实，因此更需要知道它是什么时候被谁写进来的」。
+        """
+        session, token = self._session, self._token
+        store = DbSequenceStore(session)
+
+        with session.begin_nested():
+            # 先铸 log_id：profile 行要带上它，而日志又要引用 profile_id，
+            # 两者互相引用，所以必须先把 id 拿在手里（`rollback` 同一手法）。
+            log_id = next_router_log_id(store)
+            row = append_domain_profile(
+                token,
+                session,
+                router_log_id=log_id,
+                familiar=familiar,
+                interested=interested,
+                reason=reason,
+            )
+            append_router_log(
+                token,
+                session,
+                log_id=log_id,
+                source=ProposalSource.USER_UI,
+                status=RouterLogStatus.APPLIED,
+                trigger=TriggerType.R6,
+                # R6 没有 IntentAction（它不是对某个变量的写入），
+                # 但**必须有 target**：I2 要求"已应用的日志指向一个真实存在的
+                # 全局地址" —— 否则这条日志就是"有东西变了但不知道是什么"。
+                action=None,
+                target=D_TARGET_ROOT,
+                basis=Basis.STATED,  # 用户自己说的
+                old_value=None,
+                new_value={
+                    "profile_id": row.profile_id,
+                    "version_no": row.version_no,
+                    "familiar": row.familiar,
+                    "interested": row.interested,
+                },
+                intent_ref=None,
+                proposal_ref=None,
+                user_confirmed=True,
+                reasoning=(
+                    f"领域勾选清单第 {row.version_no} 版："
+                    f"熟悉 {len(row.familiar)} 个专题，"
+                    f"陌生区里感兴趣 {len(row.interested)} 个。"
+                    + (f"原因：{reason.strip()}" if reason else "")
+                ),
+            )
+
+        if invariants_enabled(session):
+            assert_global_invariants(session)
+        return row.profile_id
 
     def record_benchmark_response(
         self,
@@ -265,9 +373,14 @@ class Router:
         difficulty: str | None = None,
         weight: float | None = None,
         elapsed_sec: float | None = None,
+        hesitation_sec: float | None = None,
+        switch_count: int | None = None,
+        help_request_count: int | None = None,
+        hint_used_count: int | None = None,
         judge_model: str | None = None,
         judge_note: str | None = None,
         judged_hits: list | None = None,
+        scoring_method: str | None = None,
     ) -> str:
         """落一道题的作答与单题分，返回 `response_id`。
 
@@ -286,10 +399,66 @@ class Router:
             difficulty=difficulty,
             weight=weight,
             elapsed_sec=elapsed_sec,
+            hesitation_sec=hesitation_sec,
+            switch_count=switch_count,
+            help_request_count=help_request_count,
+            hint_used_count=hint_used_count,
             judge_model=judge_model,
             judge_note=judge_note,
             judged_hits=judged_hits,
+            scoring_method=scoring_method,
         ).response_id
+
+    def apply_benchmark_score(
+        self,
+        *,
+        response_id: str,
+        item_score: float | None,
+        scoring_method: str,
+        judged_by: JudgedBy,
+        judge_model: str | None = None,
+        judge_note: str | None = None,
+        judged_hits: list | None = None,
+    ) -> None:
+        """改写一条作答的计分结果（P9）。**计分只走这一个入口。**
+
+        ## 为什么计分必须经路由器
+
+        因为它是**对全局表的一次写入**，而本项目的铁律是"全局写只经路由器"
+        （I2 要求每次写入有日志与令牌）。计分看起来像"算一个数"，
+        但它算完要落库 —— 落库那一步与别的写入没有区别。
+
+        ## 为什么算法本身不在这里
+
+        计分规则是纯函数（`app.benchmark.scoring`），住在 benchmark 域。
+        路由器只负责**把它算出来的东西安全地写下去**。
+        把规则搬进路由器会让它认识题库与判官，而它现在的职责边界
+        「裁定 + 写」是它能被审计的全部原因。
+        """
+        set_benchmark_response_score(
+            self._token,
+            self._session,
+            response_id,
+            item_score=item_score,
+            scoring_method=scoring_method,
+            judged_by=judged_by,
+            judge_model=judge_model,
+            judge_note=judge_note,
+            judged_hits=judged_hits,
+        )
+
+    def record_anchor_baseline(self, run_id: str, *, baseline: dict) -> None:
+        """把这次运行的锚题读数记成基线（P12）。
+
+        ★ 计分与"记基线"是**两件事**，所以是两个入口，不是一个：
+        计分改写一条作答的分，记基线定下一把尺子的刻度原点。
+        把它们合成一个方法，"这次计分了"会被读成"基线也更新了"。
+
+        ★ **只写还没有基线的锚题**（见 `writes.record_anchor_baseline`）：
+        基线一漂，全部历史分数的可比性同时失效 ——
+        而它漂起来没有任何症状，只是历史分数悄悄变得不可比。
+        """
+        record_anchor_baseline(self._token, self._session, run_id, baseline=baseline)
 
     def finish_benchmark_run(
         self,
@@ -580,6 +749,8 @@ class Router:
                     pre,
                     "用户已同意，但存在无法绕过的前置条件："
                     + "；".join(reasons),
+                    # ★ 用户**确实同意了** —— 是系统挡住了它。
+                    user_confirmed=True,
                 )
                 continue
             pairs.append((intent, pre))
@@ -754,7 +925,26 @@ class Router:
         intent: UpdateIntent,
         pre: PrecheckResult,
         reason: str,
+        *,
+        user_confirmed: bool = False,
     ) -> IntentResult:
+        """记一条 `rejected` 日志并如实标注**用户当时同意没同意**。
+
+        ★ `user_confirmed` 是显式参数，不是恒为 `False` 的常量。
+        同一个"被拒"有两种成因，而它们在审计上完全不同：
+
+        - **用户否决**（`update` 里 `not decision.approved`）→ `False`。用户说不要。
+        - **用户同意、但前置条件绕不过**（`update` 里 `not pre.can_apply`）→ `True`。
+          用户点了"同意"，是系统挡住了它。
+
+        把它们都写成 `False` 会让日志说"用户否决了"，
+        而同一行的 `reasoning` 里却写着"用户已同意，但…" ——
+        **一行日志自相矛盾**，而半年后查"他到底同意过没有"时，
+        唯一能信的就是 `user_confirmed` 这个布尔字段。
+
+        其余调用点（提交时就被判定表挡下、冲突落选、执行抛错）
+        都发生在用户有机会表态之前或之外，所以默认 `False` 是对的。
+        """
         session, token = self._session, self._token
         log = append_router_log(
             token,
@@ -769,7 +959,7 @@ class Router:
             new_value=intent.value,
             intent_ref=intent.intent_id,
             proposal_ref=batch.proposal_id,
-            user_confirmed=False,
+            user_confirmed=user_confirmed,
             reasoning=f"拒绝：{reason}｜intent 理由：{intent.reasoning}",
         )
         set_intent_status(token, session, intent.intent_id, IntentStatus.REJECTED)

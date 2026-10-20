@@ -43,16 +43,16 @@ def _start(router: Router, **overrides) -> str:
         "method_id": "M-SE-04",
         "item_ids": ["SE-TXT-001", "SE-TXT-002"],
         "seed": 20260101,
-        "domains": [
+        "topic_snapshot": [
             {
                 "item_id": "SE-TXT-001",
-                "domain": "地质学/海洋生物学",
-                "familiarity_at_run": "low",
+                "topics": ["BIO-MARINE"],
+                "familiar_at_run": False,
             },
             {
                 "item_id": "SE-TXT-002",
-                "domain": "天文学/天体物理",
-                "familiarity_at_run": "low",
+                "topics": ["PHYS-STELLAR"],
+                "familiar_at_run": False,
             },
         ],
         "completeness": Completeness.COMPLETE,
@@ -207,29 +207,36 @@ def test_a_baseline_score_can_be_traced_back_to_the_answers(
     assert len(answers) == 2
 
 
-def test_the_domain_snapshot_does_not_follow_later_edits(
+def test_the_topic_snapshot_does_not_follow_later_edits(
     router: Router, session: Session
 ) -> None:
-    """★ 领域画像住在文件里（G-04 = 乙），所以**历史必须冻结在运行记录里**。
+    """★ 清单住在库里、且会随用户改（G-04 = 乙），所以**历史必须冻结在运行记录里**。
 
-    反例保护：`familiarity_at_run` 如果只是"运行时去文件里查一次"，
-    那么半年后改一次文件，历史分数就会看起来是在另一种条件下测出来的
+    反例保护：`familiar_at_run` 如果只是"运行时去查一次当前档案"，
+    那么半年后用户改一次清单，历史分数就会看起来是在另一种条件下测出来的
     —— 那等于**改写历史**。这里断言它存的是快照。
+
+    与旧版（`domain_familiarity` 时期）的区别：当时字段是 `familiarity_at_run`
+    加一个自由文本 `domain`；现在改成 `familiar_at_run` 加封闭引用的 `topics`
+    （裁定 岔路 B = 甲）。
     """
     run_id = _start(router)
     row = get_benchmark_run(session, run_id)
     assert row is not None
-    assert row.domains[0]["familiarity_at_run"] == "low"
+    assert row.topic_snapshot[0]["familiar_at_run"] is False
+    assert row.topic_snapshot[0]["topics"] == ["BIO-MARINE"]
 
-    # 模拟"文件后来被改了"：运行记录不受影响
-    row.domains = [dict(d, familiarity_at_run="high") for d in row.domains]
+    # 模拟"用户后来改了清单"：运行记录不受影响
+    row.topic_snapshot = [
+        dict(d, familiar_at_run=True) for d in row.topic_snapshot
+    ]
     session.flush()
     session.expire_all()
     again = get_benchmark_run(session, run_id)
     assert again is not None
     # 这一条断言"改了就是改了"——它证明上面那次修改**确实生效**，
-    # 因此前一个 `== "low"` 不是因为赋值被忽略而通过的。
-    assert again.domains[0]["familiarity_at_run"] == "high"
+    # 因此前一个 `is False` 不是因为赋值被忽略而通过的。
+    assert again.topic_snapshot[0]["familiar_at_run"] is True
 
 
 # --------------------------------------------------------------------------- #

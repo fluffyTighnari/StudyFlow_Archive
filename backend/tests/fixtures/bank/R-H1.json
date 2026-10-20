@@ -1,0 +1,75 @@
+{
+  "item_id": "R-H1",
+  "variable_id": "V-SE",
+  "channel": "measured",
+  "method_id": "M-SE-04",
+  "role": "regular",
+  "difficulty": "难",
+  "topics": [
+    "LAW-IP"
+  ],
+  "time_min": 6,
+  "language": "zh",
+  "media": "text",
+  "prompt": "读下面这篇材料，用三句话概括：① 主线 ② 三个关键事实 ③ 一个易忽略的限定条件",
+  "answer": {
+    "key_points": [
+      "R-H1 的主线证据句：这条主线说的是什么。",
+      "R-H1 的事实证据句：一个关键事实与它的数据。",
+      "R-H1 的限定条件证据句：结论只在某个范围内成立。"
+    ]
+  },
+  "scoring": {
+    "rule": "key_points",
+    "weight_source": "difficulty"
+  },
+  "source": "夹具（不是产品题库）",
+  "license": "个人使用",
+  "status": "verified",
+  "anchors": {
+    "main_thread": {
+      "statement": "R-H1 的主线陈述",
+      "evidence_sentences": [
+        "R-H1 的主线证据句：这条主线说的是什么。"
+      ]
+    },
+    "key_facts": [
+      {
+        "fact": "R-H1 的一个关键事实",
+        "evidence_sentences": [
+          "R-H1 的事实证据句：一个关键事实与它的数据。"
+        ]
+      }
+    ],
+    "limit_conditions": [
+      {
+        "condition": "R-H1 的一个限定条件",
+        "evidence_sentences": [
+          "R-H1 的限定条件证据句：结论只在某个范围内成立。"
+        ]
+      }
+    ]
+  },
+  "key_points_question": {
+    "type": "key_points",
+    "prompt": "三句话概括：主线 / 一个关键事实 / 一个限定条件",
+    "scoring_guide": [
+      "R-H1 的主线证据句：这条主线说的是什么。",
+      "R-H1 的事实证据句：一个关键事实与它的数据。",
+      "R-H1 的限定条件证据句：结论只在某个范围内成立。"
+    ]
+  },
+  "exact_questions": [
+    {
+      "no": 1,
+      "type": "choice",
+      "question": "R-H1：这篇材料的限定条件是什么？",
+      "options": [
+        "R-H1 的限定条件证据句：结论只在某个范围内成立。",
+        "没有限定条件",
+        "所有结论都无条件成立"
+      ],
+      "answer": "R-H1 的限定条件证据句：结论只在某个范围内成立。"
+    }
+  ]
+}

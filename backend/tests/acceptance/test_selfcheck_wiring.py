@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.core.errors import InvariantViolation
+from tests.helpers import items
 
 
 def _preference_body(intent_id: str = "UI-0001") -> dict:
@@ -57,7 +58,7 @@ def test_a_normal_write_passes_the_check_and_commits(client) -> None:
     assert response.status_code == 201, response.text
     assert response.json()["results"][0]["status"] == "applied"
 
-    listed = client.get("/api/preferences").json()
+    listed = items(client.get("/api/preferences").json())
     assert [p["statement"] for p in listed] == ["先看例子再看定义"]
 
 
@@ -86,7 +87,7 @@ def test_the_check_runs_before_the_response_is_sent(app, client, monkeypatch) ->
     assert "合成" in payload["message"]
 
     # 关键的一行：那一批写入**没有**被提交。
-    assert client.get("/api/preferences").json() == []
+    assert items(client.get("/api/preferences").json()) == []
 
 
 def test_the_check_is_skipped_when_nothing_was_written(app, client, monkeypatch) -> None:
@@ -202,7 +203,7 @@ def test_rollback_is_checked_too(client, monkeypatch) -> None:
         },
     )
     assert written.status_code == 201
-    version_id = client.get("/api/m1/V-SE/history?channel=measured").json()[0][
+    version_id = items(client.get("/api/m1/V-SE/history?channel=measured").json())[0][
         "version_id"
     ]
     calls.clear()

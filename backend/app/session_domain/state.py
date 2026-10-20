@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel
 
 from sqlalchemy.orm import Session as DbSession
@@ -70,8 +72,17 @@ class SessionStateRead(BaseModel):
     versions: VersionsRead
 
 
-def build_session_read(db: DbSession, session_id: str) -> SessionRead:
+def build_session_read(
+    db: DbSession, session_id: str, *, last_chat_at: datetime | None = None
+) -> SessionRead:
+    """组装会话头。
+
+    `last_chat_at` 可以由调用方预先批量读好传进来（列表端点就是这么用的），
+    不传则这里单独查一次 —— 一个参数省掉 N+1，又不强迫调用方知道怎么算。
+    """
     row = reads.get_session(db, session_id)
+    if last_chat_at is None:
+        last_chat_at = reads.last_chat_at(db, session_id)
     return SessionRead(
         session_id=row.session_id,
         folder_id=row.folder_id,
@@ -82,6 +93,9 @@ def build_session_read(db: DbSession, session_id: str) -> SessionRead:
         activated_at=row.activated_at,
         completed_at=row.completed_at,
         abandoned_at=row.abandoned_at,
+        sort_order=row.sort_order,
+        archived_at=row.archived_at,
+        updated_at=max(row.created_at, last_chat_at) if last_chat_at else row.created_at,
         allowed_transitions=allowed_targets(row.state),
     )
 

@@ -15,14 +15,25 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from dataclasses import dataclass
+from datetime import datetime
+
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session as DbSession
 
 from app.core.errors import NotFound
-from app.session_domain.enums import StageItemStatus
+from app.session_domain.enums import (
+    ClarificationStatus,
+    ContextScope,
+    SessionState,
+    StageItemStatus,
+)
 from app.session_domain.models import (
     ChatAttachment,
     ChatMessage,
+    ChatMessage as ChatMessageRow,
+    Clarification,
+    ContextCompact,
     Folder,
     InputRevision,
     Milestone,
@@ -32,9 +43,12 @@ from app.session_domain.models import (
     PlanRevision,
     PlanStep,
     Session as SessionModel,
+    SessionAnnotation,
     SessionInput,
     SessionMotivation,
+    SessionReflection,
     SessionSummary,
+    SidebarMessage,
     StageItem,
     StateSnapshot,
     TaskPlan,
@@ -46,8 +60,92 @@ from app.session_domain.models import (
 # --------------------------------------------------------------------------- #
 
 
-def list_folders(db: DbSession) -> list[Folder]:
-    return list(db.scalars(select(Folder).order_by(Folder.created_at, Folder.folder_id)))
+@dataclass(frozen=True)
+class FolderStat:
+    """一个文件夹在侧栏上需要的那几个数字（不含归档的会话）。"""
+
+    session_count: int
+    active_session_count: int
+    #: 最近动静：`max(会话创建时刻, 该会话最后一条聊天)`。
+    updated_at: datetime
+
+
+def list_folders(db: DbSession, *, include_archived: bool = True) -> list[Folder]:
+    """侧栏的文件夹列表。
+
+    `include_archived=False` 时**不返回归档的**（默认 `True` 保持内部调用的
+    旧语义；API 边界上显式传 `False`，这样"侧栏看不看得到"这个决定只在一处）。
+    """
+    stmt = select(Folder).order_by(
+        Folder.sort_order, Folder.created_at, Folder.folder_id
+    )
+    if not include_archived:
+        stmt = stmt.where(Folder.archived_at.is_(None))
+    return list(db.scalars(stmt))
+
+
+def folder_stats(db: DbSession) -> dict[str, FolderStat]:
+    """每个文件夹的"最近动静"与计数 —— 侧栏 `Order by: Last updated` 用。
+
+    为什么在内存里分组，而不是写一句 `LEFT JOIN + GROUP BY + MAX(COALESCE(...))`：
+    这是**个人工作台**，文件夹是几十个量级。一句五六层的聚合 SQL 读完
+    要人相信它对；两行 Python 一眼就看得懂对不对。规模变了再改这里，
+    而不是现在就为"可能会有的百万文件夹"付代价。
+
+    两条口径：
+    - **归档的会话不算**：归档本来就是"别再占着侧栏了"，
+      它不该继续让一个文件夹往上浮。
+    - `updated_at` = `max(session.created_at, 该会话最后一条聊天)` ——
+      一个文件夹只要还在聊，就该往上浮。
+    """
+    rows = db.execute(
+        select(
+            SessionModel.session_id,
+            SessionModel.folder_id,
+            SessionModel.state,
+            SessionModel.created_at,
+        ).where(SessionModel.archived_at.is_(None))
+    ).all()
+    last_chat = last_chat_at_by_session(db)
+    stats: dict[str, FolderStat] = {}
+    for session_id, folder_id, state_value, created_at in rows:
+        when = max(created_at, last_chat.get(session_id, created_at))
+        busy = 1 if state_value == SessionState.ACTIVE else 0
+        current = stats.get(folder_id)
+        if current is None:
+            stats[folder_id] = FolderStat(
+                session_count=1, active_session_count=busy, updated_at=when
+            )
+        else:
+            stats[folder_id] = FolderStat(
+                session_count=current.session_count + 1,
+                active_session_count=current.active_session_count + busy,
+                updated_at=max(current.updated_at, when),
+            )
+    return stats
+
+
+def last_chat_at(db: DbSession, session_id: str) -> datetime | None:
+    """单条会话的最后一条聊天时刻（`state.build_session_read` 用）。"""
+    return db.scalar(
+        select(func.max(ChatMessage.created_at)).where(
+            ChatMessage.session_id == session_id
+        )
+    )
+
+
+def last_chat_at_by_session(db: DbSession) -> dict[str, datetime]:
+    """`session_id → 最后一条聊天的时刻`。没有聊天记录的会话不在表里。
+
+    "最后更新"由**派生**得到，不落一个冗余列：冗余列要靠每一处写入记得去 touch，
+    忘一处就会显示一个看起来很正常、其实是旧的时刻 —— 而那种错没人会报。
+    """
+    rows = db.execute(
+        select(ChatMessage.session_id, func.max(ChatMessage.created_at)).group_by(
+            ChatMessage.session_id
+        )
+    ).all()
+    return {session_id: when for session_id, when in rows if when is not None}
 
 
 def get_folder(db: DbSession, folder_id: str) -> Folder:
@@ -63,13 +161,20 @@ def get_folder(db: DbSession, folder_id: str) -> Folder:
 
 
 def list_sessions(
-    db: DbSession, *, folder_id: str | None = None
+    db: DbSession, *, folder_id: str | None = None, include_archived: bool = True
 ) -> list[SessionModel]:
+    """会话列表。排序 = `sort_order` → `created_at` → id（与文件夹同口径）。
+
+    `include_archived` 的默认值与 `list_folders` 一致：内部调用拿到全量，
+    API 边界上显式传参。
+    """
     stmt = select(SessionModel).order_by(
-        SessionModel.created_at, SessionModel.session_id
+        SessionModel.sort_order, SessionModel.created_at, SessionModel.session_id
     )
     if folder_id is not None:
         stmt = stmt.where(SessionModel.folder_id == folder_id)
+    if not include_archived:
+        stmt = stmt.where(SessionModel.archived_at.is_(None))
     return list(db.scalars(stmt))
 
 
@@ -230,6 +335,146 @@ def list_chat_messages(db: DbSession, session_id: str) -> list[ChatMessage]:
     )
 
 
+def get_chat_message(db: DbSession, msg_id: str) -> ChatMessage | None:
+    """按 id 取一条消息。**返回 `None` 而不抛** —— 调用方要区分
+    「这条消息不属于这个会话」与「没有这条消息」这两种情况下的措辞。
+
+    没有 `require_` 版本是刻意的：这个取用点只有标注那一处，
+    而它需要自己组织拒绝理由（见 `writes.annotate_message`）。
+    """
+    return db.get(ChatMessage, msg_id)
+
+
+def list_annotations(db: DbSession, session_id: str) -> list[SessionAnnotation]:
+    """一个会话里的标注，**按时间正序**（与人读对话的方向一致）。
+
+    不按消息分组：分组是界面的事，而"先标了哪句"本身是有序信息 ——
+    按消息分组会把这个顺序丢掉（同一句话可以标两次，问的是两件事）。
+    """
+    return list(
+        db.scalars(
+            select(SessionAnnotation)
+            .where(SessionAnnotation.session_id == session_id)
+            .order_by(SessionAnnotation.created_at, SessionAnnotation.annotation_id)
+        )
+    )
+
+
+def list_reflections(db: DbSession, session_id: str) -> list[SessionReflection]:
+    """一个会话里的感想，**按时间正序**（一次会话可以有几次回看）。"""
+    return list(
+        db.scalars(
+            select(SessionReflection)
+            .where(SessionReflection.session_id == session_id)
+            .order_by(SessionReflection.created_at, SessionReflection.reflection_id)
+        )
+    )
+
+
+def get_annotation(
+    db: DbSession, session_id: str, annotation_id: str
+) -> SessionAnnotation | None:
+    row = db.get(SessionAnnotation, annotation_id)
+    if row is None or row.session_id != session_id:
+        return None
+    return row
+
+
+def list_compacts(
+    db: DbSession, scope: ContextScope, scope_id: str
+) -> list[ContextCompact]:
+    """某个对话的全部压缩记录，**时间升序**（最早的在前）。
+
+    升序是刻意的：装配上下文时要按"先压缩的在前"拼成一段连续的记忆，
+    倒序会让调用方到处 `.reverse()`，而某处忘了 reverse 就是一段
+    前后颠倒的摘要 —— 它读起来仍然通顺，所以没人会发现。
+    """
+    return list(
+        db.scalars(
+            select(ContextCompact)
+            .where(ContextCompact.scope == scope, ContextCompact.scope_id == scope_id)
+            .order_by(ContextCompact.created_at, ContextCompact.compact_id)
+        )
+    )
+
+
+def compacted_message_ids(
+    db: DbSession, scope: ContextScope, scope_id: str
+) -> set[str]:
+    """已经被压掉的那些消息 id。
+
+    ★ 这是"还剩下哪些原文"的**唯一判据**。不用"最后一条压缩的时间戳之前"
+    那种写法：同一毫秒内落的消息会让边界含糊，而含糊的边界意味着某条消息
+    可能既在摘要里、又当原文发一遍（模型看到两遍同样的话）。
+    按 id 集合判断没有这个问题。
+
+    ★ **被折进新摘要的旧摘要，它当年吃掉的消息仍然算被吃掉。**
+    所以这里遍历所有行（含被折叠的），而不是只遍历"还活着"的摘要 ——
+    折叠只是让摘要变短，原话并没有因此回到上下文里。
+    """
+    out: set[str] = set()
+    for row in list_compacts(db, scope, scope_id):
+        out.update(row.covers_msg_ids)
+    return out
+
+
+def live_compacts(
+    db: DbSession, scope: ContextScope, scope_id: str
+) -> list[ContextCompact]:
+    """**还没被折进更新的摘要**的那些压缩记录，时间升序。
+
+    装配上下文用这个而不是 `list_compacts`：被折叠的摘要已经包含在
+    折叠它的那一条里了，再带一遍就是同一段记忆说两次。
+    """
+    rows = list_compacts(db, scope, scope_id)
+    folded = {cid for row in rows for cid in row.folds_compact_ids}
+    return [row for row in rows if row.compact_id not in folded]
+
+
+def list_sidebar_messages(db: DbSession) -> list[SidebarMessage]:
+    """侧边栏的全部消息，时间升序。侧边栏只有一个，所以不需要 id 参数。"""
+    return list(
+        db.scalars(
+            select(SidebarMessage).order_by(
+                SidebarMessage.created_at, SidebarMessage.msg_id
+            )
+        )
+    )
+
+
+def list_messages(
+    db: DbSession, scope: ContextScope, scope_id: str
+) -> list[ChatMessageRow]:
+    """某个对话的全部消息（含已被压缩的）。
+
+    ★ **只有这一个地方知道"哪个 scope 用哪张表"。**
+    `agent.context` 与端点都走这里 —— 让它们各自判断的话，
+    将来新增一种 scope 时必然漏掉一处，而漏掉的表现是
+    "某一侧的上下文用量恒为 0"（看起来只是没在记，不会报错）。
+    """
+    if scope is ContextScope.SIDEBAR:
+        return list_sidebar_messages(db)
+    return list_chat_messages(db, scope_id)
+
+
+def list_live_messages(
+    db: DbSession, scope: ContextScope, scope_id: str
+) -> list[ChatMessageRow]:
+    """**没被压掉**的原文，按时间升序。这就是装配上下文时要带的那一段。
+
+    侧边栏与 session 走同一条路，为的是让"还剩哪些原文"只有一个实现。
+    """
+    dead = compacted_message_ids(db, scope, scope_id)
+    return [row for row in list_messages(db, scope, scope_id) if row.msg_id not in dead]
+
+
+def get_compact(db: DbSession, compact_id: str) -> ContextCompact:
+    row = db.get(ContextCompact, compact_id)
+    if row is None:
+        raise NotFound(f"压缩记录不存在：{compact_id}")
+    return row
+
+
 def list_notes(db: DbSession, session_id: str) -> list[Note]:
     return list(
         db.scalars(
@@ -319,5 +564,88 @@ def latest_summary(db: DbSession, session_id: str) -> SessionSummary | None:
         select(SessionSummary)
         .where(SessionSummary.session_id == session_id)
         .order_by(SessionSummary.created_at.desc(), SessionSummary.summary_id.desc())
+        .limit(1)
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 澄清问题（任务不明确时反问，P13）
+# --------------------------------------------------------------------------- #
+
+
+def list_clarifications(
+    db: DbSession, session_id: str, *, only_open: bool = False
+) -> list[Clarification]:
+    """会话的问题，**未答的排在最前**，同组内新的在前。
+
+    排序是为了"一进会话就看到那个挡着计划的提问"：
+    按时间倒序会让一个刚问的问题被旧的已答问题压下去 ——
+    而闸门拦住的正是那个刚问的。
+
+    ★ 这里用 `case` 显式表达"未答优先"，**不靠状态字符串的字典序**。
+    `open / answered / dismissed` 按字典序排恰好不是这个顺序
+    （`dismissed` 夹在中间），而那种排序看起来"也像是排过了"。
+    """
+    stmt = select(Clarification).where(Clarification.session_id == session_id)
+    if only_open:
+        stmt = stmt.where(Clarification.status == ClarificationStatus.OPEN)
+    open_first = case((Clarification.status == ClarificationStatus.OPEN, 0), else_=1)
+    return list(
+        db.scalars(
+            stmt.order_by(
+                open_first,
+                Clarification.created_at.desc(),
+                Clarification.clarification_id.desc(),
+            )
+        )
+    )
+
+
+def get_clarification(db: DbSession, clarification_id: str) -> Clarification:
+    row = db.get(Clarification, clarification_id)
+    if row is None:
+        raise NotFound(
+            f"澄清问题不存在：{clarification_id}",
+            detail={"clarification_id": clarification_id},
+        )
+    return row
+
+
+def latest_status_by_slot(
+    db: DbSession, session_id: str
+) -> dict[str, ClarificationStatus]:
+    """槽位名 → **最近一次**问题的状态。闸门的输入。
+
+    ★ 取最近一次而不是最严的一次：用户在第三轮答了 goal，
+    第一轮那个被搁置的问题不应该继续挡着。反过来，
+    他刚把刚答的那个问题撤了（重新问），也不能被旧的 `answered` 放行。
+
+    ★ 这里**不依赖 `list_clarifications` 的展示顺序**，而是显式取
+    `(created_at, id)` 最大的那一行。展示顺序是为了让人先看见该看的东西，
+    闸门读的是事实 —— 把两者绑在一起，将来有人为了界面好看调一次排序，
+    闸门的判定就跟着变了，而那种错不会有任何症状。
+    """
+    newest: dict[str, Clarification] = {}
+    for row in list_clarifications(db, session_id):
+        current = newest.get(row.slot)
+        if current is None or (row.created_at, row.clarification_id) > (
+            current.created_at,
+            current.clarification_id,
+        ):
+            newest[row.slot] = row
+    return {slot: row.status for slot, row in newest.items()}
+
+
+def open_clarification_for_slot(
+    db: DbSession, session_id: str, slot: str
+) -> Clarification | None:
+    return db.scalar(
+        select(Clarification)
+        .where(
+            Clarification.session_id == session_id,
+            Clarification.slot == slot,
+            Clarification.status == ClarificationStatus.OPEN,
+        )
+        .order_by(Clarification.created_at.desc())
         .limit(1)
     )

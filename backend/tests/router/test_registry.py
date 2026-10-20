@@ -104,8 +104,16 @@ def test_every_rule_declares_a_value_schema_for_its_write_action() -> None:
 
 
 def test_policy_keys_are_unique_per_behaviour() -> None:
+    """一个 `policy_key` = 一个策略模块 = 一张表的写权限。
+
+    ★ P7 从三个变成四个：假说有自己的 `hypothesis_policy`，而不是复用
+    `c_policy`。这不是"多了一个策略"，而是**收窄**：`c_policy` 只 import
+    `insert_evidence`、`hypothesis_policy` 只 import `insert_hypothesis`，
+    于是"假说被顺手写成证据"在 import 层面就不可能 ——
+    和 `c_policy` 里那条「C 永不自动改写 M1」用同一个手法。
+    """
     keys = {rule.policy_key for rule in registry.RULES.values()}
-    assert keys == {"m1_policy", "m2_policy", "c_policy"}
+    assert keys == {"m1_policy", "m2_policy", "c_policy", "hypothesis_policy"}
 
 
 def test_source_is_derived_from_trigger_not_supplied() -> None:

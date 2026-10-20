@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from tests.helpers import items
 
 
 def _folder(client: TestClient, name: str = "英语学习") -> str:
@@ -228,7 +229,7 @@ def test_input_change_writes_a_revision_with_the_old_value(client: TestClient) -
     )
     revisions = client.get(f"/api/sessions/{session_id}/input/revisions")
     assert revisions.status_code == 200
-    rows = revisions.json()
+    rows = items(revisions.json())
     assert len(rows) == 1
     assert rows[0]["old_value"] == "背完考研核心 1500 词"
     assert rows[0]["new_value"] == "背完 2000 词"
@@ -384,7 +385,7 @@ def test_old_plan_versions_stay_readable(client: TestClient) -> None:
     assert len(old.json()["steps"]) == 2
     assert old.json()["version_no"] == 1
 
-    revisions = client.get(f"/api/sessions/{session_id}/plan/revisions").json()
+    revisions = items(client.get(f"/api/sessions/{session_id}/plan/revisions").json())
     assert [(r["from_version"], r["to_version"]) for r in revisions] == [(0, 1), (1, 2)]
 
 
@@ -423,7 +424,7 @@ def test_r4c_sediment_applies_because_the_tick_is_the_confirmation(
     )
     assert preview.status_code == 201, preview.text
     assert preview.json()["submit"] is None
-    assert client.get("/api/preferences").json() == []
+    assert items(client.get("/api/preferences").json()) == []
 
     # 再执行
     done = client.post(
@@ -435,13 +436,13 @@ def test_r4c_sediment_applies_because_the_tick_is_the_confirmation(
     assert payload["submit"]["status"] == "applied"
     assert [r["status"] for r in payload["submit"]["results"]] == ["applied"]
 
-    preferences = client.get("/api/preferences").json()
+    preferences = items(client.get("/api/preferences").json())
     assert [p["statement"] for p in preferences] == ["我背单词必须出声"]
 
     # 条目被打上 deposited 并指回提案
-    items = _state(client, session_id)["stage"]
-    assert items[0]["status"] == "deposited"
-    assert items[0]["result_ref"] == payload["submit"]["proposal_id"]
+    stage_items = _state(client, session_id)["stage"]
+    assert stage_items[0]["status"] == "deposited"
+    assert stage_items[0]["result_ref"] == payload["submit"]["proposal_id"]
 
 
 def test_a_plan_override_in_stage_is_excluded_with_a_reason(client: TestClient) -> None:
@@ -508,9 +509,9 @@ def test_completing_a_session_writes_a_summary_and_queues_an_r4a_proposal(
     assert payload["submit"]["results"][0]["status"] == "pending"
 
     # 全局尚未改变
-    assert client.get("/api/preferences").json() == []
+    assert items(client.get("/api/preferences").json()) == []
 
-    queue = client.get("/api/proposals", params={"status": "pending_confirmation"}).json()
+    queue = items(client.get("/api/proposals", params={"status": "pending_confirmation"}).json())
     assert [p["proposal_id"] for p in queue] == [payload["submit"]["proposal_id"]]
     assert queue[0]["trigger_type"] == "R4a"
 
@@ -544,12 +545,12 @@ def test_approving_the_queued_r4a_proposal_actually_writes_it(client: TestClient
     )
     assert resolved.status_code == 200, resolved.text
 
-    preferences = client.get("/api/preferences").json()
+    preferences = items(client.get("/api/preferences").json())
     assert [p["statement"] for p in preferences] == [
         "长时段效率会掉，短时段多次更适合我"
     ]
     # 审计日志里能查到这次写入是从哪个会话来的
-    logs = client.get("/api/router-logs", params={"trigger": "R4a"}).json()
+    logs = items(client.get("/api/router-logs", params={"trigger": "R4a"}).json())
     assert len(logs) == 1
     assert logs[0]["proposal_ref"] == proposal_id
 
@@ -576,7 +577,7 @@ def test_completing_without_findings_produces_no_proposal(client: TestClient) ->
     assert payload["plan"]["included"] == []
     assert payload["submit"] is None
     assert payload["session"]["session"]["state"] == "completed"
-    assert client.get("/api/preferences").json() == []
+    assert items(client.get("/api/preferences").json()) == []
 
 
 def test_finishing_a_session_archives_undecided_stage_items(client: TestClient) -> None:
@@ -607,10 +608,10 @@ def test_finishing_a_session_archives_undecided_stage_items(client: TestClient) 
         },
     )
 
-    items = _state(client, session_id)["stage"]
-    assert len(items) == 1, "条目被删除了"
-    assert items[0]["status"] == "archived"
-    assert items[0]["settled_at"] is not None
+    stage_items = _state(client, session_id)["stage"]
+    assert len(stage_items) == 1, "条目被删除了"
+    assert stage_items[0]["status"] == "archived"
+    assert stage_items[0]["settled_at"] is not None
 
 
 def test_complete_rejects_a_stale_version_before_writing_anything(

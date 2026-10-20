@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from tests.helpers import items
 
 
 def test_direct_write_creates_a_proposal_and_an_audit_log(client: TestClient) -> None:
@@ -28,7 +29,7 @@ def test_direct_write_creates_a_proposal_and_an_audit_log(client: TestClient) ->
     assert proposal["source"] == "user_ui"
     assert proposal["intents"][0]["basis"] == "stated"
 
-    logs = client.get("/api/router-logs").json()
+    logs = items(client.get("/api/router-logs").json())
     assert [log["log_id"] for log in logs] == [result["router_log_id"]]
     assert logs[0]["status"] == "applied"
     assert logs[0]["user_confirmed"] is True
@@ -40,13 +41,13 @@ def test_every_page_refresh_is_a_legitimate_second_write(client: TestClient) -> 
     second = client.post("/api/preferences", json={"statement": "先看例子"})
     assert first.status_code == second.status_code == 201
     assert first.json()["results"][0]["intent_id"] != second.json()["results"][0]["intent_id"]
-    assert len(client.get("/api/preferences").json()) == 2
+    assert len(items(client.get("/api/preferences").json())) == 2
 
 
 def test_preferences_are_listed_by_priority_then_time(client: TestClient) -> None:
     client.post("/api/preferences", json={"statement": "低", "priority": 2})
     client.post("/api/preferences", json={"statement": "高", "priority": 9})
-    statements = [row["statement"] for row in client.get("/api/preferences").json()]
+    statements = [row["statement"] for row in items(client.get("/api/preferences").json())]
     assert statements == ["高", "低"]
 
 
@@ -63,11 +64,11 @@ def test_a_new_preference_on_the_same_field_archives_the_old_one(
         json={"statement": "每 50 分钟休息", "target_field": "SP1.activity_mix"},
     )
 
-    active = client.get("/api/preferences").json()
+    active = items(client.get("/api/preferences").json())
     assert [row["statement"] for row in active] == ["每 50 分钟休息"]
     assert active[0]["status"] == "active"
 
-    everything = client.get("/api/preferences?include_archived=true").json()
+    everything = items(client.get("/api/preferences?include_archived=true").json())
     assert {row["status"] for row in everything} == {"active", "archived"}
 
 
@@ -93,7 +94,7 @@ def test_a_stated_preference_can_supersede_another_one(client: TestClient) -> No
     assert second["results"][0]["status"] == "applied"
     assert "P-0001" in second["results"][0]["reason"]
 
-    active = client.get("/api/preferences").json()
+    active = items(client.get("/api/preferences").json())
     assert [row["statement"] for row in active] == ["我能接受精品网课，如果讲得好"]
     # 界面据此能显示「你之前那样说过，后来自己改了主意」
     assert active[0]["supersedes_pref_id"] == "P-0001"
@@ -101,7 +102,7 @@ def test_a_stated_preference_can_supersede_another_one(client: TestClient) -> No
     # 归档不是删除：旧的那句话一字未改
     archived = {
         row["statement"]: row
-        for row in client.get("/api/preferences?include_archived=true").json()
+        for row in items(client.get("/api/preferences?include_archived=true").json())
     }
     assert set(archived) == {"我能接受精品网课，如果讲得好", "我讨厌网课，因为浪费时间"}
     assert archived["我讨厌网课，因为浪费时间"]["status"] == "archived"
@@ -124,8 +125,8 @@ def test_superseding_an_unknown_id_is_a_recorded_rejection_not_a_422(
     assert payload["results"][0]["status"] == "rejected"
     assert "P-9999" in payload["results"][0]["reason"]
 
-    assert client.get("/api/preferences").json() == []
-    logs = client.get("/api/router-logs").json()
+    assert items(client.get("/api/preferences").json()) == []
+    logs = items(client.get("/api/router-logs").json())
     assert [log["status"] for log in logs] == ["rejected"]
 
 
@@ -137,7 +138,7 @@ def test_blank_statements_are_422_not_a_recorded_rejection(client: TestClient) -
     """
     response = client.post("/api/preferences", json={"statement": "   "})
     assert response.status_code == 422
-    assert client.get("/api/router-logs").json() == []
+    assert items(client.get("/api/router-logs").json()) == []
 
 
 def test_extra_fields_are_rejected_not_ignored(client: TestClient) -> None:
@@ -176,7 +177,7 @@ def test_evidence_is_written_and_readable(client: TestClient) -> None:
     assert response.status_code == 201
     assert response.json()["status"] == "applied"
 
-    rows = client.get("/api/evidence").json()
+    rows = items(client.get("/api/evidence").json())
     assert len(rows) == 1
     assert rows[0]["condition"] == "遇到新概念时"
     assert rows[0]["source"] == "user_direct"
@@ -203,6 +204,6 @@ def test_evidence_keyword_search_matches_condition_and_effect(
             "evidence_strength": "strong",
         },
     )
-    assert len(client.get("/api/evidence?keyword=记忆").json()) == 1
-    assert len(client.get("/api/evidence?keyword=例题").json()) == 1
-    assert len(client.get("/api/evidence?keyword=不存在的词").json()) == 0
+    assert len(items(client.get("/api/evidence?keyword=记忆").json())) == 1
+    assert len(items(client.get("/api/evidence?keyword=例题").json())) == 1
+    assert len(items(client.get("/api/evidence?keyword=不存在的词").json())) == 0

@@ -66,9 +66,38 @@ from app.session_domain.writes import CheckpointDraft, StepDraft
 
 
 class ToolScope(StrEnum):
+    """一个工具需要什么才能跑。
+
+    ★ `READ` 与 `SESSION_READ` 的区分是 P6+.6 加的，而它不是为了整齐 ——
+    侧边栏常驻模型**没有当前会话**，所以它需要一条**可推导的**规则来说明
+    "哪些工具它用不了"。规则就是：需要会话的工具只能出现在会话里。
+
+    用"手写一个侧边栏工具名单"来代替这条规则会有一个安静的坏处：
+    将来新增一个读会话的工具时，有人会忘了往名单里加或减 ——
+    而"忘了减"意味着侧边栏把 `retrieve_session` 暴露给模型，
+    模型不带 `session_id` 调它，于是它去查一个叫 `sidebar` 的会话。
+
+    `compaction` 的教训在这里同样成立：**能从数据推的规则不要变成记忆。**
+    """
+
+    #: 全局读（不碰任何会话）。
     READ = "read"
+    #: **需要当前会话的读**：`retrieve_session` / `read_attachment`。
+    #: 它们都接受显式的 `session_id`，但"留空 = 当前会话"这个默认值
+    #: 在侧边栏里没有意义 —— 那里没有"当前会话"。
+    SESSION_READ = "session_read"
     SESSION_WRITE = "session_write"
+    #: 全局写（走 `submit_global_update` → 提案，不经沙箱）。
     GLOBAL = "global"
+
+
+#: 侧边栏常驻模型能用的作用域。
+#:
+#: 它等于"不需要当前会话的那些"。**这个集合是从 `ToolScope` 推导的，
+#: 不是列出来的名单** —— 见 `ToolScope` 的说明。
+SIDEBAR_TOOL_SCOPES: frozenset[ToolScope] = frozenset(
+    {ToolScope.READ, ToolScope.GLOBAL}
+)
 
 
 class ToolStatus(StrEnum):
@@ -136,9 +165,32 @@ class ToolContext:
     folder_id: str | None = None
     #: 当次操作里用户明确做过的事，见上面的 `GESTURE_*`。
     user_gestures: frozenset[str] = frozenset()
+    #: ★ 这次调用发生在**侧边栏**里 —— 没有当前会话（P6+.6）。
+    #:
+    #: 为什么用一个显式布尔，而不是"`session_id` 等于侧边栏哨兵值"：
+    #: 后者会让每一处 `ctx.session_id` 都悄悄指向一个不存在的会话，
+    #: 于是 `get_session(db, "sidebar")` 报出「会话不存在：sidebar」——
+    #: **那条错误看起来像数据问题，而真相是"这里根本不该有会话"。**
+    #: 有了这个字段，需要会话的工具可以在**动手之前**说清真正的原因。
+    in_sidebar: bool = False
 
     def has(self, gesture: str) -> bool:
         return gesture in self.user_gestures
+
+    def require_session(self, *, tool: str) -> str:
+        """取当前会话 id；侧边栏里**拒绝**并说清原因。
+
+        每条需要会话的工具都从这里取 `session_id`，而不是直接读字段 ——
+        这样"侧边栏不能做会话操作"这条规则只有一处实现，
+        而新增工具的人会自然用上它（字段名叫 `require_`）。
+        """
+        if self.in_sidebar:
+            raise InvalidField(
+                f"`{tool}` 需要一次具体的会话，而侧边栏不绑定任何会话。"
+                "如果要用它，请显式给出 `session_id` 参数。",
+                detail={"in_sidebar": True, "tool": tool},
+            )
+        return self.session_id
 
 
 Handler = Callable[[ToolContext, dict[str, Any]], ToolResult]
@@ -306,7 +358,11 @@ _SESSION_SCOPES = ("chat_log", "notes", "milestones", "task_plan")
 
 
 def _retrieve_session(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
-    session_id = args.get("session_id") or ctx.session_id
+    # ★ 侧边栏里没有"当前会话"，所以这里必须要求显式的 `session_id`。
+    # 没有这一句的话，`ctx.session_id`（侧边栏的哨兵值）会被拿去查一个
+    # 不存在的会话，报出「会话不存在：sidebar」—— 那条错误看起来像数据问题，
+    # 而真相是"这里根本不该有会话"。
+    session_id = args.get("session_id") or ctx.require_session(tool="retrieve_session")
     scope = args["scope"]
     filters = args.get("filter") or {}
     limit = int(args.get("max_items") or 20)
@@ -431,7 +487,8 @@ def _brief(row: Any) -> dict[str, Any]:
 
 def _read_attachment(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     """读会话资料：不带参数 = 列清单；带 `attachment_id` = 读正文的一段。"""
-    session_id = args.get("session_id") or ctx.session_id
+    # 同 `_retrieve_session`：附件属于某个会话，侧边栏必须显式给 session_id。
+    session_id = args.get("session_id") or ctx.require_session(tool="read_attachment")
     attachment_id = (args.get("attachment_id") or "").strip()
 
     if not attachment_id:
@@ -582,6 +639,36 @@ def _retrieve_cognitive(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
                         "condition": evidence.condition,
                         "effect": evidence.effect,
                         "strength": evidence.evidence_strength.value,
+                        # P7：这条是怎么来的。判定表只放 experienced/measured
+                        # 进来，所以它恒为"已验证" —— 但把依据给出来，模型
+                        # 在解释时才有一句可引的话，而不是自己编一个理由。
+                        "basis": evidence.basis.value,
+                        "verified": True,
+                    },
+                }
+            )
+
+    if scope in ("hypothesis", "all"):
+        for hypothesis in global_reads.list_hypotheses(ctx.db):
+            items.append(
+                {
+                    "path": f"C.hypothesis.{hypothesis.hypothesis_id}",
+                    "name": hypothesis.hypothesis_id,
+                    "content": hypothesis.statement,
+                    "detail": {
+                        "condition": hypothesis.condition,
+                        "effect": hypothesis.effect,
+                        # ★ 两个字段说的其实是同一件事，但**两处都写**：
+                        # `basis` 是事实，`verified` 是给模型读的结论。
+                        # 只给 `basis` 要模型自己推（它可能推错）；
+                        # 只给 `verified` 则丢了原始依据。
+                        "basis": hypothesis.basis.value,
+                        "verified": False,
+                        "verified_note": (
+                            "**未验证**：他只是说过想试。不要把它当作已证明有效的做法"
+                            "去安排计划；可以主动提议「你之前说想试试这个，要不要这次用」"
+                        ),
+                        "source_session_id": hypothesis.source_session_id,
                     },
                 }
             )
@@ -651,6 +738,11 @@ DEFINITION_FIELDS = (
     "success_criteria",
     "priority",
 )
+
+#: 可以对着它**提问**的槽位（P13）。它是 `clarify.SLOTS` 的子集对应的字段名，
+#: 而两者的关系由测试钉住 —— 问一个答案没地方落的字段，
+#: 表现是"用户答了、定义区还是空的、闸门再拦一次"。
+ASKABLE_SLOTS = ("goal", "starting_point", "success_criteria")
 
 
 def _update_task_definition(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -1011,6 +1103,55 @@ def _user_asked_for_a_change(ctx: ToolContext) -> bool:
     return ctx.has(GESTURE_PLAN_CHANGE)
 
 
+def _ask_about_task(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    """任务不明确时**反问**（P13）。
+
+    ★ 这个工具存在的理由：**改定义区需要用户的手势**
+    （`_update_task_definition` 只在用户自己要求时才动得了），
+    所以当 `goal` 是空的时候，模型**没有别的办法**知道要做什么 ——
+    它只能猜或者问。这个工具把"问"变成一个有后果的动作：
+    问题记下来、界面显示出来、**并且挡住计划修改**。
+
+    ★ 它不检查问题问得好不好。"问得含糊"是模型的问题，
+    而"问了两遍 / 问了一个不存在的字段"是系统的问题 —— 后者能判，前者不能。
+    """
+    slot = str(args.get("slot") or "")
+    question = str(args.get("question") or "")
+    if not slot or not question.strip():
+        # ★ 形状错误在**这里**说清楚（而不是抛出去）：这一层的契约是
+        # 「任何一条路径都返回 ToolResult」，模型要看到的是
+        # `rejected` + 一句能照着做的话，而不是一次崩溃。
+        # 领域的拒绝（槽位已有内容 / 已经问过一次）仍然由 dispatcher 转 ——
+        # 那两条要读库，不是形状问题。
+        return ToolResult(
+            ToolStatus.REJECTED,
+            f"要给出 `slot` 与 `question`。可以问的槽位：{'、'.join(ASKABLE_SLOTS)}。",
+        )
+    # 领域的拒绝（槽位已有内容 / 已经问过一次 / 槽位名不存在）由
+    # `Dispatcher.execute` 统一转成 `rejected` 并把 detail 交给模型 ——
+    # 这里**不再包一层**：包了就会出现两套措辞，而模型只看得见其中一套。
+    item = session_writes.ask_about_task(
+        ctx.db,
+        ctx.session_id,
+        slot=slot,
+        question=question,
+        options=args.get("options") or None,
+    )
+    return ToolResult(
+        ToolStatus.SUCCESS,
+        f"问题已记下（{item.clarification_id}，关于 `{slot}`），"
+        f"会显示在任务定义区。在它被回答或搁置之前**计划改不了** —— "
+        f"`{slot}` 是计划离不开的东西，现在改计划改的是猜出来的那个任务。"
+        f"不要再自己填一个看起来合理的值。",
+        {
+            "clarification_id": item.clarification_id,
+            "slot": item.slot,
+            "question": item.question,
+            "status": item.status.value,
+        },
+    )
+
+
 def _update_task_plan(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     """模型自己认为计划该改 —— **必须出示落在库里的证据**。
 
@@ -1292,7 +1433,9 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="retrieve_session",
-        scope=ToolScope.READ,
+        #: ★ `SESSION_READ`：它读的是**某个会话**，而侧边栏没有当前会话 ——
+        #: `session_id` 的默认值「留空 = 当前会话」在侧边栏里没有意义。
+        scope=ToolScope.SESSION_READ,
         summary=(
             "在**当前或指定会话**里按范围检索。scope 必填且只能四选一："
             "chat_log（对话原文）/ notes（笔记）/ milestones（里程碑）/ task_plan（计划与检查点）。"
@@ -1324,7 +1467,8 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="read_attachment",
-        scope=ToolScope.READ,
+        #: ★ 同上：附件属于某个会话，侧边栏没有会话。
+        scope=ToolScope.SESSION_READ,
         summary=(
             "读**用户上传给这个会话的资料**（txt / md / docx）。"
             "不带参数 = 列出全部资料清单（文件名、字数、开头一段）；"
@@ -1363,15 +1507,19 @@ _TOOLS: tuple[ToolSpec, ...] = (
         summary=(
             "读全局认知基线（这是「我是什么样的人、我擅长什么方法」的权威记录）。"
             "scope 可选 m1（十一个认知变量及其当前取值）/ m2_preferences（用户偏好与约束）"
-            "/ c_evidence（个性化证据）/ all。"
+            "/ c_evidence（**已验证**的具体做法）/ hypothesis（**他想试但还没试**的做法）"
+            "/ all。"
             "每条结果都带**字段路径**，写回时请用那个路径。"
+            "**c_evidence 与 hypothesis 的区别是可信度**：前者他试过、有效，"
+            "可以据以安排；后者他只是说过想试，**只能用来提议，不能当作依据**。"
+            "「我想试试之前那个猜想」就是查 hypothesis。"
             "**注意：这里没有置信度标注** —— 别把一条 provisional 的取值当成定论。"
         ),
         parameters=_object(
             {
                 "scope": {
                     "type": "string",
-                    "enum": ["m1", "m2_preferences", "c_evidence", "all"],
+                    "enum": ["m1", "m2_preferences", "c_evidence", "hypothesis", "all"],
                     "description": "读哪一部分。默认 all。",
                 },
                 "query": _string("关键词，按内容与名称子串过滤。可空。"),
@@ -1403,6 +1551,37 @@ _TOOLS: tuple[ToolSpec, ...] = (
         handler=_retrieve_strategy,
     ),
     # ---- 2. 定义与动机 ----
+    ToolSpec(
+        name="ask_about_task",
+        scope=ToolScope.SESSION_WRITE,
+        summary=(
+            "任务定义区缺了计划离不开的东西时**先问**，不要猜（P13）。"
+            "★ 你**改不了** `goal`（改定义区需要用户自己的手势），所以目标不明时"
+            "你只有两条路：问，或者猜。这个工具是前者，而它是有后果的 ——"
+            "问题会被记下、显示在定义区，并在被回答或搁置之前**挡住计划修改**。"
+            "★ 什么时候该用：用户说「帮我复习第三章」而你不知道那是哪份材料；"
+            "或者他说「学一下这个」而没有说清要达成什么。"
+            "★ 什么时候不该用：槽位已经有内容（会被拒绝），"
+            "或者你在问一件与计划无关的事（那就在回复里问，不要占定义区）。"
+            "`options` 可给候选答案，让回答有形状。"
+        ),
+        parameters=_object(
+            {
+                "slot": {
+                    "type": "string",
+                    "enum": list(ASKABLE_SLOTS),
+                    "description": "定义区里空着的那个字段。",
+                },
+                "question": _string("要问的那一句。具体、可回答，一句话就够。"),
+                "options": _array(
+                    _string("候选答案。"),
+                    "可选的候选项 —— 让他不用从零开始想怎么答。",
+                ),
+            },
+            required=["slot", "question"],
+        ),
+        handler=_ask_about_task,
+    ),
     ToolSpec(
         name="update_task_definition",
         scope=ToolScope.SESSION_WRITE,
@@ -1705,6 +1884,11 @@ _TOOLS: tuple[ToolSpec, ...] = (
             "**`add_preference` 的 statement 必须把理由一起写进来**（A19）："
             "写「我讨厌看网课，因为浪费时间」而不是「我讨厌网课」—— "
             "理由才是能泛化的那一半，缺了它下次会用「看 2 小时讲座」来满足「别看网课」。"
+            "**`archive` / `restore` / `revise` 要用逐条地址**"
+            "（`C.hypothesis.H-0001`），不能只给集合根 —— 对一整类东西归档没有确定的含义。"
+            "这三个动作**永远要等用户确认**（R3 也是 needs_confirmation）："
+            "删除和改写是他对自己认知的处置，你只能提议，"
+            "而他要么在界面上自己点，要么在待确认队列里点头。"
         ),
         parameters=_object(
             {
@@ -1718,7 +1902,14 @@ _TOOLS: tuple[ToolSpec, ...] = (
                         {
                             "action": {
                                 "type": "string",
-                                "enum": ["add_preference", "update_parameter", "no_change"],
+                                "enum": [
+                                    "add_preference",
+                                    "update_parameter",
+                                    "archive",
+                                    "restore",
+                                    "revise",
+                                    "no_change",
+                                ],
                             },
                             "target": _string(
                                 "全局地址，必须规范化：`M2.preferences` / "
@@ -1777,9 +1968,18 @@ _TOOLS: tuple[ToolSpec, ...] = (
 TOOLS: dict[str, ToolSpec] = {spec.name: spec for spec in _TOOLS}
 
 
-def tool_schemas() -> list[ToolSchema]:
-    """交给模型的工具清单。**顺序固定**，便于比对轨迹。"""
-    return [spec.schema() for spec in _TOOLS]
+def tool_schemas(
+    scopes: frozenset[ToolScope] | None = None,
+) -> list[ToolSchema]:
+    """交给模型的工具清单。**顺序固定**，便于比对轨迹。
+
+    `scopes=None` = 全部（会话讨论用的就是它，行为与以前逐字相同）。
+    侧边栏传 `SIDEBAR_TOOL_SCOPES` —— 于是"模型看得见哪些工具"
+    与"分发器允许哪些工具"用的是**同一个集合**，不会一处改了一处忘。
+    """
+    return [
+        spec.schema() for spec in _TOOLS if scopes is None or spec.scope in scopes
+    ]
 
 
 def iter_tools() -> tuple[ToolSpec, ...]:

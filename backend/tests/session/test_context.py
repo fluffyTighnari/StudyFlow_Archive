@@ -85,7 +85,7 @@ def _add_evidence(db: Session, router_, *, statement: str, condition: str):
                         "evidence_strength": "medium",
                         "source": "user_direct",
                     },
-                    basis="stated",
+                    basis="experienced",
                 )
             ],
         )

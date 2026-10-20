@@ -59,6 +59,14 @@ SESSION_TABLES = frozenset(
         "milestone",
         "session_summary",
         "state_snapshot",
+        #: 澄清问题（任务不明确时反问，P13）。它属于会话域：
+        #: 一行问题挂在某个会话上，答案直接写进那个会话的定义区。
+        "clarification",
+        #: 句子标注（输出可标注某句并看推断理由，P15）。它指向本会话的一条
+        #: 助手消息里逐字存在的一段 —— 跨出这个会话，那个理由就不成立了。
+        "annotation",
+        #: 复盘之后的感想（P15）。四要素分项存 —— V-PAR 评的就是它的完整度。
+        "reflection",
     }
 )
 
@@ -83,7 +91,20 @@ def test_every_table_is_registered_and_classified(session: Session) -> None:
     # + 1 张基础设施表（`llm_profile`，P6.x 的模型调用配置）
     # + 2 张基准运行表（`benchmark_run` / `benchmark_response`，
     #   Benchmark 设计期裁定 G-03 = 甲：分数必须能追回答案）
-    assert len(Base.metadata.tables) == 33
+    # + 2 张领域勾选表（`domain_topic` 目录 / `domain_profile` 档案，
+    #   裁定 岔路 A = 乙：勾选进库并过路由的记账）
+    # + 2 张对话记忆表（`context_compact` 压缩记录 / `sidebar_message`
+    #   侧边栏常驻模型的对话，P6+.6）
+    # + 1 张假说表（`hypothesis`，P7 语义拆分：**想试但还没试**的具体做法）。
+    #   它不参与装配，但会进上下文并标为猜想，所以它是全局认知，
+    #   必须过 Router、必须有日志 —— 也就必须在 `PROVENANCE` 里表态。
+    # + 1 张标注表（`annotation`，P15：用户对助手某句话的追问）。
+    #   它**不是**关于用户的断言（`PROVENANCE` 里说明为什么不需要审计），
+    #   但它必须挂在一个会话上 —— 所以归沙箱（17 → 18 张）。
+    # + 1 张感想表（`reflection`，P15：复盘之后按指引写的四要素产物）。
+    #   它**是**用户自己写的字，所以同样不需要审计；但它必须挂在会话上，
+    #   而且形状有理由（分项存，V-PAR 评的就是那份完整度）→ 沙箱（18 → 19 张）。
+    assert len(Base.metadata.tables) == 41
 
 
 def test_every_declared_provenance_explains_itself() -> None:

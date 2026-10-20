@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from tests.helpers import items
 
 
 def _r4a_intent(statement: str = "我更喜欢用思维导图整理") -> dict:
@@ -34,14 +35,14 @@ def test_submitting_a_confirmable_intent_leaves_the_proposal_pending(
     assert body["results"][0]["verdict"] == "needs_confirmation"
     assert body["results"][0]["status"] == "pending"
     # 还没裁决 → 偏好**没有**落库。
-    assert client.get("/api/preferences").json() == []
+    assert items(client.get("/api/preferences").json()) == []
 
 
 def test_pending_queue_is_queryable(client: TestClient) -> None:
     submitted = client.post("/api/proposals", json=_r4a_intent()).json()
-    pending = client.get("/api/proposals?status=pending_confirmation").json()
+    pending = items(client.get("/api/proposals?status=pending_confirmation").json())
     assert [row["proposal_id"] for row in pending] == [submitted["proposal_id"]]
-    assert client.get("/api/proposals?status=applied").json() == []
+    assert items(client.get("/api/proposals?status=applied").json()) == []
 
 
 def test_proposal_detail_carries_the_system_verdict(client: TestClient) -> None:
@@ -86,10 +87,10 @@ def test_approving_writes_the_preference_and_closes_the_proposal(
     assert body["status"] == "applied"
     assert body["results"][0]["status"] == "applied"
 
-    assert [row["statement"] for row in client.get("/api/preferences").json()] == [
+    assert [row["statement"] for row in items(client.get("/api/preferences").json())] == [
         "我更喜欢用思维导图整理"
     ]
-    assert client.get("/api/proposals?status=pending_confirmation").json() == []
+    assert items(client.get("/api/proposals?status=pending_confirmation").json()) == []
 
 
 def test_rejecting_leaves_no_data_but_keeps_the_record(client: TestClient) -> None:
@@ -102,10 +103,10 @@ def test_rejecting_leaves_no_data_but_keeps_the_record(client: TestClient) -> No
     ).json()
     assert body["status"] == "rejected"
     assert body["results"][0]["status"] == "rejected"
-    assert client.get("/api/preferences").json() == []
+    assert items(client.get("/api/preferences").json()) == []
 
     # 拒绝也必须留痕 —— 否则「我问过但被否了」这件事会消失，LLM 会反复重提。
-    logs = client.get("/api/router-logs").json()
+    logs = items(client.get("/api/router-logs").json())
     assert logs[0]["status"] == "rejected"
     assert "我没这习惯" in logs[0]["reasoning"]
 
@@ -121,7 +122,7 @@ def test_resolving_twice_is_409(client: TestClient) -> None:
     assert second.status_code == 409
     assert second.json()["code"] == "version_conflict"
     # 关键：没有写第二条偏好。
-    assert len(client.get("/api/preferences").json()) == 1
+    assert len(items(client.get("/api/preferences").json())) == 1
 
 
 def test_resolving_an_intent_from_another_proposal_is_422(client: TestClient) -> None:
@@ -172,7 +173,7 @@ def test_partial_approval_keeps_the_proposal_open(client: TestClient) -> None:
         "I-A": "applied",
         "I-B": "pending",
     }
-    assert [row["statement"] for row in client.get("/api/preferences").json()] == ["偏好甲"]
+    assert [row["statement"] for row in items(client.get("/api/preferences").json())] == ["偏好甲"]
 
 
 def test_inferred_parameter_update_is_rejected_and_still_audited(
@@ -208,8 +209,8 @@ def test_inferred_parameter_update_is_rejected_and_still_audited(
     assert body["status"] == "rejected"
     assert body["results"][0]["verdict"] == "must_reject"
 
-    assert client.get("/api/m1/V-SE/history").json() == []
-    logs = client.get("/api/router-logs").json()
+    assert items(client.get("/api/m1/V-SE/history").json()) == []
+    logs = items(client.get("/api/router-logs").json())
     assert logs[0]["status"] == "rejected"
     assert logs[0]["trigger"] == "R3"
 
@@ -242,5 +243,5 @@ def test_duplicate_intent_ids_are_refused_before_anything_is_written(
     }
     response = client.post("/api/proposals", json=payload)
     assert response.status_code == 422
-    assert client.get("/api/proposals").json() == []
-    assert client.get("/api/router-logs").json() == []
+    assert items(client.get("/api/proposals").json()) == []
+    assert items(client.get("/api/router-logs").json()) == []
