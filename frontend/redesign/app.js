@@ -1,9 +1,26 @@
 'use strict';
 
 /* ═══════════════════════════════════════════════════════════════════
-   觅学之契 · static interaction prototype
-   All data is local and fictional. No network, no backend.
+   觅学之契 · 学习流档案 —— 界面层
+
+   这个文件**原来是纯静态原型**（数据写死、没有网络）。现在它连真后端：
+   侧栏读 /api/folders 与 /api/sessions，一个会话读 /api/sessions/{id}/state，
+   对话走 POST /api/sessions/{id}/discuss/stream（SSE）。
+
+   ★ 改动的边界很小心：**只换了数据从哪来**。类名、间距、动效一处没动。
+     原型里的假数据（三份会话的样例消息 / 计划 / 动机 / 上下文）已经删掉 ——
+     留着它们，接口坏掉时界面会"看起来正常"，而那正是最难查的故障。
+
+   分层（为了稳定、清晰、可长期维护）：
+     src/api.js     与后端说话的唯一起点（含 SSE 拆帧与错误形状）
+     src/adapt.js   后端形状 → 界面形状（换算集中一处，不在渲染里散落 if）
+     src/live.js    一轮讨论的时序（事件 → 动作，不碰 DOM）
+     app.js         渲染与交互（本文件）
    ═══════════════════════════════════════════════════════════════════ */
+
+import { api } from './src/api.js';
+import { adaptDetail, adaptWorkspace, escape, paragraphs } from './src/adapt.js';
+import { runDiscussion } from './src/live.js';
 
 const $  = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -161,212 +178,79 @@ const PROFILES = [
   },
 ];
 
-const PLAN_V3 = {
-  version: 3,
-  steps: [
-    { id: 'ST-001', action: '建立词根地图：-spect / -tract / -fer', status: 'done', meta: '产出 · 一张词根草图' },
-    { id: 'ST-002', action: '精读 unit 1 例句，标注 25 个词', status: 'doing', meta: '进行中 · 方法 M-SE-03' },
-    { id: 'ST-003', action: '自测：词根 → 词义反向回忆', status: 'pending', meta: '检查点 CP-01' },
-    { id: 'ST-004', action: '第 2 天：间隔复习 + 错词重写', status: 'pending', meta: '间隔 · 18 h' },
-  ],
-  checkpoint: {
-    title: '检查点 CP-01',
-    text: '第 3 步完成后，不看书复述 20 / 25 个词根。',
-    criteria: '通过标准 · 20 / 25；未通过则回到第 2 步重读例句。',
-  },
-};
-
-const PLAN_V4 = {
-  version: 4,
-  steps: [
-    { id: 'ST-001', action: '建立词根地图：-spect / -tract / -fer', status: 'done', meta: '产出 · 一张词根草图' },
-    { id: 'ST-002', action: '精读 unit 1 前 25 词，标注词根与一次搭配', status: 'doing', meta: '进行中 · 方法 M-SE-03' },
-    { id: 'ST-005', action: '反向回忆后 25 词（先测后读）', status: 'pending', meta: '新增 · 提取优先' },
-    { id: 'ST-003', action: '自测：词根 → 词义反向回忆', status: 'pending', meta: '检查点 CP-01' },
-    { id: 'ST-004', action: '第 2 天：间隔复习 + 错词重写', status: 'pending', meta: '间隔 · 18 h' },
-  ],
-  checkpoint: {
-    title: '检查点 CP-01',
-    text: '第 4 步完成后，不看书复述 20 / 25 个词根，并说出后 25 词中的一个搭配。',
-    criteria: '通过标准 · 20 / 25；未通过则回到第 2 步重读例句。',
-  },
-};
-
-const MOTIVATION_S1 = {
-  type: '内在 · 主题兴趣',
-  typeNote: 'INTRINSIC · TOPIC',
-  strength: 3,
-  drivers: [
-    '三十天内读懂考研阅读的核心词',
-    '把词根串成网络，而不是逐词抄写',
-    '每天一个可完成的短回合',
-  ],
-  obstacles: [
-    { title: '启动阻力', note: '晚上坐下后难以开始；常以刷手机替代第一句。' },
-    { title: '前置知识缺口', note: '词缀含义记不牢，遇到生词容易退回逐字查。' },
-  ],
-  revision: '10-16 · 你把「每天 50 词」改成「每天 25 词」 · 由你写入',
-};
-
-const CONTEXT_S1 = {
-  used: '27.4k',
-  total: '32k',
-  pct: 86,
-  segments: [46, 18, 12, 10],
-  sections: [
-    { name: '偏好', value: '4 条 · 其中硬约束 2', meta: 'hard' },
-    { name: '方法卡', value: '3 张 · 按环节筛选', meta: 'cards' },
-    { name: '基线 / 证据', value: '6 条 · 仅 stated 通道', meta: 'stated' },
-    { name: '策略库', value: '2 条', meta: 'library' },
-    { name: '当前计划', value: '第 3 版 · 4 步', meta: 'plan' },
-  ],
-  note: '侧记使用独立记忆与独立计量。它可以看到全局，但写入只能是提案。',
-};
-
-const MOTIVATION_S2 = {
-  type: '外在 · 截止时间',
-  typeNote: 'EXTRINSIC · DEADLINE',
-  strength: 2,
-  drivers: ['下周要交一份英文摘要', '想在会议前把例句读顺'],
-  obstacles: [{ title: '时间碎片化', note: '通勤时段只能做单句，不适合长回合。' }],
-  revision: '昨天 · 你把计划从「每天 40 分钟」改成「通勤两段」 · 由你写入',
-};
-
-const CONTEXT_S2 = {
-  used: '18.2k',
-  total: '32k',
-  pct: 57,
-  segments: [35, 20, 10, 12],
-  sections: [
-    { name: '偏好', value: '4 条 · 其中硬约束 2', meta: 'hard' },
-    { name: '方法卡', value: '2 张', meta: 'cards' },
-    { name: '基线 / 证据', value: '4 条', meta: 'stated' },
-    { name: '策略库', value: '1 条', meta: 'library' },
-    { name: '当前计划', value: '第 2 版 · 3 步', meta: 'plan' },
-  ],
-  note: '这一轮只带入与「例句」相关的上下文；其余条目被检索维度排除。',
-};
-
-const PLAN_S2 = {
-  version: 2,
-  steps: [
-    { id: 'ST-101', action: '挑出 -tract 的三条例句', status: 'done', meta: '产出 · 3 句' },
-    { id: 'ST-102', action: '读顺三句，各造一句自己的话', status: 'done', meta: '方法 · 产出式复述' },
-    { id: 'ST-103', action: '通勤时做单句跟读', status: 'doing', meta: '间隔 · 20 h' },
-  ],
-  checkpoint: {
-    title: '检查点 CP-02',
-    text: '明早不看笔记，说出 -tract 的三个变体。',
-    criteria: '通过标准 · 3 / 3；未通过则保留在通勤清单里。',
-  },
-};
-
-const PLAN_S3 = {
-  version: 5,
-  steps: [
-    { id: 'ST-201', action: '整理三轮遗忘曲线记录', status: 'done', meta: '产出 · 一张曲线' },
-    { id: 'ST-202', action: '标出三次以上遗忘的词', status: 'done', meta: '17 个词' },
-    { id: 'ST-203', action: '把错词并入第 3 周计划', status: 'done', meta: '已完成' },
-  ],
-  checkpoint: {
-    title: '检查点 CP-03',
-    text: '复盘时能说出哪三类词最容易在 48 小时节点滑落。',
-    criteria: '通过标准 · 命中两类；未通过则在复盘里补一次提取练习。',
-  },
-};
-
-const BASE_MESSAGES_S1 = [
-  {
-    role: 'assistant',
-    time: '20:58',
-    html: '<p class="lede">你把这三十天的目标写成了「能读懂考研阅读里的核心词」，而不是「背完 unit 1」。这两件事的差别，决定了今天该做的是词根网络，而不是逐词抄写。</p>'
-      + '<p>unit 1 里反复出现的只有三条词根：<strong>-spect</strong>（看）、<strong>-tract</strong>（拉）、<strong>-fer</strong>（带）。先让它们互相咬合，再往例句里回收——否则你会记住 50 个孤立的词，而不是一张网。</p>'
-      + '<p>今天的回合只有两件事：认出词根，和在句子里看见它。<span class="cite" data-basis="你在偏好里写过：「我喜欢直接跟模型一边交流一边学习记笔记。」（2026-10-12 · 由你写入）">先从你最熟的那一类例句开始</span>。</p>',
-    traces: [
-      { label: '读取会话', note: '目标 · 额外要求', state: 'is-done' },
-      { label: '检索偏好', note: '2 条相关', state: 'is-done' },
-    ],
-    foot: true,
-  },
-  {
-    role: 'user',
-    time: '21:04',
-    text: '第一单元太长了，我想拆成两天，每天 25 个词。',
-    foot: true,
-  },
-];
-
-const BASE_MESSAGES_S2 = [
-  {
-    role: 'assistant',
-    time: '昨天 22:10',
-    html: '<p class="lede">上一周你卡在 <strong>-tract</strong> 的三个变体上。今天不补新词，只把三条例句读顺，再各造一句。</p>'
-      + '<p>如果造不出来，就说明你记住的是中文释义，不是这个词根的「拉」这个动作。</p>',
-    traces: [{ label: '检索计划', note: '第 2 周 · 3 步', state: 'is-done' }],
-    foot: true,
-  },
-  {
-    role: 'user',
-    time: '昨天 22:18',
-    text: '明天只做两段可以吗？',
-    foot: true,
-  },
-  {
-    role: 'assistant',
-    time: '昨天 22:18',
-    html: '<p>可以。把第 2 段挪到明早，间隔从 14 小时变成 20 小时——仍在有效区间内。我会按这个顺序记一笔，不动计划主体。</p>',
-    traces: [{ label: '核对间隔', note: '14 h → 20 h', state: 'is-done' }],
-    foot: true,
-  },
-];
-
-const BASE_MESSAGES_S3 = [
-  {
-    role: 'assistant',
-    time: '10-18',
-    html: '<p class="lede">这一轮的计划已经全部落定。复盘由你点，不自动触发。</p>'
-      + '<p>写执行时的感受就好——尤其是哪一步你想跳过、为什么。感想会整份进入模型，用来校准偏好与基线；它不会直接改写任何读数。</p>'
-      + '<p class="muted">如果你觉得没有什么可写，也可以直接点「完成会话」。空白同样是一条信息。</p>',
-    traces: [{ label: '核对计划', note: '3 / 3 已完成', state: 'is-done' }],
-    foot: true,
-  },
-];
-
 const EMPTY_CONTEXT = {
   used: '0', total: '32k', pct: 0, segments: [0, 0, 0, 0],
   sections: [],
   note: '这个会话还没有产生上下文。第一句话之后，这里会显示它实际看见的条目。',
 };
 
-function makeDetail(key) {
-  if (key === 's1') {
-    return {
-      messages: structuredClone(BASE_MESSAGES_S1),
-      plan: structuredClone(PLAN_V3),
-      motivation: structuredClone(MOTIVATION_S1),
-      context: structuredClone(CONTEXT_S1),
-      demoDone: false,
+/** 一个会话的**空壳**：打开会话时立刻有东西可画，网络回来之前界面不空白。 */
+function makeDetail() {
+  return {
+    session: null,
+    loaded: false,
+    messages: [],
+    plan: null,
+    motivation: null,
+    input: null,
+    context: structuredClone(EMPTY_CONTEXT),
+    versions: null,
+  };
+}
+
+/**
+ * 把侧栏（领域 + 会话）从后端读回来。
+ *
+ * 归档的两类一起读：**「已归档」不是另一个页面**，它就是同一批数据里
+ * `archived_at` 不为空的那几行。分成两次请求的话，两处状态一定会有对不上的时候。
+ */
+async function loadWorkspace() {
+  const [foldersPayload, sessionsPayload] = await Promise.all([
+    api.folders(true),
+    api.sessions(true),
+  ]);
+  const { folders, archivedSessions, archivedFolders } =
+    adaptWorkspace(foldersPayload, sessionsPayload);
+
+  // 保住展开/收起状态：重新读一趟侧栏不该把用户展开的领域全收起来
+  const opened = new Map(state.folders.map((f) => [f.id, f.open]));
+  for (const folder of folders) {
+    if (opened.has(folder.id)) folder.open = opened.get(folder.id);
+    if (folder.sessions.some((s) => s.id === state.currentSession)) folder.open = true;
+  }
+
+  state.folders = folders;
+  state.archivedSessions = archivedSessions;
+  state.archivedFolders = archivedFolders;
+  if (!findSession(state.currentSession)) state.currentSession = null;
+}
+
+/**
+ * 读一个会话的全部状态。
+ *
+ * `render: false` 用在"后台对齐"上：刚结束的那一轮已经在界面上画完了，
+ * 再整页重绘会把刚出现的字闪一下。后台只更新数据，界面按需再画。
+ */
+async function loadDetail(sessionId, { render = true } = {}) {
+  if (!sessionId) return null;
+  const payload = await api.state(sessionId);
+  const previous = state.details[sessionId];
+  const detail = adaptDetail(payload);
+
+  // `/state` 里没有上下文计量（计量是 `done` 事件给的）。重读时若这一轮没给新数字，
+  // 保留上一次**真的测到过**的那份，并写明它是哪一轮的 —— 而不是把它抹成"没测到"，
+  // 也不是凭空补一个好看的数字。
+  const measuredNow = detail.context && detail.context.measured;
+  if (!measuredNow && previous && previous.context && previous.context.measured) {
+    detail.context = {
+      ...previous.context,
+      note: '这一份是上一次推演结束时的数字；这一轮还没跑，所以不是最新的。',
     };
   }
-  if (key === 's2') {
-    return {
-      messages: structuredClone(BASE_MESSAGES_S2),
-      plan: structuredClone(PLAN_S2),
-      motivation: structuredClone(MOTIVATION_S2),
-      context: structuredClone(CONTEXT_S2),
-      demoDone: true,
-    };
-  }
-  if (key === 's3') {
-    return {
-      messages: structuredClone(BASE_MESSAGES_S3),
-      plan: structuredClone(PLAN_S3),
-      motivation: structuredClone(MOTIVATION_S1),
-      context: structuredClone(CONTEXT_S1),
-      demoDone: true,
-    };
-  }
-  return { messages: [], plan: null, motivation: null, context: structuredClone(EMPTY_CONTEXT), demoDone: false };
+
+  state.details[sessionId] = detail;
+  if (render && state.currentSession === sessionId) renderSession();
+  return detail;
 }
 
 /* ── state ────────────────────────────────────────────────────────── */
@@ -381,8 +265,10 @@ const state = {
   busyBehavior: 'queue',
   activeProfile: 'p-local',
   profiles: structuredClone(PROFILES),
-  currentSession: 'S-0001',
-  currentFolder: 'F-01',
+  currentSession: null,
+  currentFolder: null,
+  //: 点开计划项后，这一轮讨论的锚点（只由用户点击产生）。
+  anchorStep: null,
   marginTab: 'plan',
   inlineKind: null,
   busy: false,
@@ -393,45 +279,15 @@ const state = {
   bench: { form: 'full', status: 'interrupted', answered: 7 },
   familiar: new Set(['英语 · 考研词汇', '认知科学 · 记忆']),
   interested: new Set(['哲学 · 认识论']),
-  folders: [
-    {
-      id: 'F-01', name: '英语 · 考研词汇', goal: '三十天读懂考研阅读里的核心词', open: true,
-      sessions: [
-        { id: 'S-0001', title: '一 unit 1 的词根网络', state: 'active', time: '21:04', detail: 's1' },
-        { id: 'S-0002', title: '例句精读 · 第 2 周', state: 'active', time: '昨天', detail: 's2' },
-        { id: 'S-0003', title: '复盘：遗忘曲线校准', state: 'review', time: '10-18', detail: 's3' },
-      ],
-    },
-    {
-      id: 'F-02', name: '认知科学 · 记忆机制', goal: '把间隔重复用在真实的学习回合里', open: false,
-      sessions: [
-        { id: 'S-0004', title: '间隔重复的边界条件', state: 'active', time: '10-17' },
-        { id: 'S-0005', title: '提取练习 vs 重读', state: 'draft', time: '10-15' },
-      ],
-    },
-    {
-      id: 'F-03', name: '写作 · 论证结构', goal: '写出有让步、有边界的论证', open: false,
-      sessions: [
-        { id: 'S-0006', title: '议论文的让步段', state: 'completed', time: '09-30' },
-      ],
-    },
-  ],
-  archivedSessions: [
-    { id: 'S-0091', title: '暑期数学复盘', folderId: 'F-03', folderName: '写作 · 论证结构', state: 'completed', time: '09-28' },
-    { id: 'S-0092', title: '旧版 · 单词听写实验', folderId: 'F-01', folderName: '英语 · 考研词汇', state: 'abandoned', time: '08-12' },
-  ],
-  archivedFolders: [
-    { id: 'F-A1', name: '日语 · N2 听力', sessionCount: 4 },
-  ],
+  folders: [],
+  archivedSessions: [],
+  archivedFolders: [],
   details: {},
   confirmAction: null,
   sessionSeq: 100,
   folderSeq: 10,
 };
 
-state.details['S-0001'] = makeDetail('s1');
-state.details['S-0002'] = makeDetail('s2');
-state.details['S-0003'] = makeDetail('s3');
 
 /* ── icons ────────────────────────────────────────────────────────── */
 const icon = (name, cls = '') => `<svg${cls ? ` class="${cls}"` : ''}><use href="#i-${name}"/></svg>`;
@@ -447,6 +303,8 @@ const marginBody = $('#margin-body');
 const workspace = $('#workspace');
 const composer = $('#composer');
 const composerInput = $('#composer-input');
+//: 占位文案要能还原 —— 点开计划项时会临时改成「关于第 N 步…」。
+const COMPOSER_PLACEHOLDER = composerInput ? composerInput.placeholder : '';
 const sendBtn = $('#send-btn');
 const popLayer = $('#popover-layer');
 const toastLayer = $('#toast-layer');
@@ -461,6 +319,21 @@ function findSession(id) {
   }
   return null;
 }
+/**
+ * 侧栏列表里**那一行本身**（用来写）。
+ *
+ * 与 `findSession()` 的区别是它有意的：那个函数为了顺手，返回的是展开出来的
+ * 副本（多了 `folderId` 与 `folder`），改它不会改到列表 —— 于是"改名之后界面没变"。
+ * 要改数据就走这个函数。
+ */
+function findSessionRow(id) {
+  for (const folder of state.folders) {
+    const found = folder.sessions.find((s) => s.id === id);
+    if (found) return found;
+  }
+  return null;
+}
+
 function currentSession() { return findSession(state.currentSession); }
 function activeDetail() {
   if (!state.currentSession) return null;
@@ -596,8 +469,18 @@ function renderThread() {
   }
   threadEnd.hidden = false;
   const messages = detail.messages.map((m, i) => messageMarkup(m, i)).join('');
-  thread.innerHTML = `<div class="date-divider"><span>2026 · 10 · 20</span><span>周一 · 第 3 卷</span></div>${messages}`;
+  thread.innerHTML = `${dateDivider(detail)}${messages}`;
   bindInkDots();
+}
+
+/** 卷首那条横线。日期来自这个会话的创建时间 —— 写死的话，第二天它就错了。 */
+function dateDivider(detail) {
+  const iso = detail.session?.created_at;
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()];
+  return `<div class="date-divider"><span>${d.getFullYear()} · ${pad(d.getMonth() + 1)} · ${pad(d.getDate())}</span><span>${week}</span></div>`;
 }
 
 function emptyThreadMarkup(session) {
@@ -652,7 +535,7 @@ function messageMarkup(message, index) {
       ${traceMarkup(message.traces)}
     </div>
     <div class="msg-body">
-      <div class="msg-head"><span class="msg-role"><em>契</em> · MOUXUE</span><span class="msg-meta">${message.traces ? '推演 3 步' : '回答'}</span></div>
+      <div class="msg-head"><span class="msg-role"><em>契</em> · MOUXUE</span><span class="msg-meta">${message.traces ? `推演 ${message.traces.length} 步` : '回答'}</span></div>
       <div class="msg-prose">${message.html || ''}</div>
       ${proposal}
       ${foot}
@@ -747,8 +630,8 @@ function planMarkup(plan) {
       <div class="plan-progress-bar"><i style="--p:${pct}%"></i></div><span>${pct}%</span>
     </div>
     <ul class="steps">
-      ${plan.steps.map((step) => `<li class="step is-${step.status}" data-action="toggle-step" data-step-id="${step.id}">
-        <span class="step-check">${icon('check')}</span>
+      ${plan.steps.map((step) => `<li class="step is-${step.status}" data-action="discuss-step" data-step-id="${step.id}" title="点这一项，与模型讨论它">
+        <span class="step-check" data-action="toggle-step" data-step-id="${step.id}" role="button" tabindex="0" aria-label="标记完成">${icon('check')}</span>
         <div class="step-body">
           <div class="step-action">${escapeHtml(step.action)}</div>
           <div class="step-meta"><span class="status-tag">${statusLabel(step.status)}</span><span>·</span><span>${escapeHtml(step.meta || '')}</span></div>
@@ -914,6 +797,8 @@ function cancelRun({ interrupted = false, silent = false } = {}) {
   const run = state.run;
   if (!run) return;
   run.cancelled = true;
+  // 真的掐断连接。只关界面上的转圈是**假停止** —— 服务端会把整轮跑完。
+  if (run.discussion) run.discussion.stop();
   clearInterval(run.statusTimer);
   if (run.article) {
     run.article.classList.remove('is-live');
@@ -930,11 +815,17 @@ function cancelRun({ interrupted = false, silent = false } = {}) {
   if (interrupted && !silent) toast('已停止生成 · 未完成的部分保留在记录里');
 }
 
-async function startAssistantRun({ mode = 'reply', userText = '' } = {}) {
+/**
+ * 一轮真实讨论。界面上看到的三件事都来自服务端：
+ * 状态词（`stage`）、逐字流（`token`）、工具动作与结果（`tool_call` / `tool_result`）。
+ */
+async function startLiveRun({ userText, stepId = null }) {
   if (state.busy) return;
   const detail = activeDetail();
-  if (!detail) return;
-  const run = { cancelled: false, article: null, statusTimer: null };
+  const sessionId = state.currentSession;
+  if (!detail || !sessionId) return;
+
+  const run = { cancelled: false, article: null, statusTimer: null, discussion: null };
   state.run = run;
   state.busy = true;
   updateBusyUI();
@@ -944,37 +835,66 @@ async function startAssistantRun({ mode = 'reply', userText = '' } = {}) {
   threadWrap.classList.add('is-thinking');
   const statusEl = article.querySelector('.status-word');
   const noteEl = article.querySelector('.thinking-note');
-  const words = mode === 'demo'
-    ? ['辨明目标', '翻检偏好', '核对计划', '起草改动']
-    : ['辨明目标', '检索上下文', '组织回答'];
-  const notes = mode === 'demo'
-    ? [
-      '先不急着改计划——我在核对这句话是在改「词数」，还是在改「什么时候提取」。',
-      '你在偏好里写过「先测再读比先读再测更牢」。这条不是建议，是硬约束。',
-      '当前计划第 3 版；按整份列表提交的语义，我只动第 2 步并插入一步。',
-      '草案会先放在你面前。你点头之前，计划表不会变化。',
-    ]
-    : [
-      '我先不改动任何东西。先把这句话放进这一轮的讨论里。',
-      '检索与当前会话相关的偏好、方法卡与基线。',
-      '组织一段回答；任何写入都会先出草案。',
-    ];
-  startStatusCycle(run, statusEl, words);
+  startStatusCycle(run, statusEl, ['辨明目标', '检索上下文', '组织回答']);
 
-  const step = async (ms) => { await wait(ms); return !run.cancelled; };
+  const prose = article.querySelector('.msg-prose');
+  const meta = article.querySelector('.msg-meta');
+  let streamed = 0;
 
-  if (!(await step(850))) return;
-  if (noteEl) { noteEl.textContent = notes[1] || notes[0]; }
-  addTrace(article, mode === 'demo' ? '读取会话' : '读取上下文', '目标 / 额外要求', 'is-done');
-  if (!(await step(850))) return;
-  addTrace(article, '检索偏好', mode === 'demo' ? '2 条 · 1 条硬约束' : '1 条相关', 'is-done');
-  if (noteEl) noteEl.textContent = notes[2] || notes[1];
-  if (!(await step(800))) return;
-  if (mode === 'demo') {
-    addTrace(article, '核对计划', '第 3 版 · 4 步', 'is-done');
-    if (noteEl) noteEl.textContent = notes[3] || notes[2];
-    if (!(await step(700))) return;
-  }
+  const view = {
+    status(word, note) {
+      if (statusEl.textContent !== word) statusEl.textContent = word;
+      if (note !== undefined && noteEl) noteEl.textContent = note || '';
+    },
+    thinking(text) {
+      if (noteEl && text) noteEl.textContent = String(text).slice(0, 160);
+    },
+    append(chunk) {
+      if (!chunk) return;
+      // 逐字拆成 span：原型里的"墨迹"动画就是这个类名 + 递延
+      for (const ch of Array.from(chunk)) {
+        const span = document.createElement('span');
+        span.className = 'chunk';
+        span.textContent = ch;
+        prose.appendChild(span);
+      }
+      streamed += chunk.length;
+      if (streamed > 80) scrollThread();
+    },
+    trace(row) {
+      const el = document.createElement('div');
+      el.className = `trace-item ${row.state || 'is-running'}`;
+      el.dataset.call = row.callId || '';
+      el.innerHTML = `<strong>${escape(row.label)}</strong><span>${escape(row.note || '')}</span>`;
+      article.querySelector('.msg-trace').appendChild(el);
+      scrollThread();
+    },
+    traceUpdate(callId, row) {
+      const el = article.querySelector(`.trace-item[data-call="${callId}"]`);
+      if (!el) {
+        view.trace(row);
+        return;
+      }
+      el.className = `trace-item ${row.state}`;
+      el.innerHTML = `<strong>${escape(row.label)}</strong><span>${escape(row.note || '')}</span>`;
+    },
+    finish(payload) {
+      void finalizeLive({ run, article, prose, meta, detail, sessionId, payload });
+    },
+    fail(message) {
+      failLive({ run, article, message });
+    },
+  };
+
+  const discussion = runDiscussion({ sessionId, text: userText, stepId, view });
+  run.discussion = discussion;
+  await discussion.settled;
+}
+
+/** 收官：先把界面上那条画完，再回头和后端对齐一次。 */
+async function finalizeLive({ run, article, prose, meta, detail, sessionId, payload }) {
+  if (run.cancelled) return;
+  clearInterval(run.statusTimer);
 
   const thinking = article.querySelector('.thinking-field');
   if (thinking) {
@@ -982,52 +902,46 @@ async function startAssistantRun({ mode = 'reply', userText = '' } = {}) {
     setTimeout(() => thinking.remove(), 420);
   }
 
-  const replyHtml = mode === 'demo'
-    ? '<p class="lede">可以拆，但拆点不在「词数」，在「提取」。</p>'
-      + '<p>前 25 个词当天精读；后 25 个不提前看——第二天先做一次反向回忆，再回去读例句。这样第二天的词是先被「找出来」的，而不是先被「看一遍」的。</p>'
-      + '<p>我把这个改动起草成第 4 版计划，等你点头再写入。这一版只动第 2 步，并在它后面插一步，不改你原来第 3 步的位置。</p>'
-    : `<p class="lede">收到。我先不改动任何东西。</p>`
-      + `<p>你这句话里可行动的部分是「${escapeHtml((userText || '').slice(0, 46))}${(userText || '').length > 46 ? '…' : ''}」。我会把它放进这一轮的讨论，而不是直接写进计划——任何写入之前，你都会先看到一张草案。</p>`
-      + '<p class="muted">如果希望我把它拆成一步，告诉我这一轮想在什么时候结束。</p>';
-
-  const prose = article.querySelector('.msg-prose');
-  prose.innerHTML = inkify(replyHtml);
-  $$('.chunk', prose).forEach((el, i) => { el.style.animationDelay = `${i * 7}ms`; });
-  scrollThread();
-
-  const charCount = $$('.chunk', prose).length;
-  if (!(await step(Math.min(3200, charCount * 7 + 500)))) return;
-
+  const reply = payload.reply || (payload.stopReason === 'llm_error'
+    ? '（模型这次没有返回内容）'
+    : '');
+  const html = paragraphs(reply);
+  prose.innerHTML = inkify(html);
+  $$('.chunk', prose).forEach((el, i) => { el.style.animationDelay = `${Math.min(i, 400) * 4}ms`; });
   prose.classList.remove('streaming');
   article.classList.remove('is-live');
-  const meta = article.querySelector('.msg-meta');
-  if (meta) meta.textContent = mode === 'demo' ? '回答 · 工具 3' : '回答 · 工具 2';
 
-  let proposal = null;
-  if (mode === 'demo') {
-    proposal = { id: 'prop-1', state: 'pending' };
-    article.querySelector('.msg-body').insertAdjacentHTML('beforeend', proposalMarkup(proposal));
+  const traces = payload.toolTrace.map((entry) => {
+    const ok = ['success', 'empty'].includes(entry.status);
+    return {
+      label: traceLabel(entry.tool),
+      note: ok
+        ? String(entry.message || '完成').replace(/\*\*/g, '').slice(0, 44)
+        : `${entry.status === 'error' ? '出错' : '被拦下'} · ${String(entry.message || '').replace(/\*\*/g, '').slice(0, 40)}`,
+    };
+  });
+  if (meta) {
+    meta.textContent = payload.toolTrace.length ? `回答 · 工具 ${payload.toolTrace.length}` : '回答';
   }
 
   const foot = document.createElement('div');
   foot.className = 'msg-foot';
-  foot.innerHTML = `<button data-action="show-basis" data-basis="依据是本轮的工具轨迹、你的偏好原话，以及当前计划版本。">为什么这样建议</button>
+  foot.innerHTML = `<button data-action="show-basis" data-basis="${escape(basisText(payload))}">为什么这样建议</button>
     <span class="dot"></span><button data-action="annotate">标注一句</button><span class="dot"></span>
-    <span>${mode === 'demo' ? '3' : '2'} 个工具动作</span>`;
+    <span>${payload.toolTrace.length} 个工具动作</span>`;
   article.querySelector('.msg-body').appendChild(foot);
 
   detail.messages.push({
     id: 'M-' + Date.now(),
     role: 'assistant',
     time: clock(),
-    html: replyHtml,
-    traces: mode === 'demo'
-      ? [{ label: '读取会话', note: '目标 / 额外要求' }, { label: '检索偏好', note: '2 条 · 1 条硬约束' }, { label: '核对计划', note: '第 3 版 · 4 步' }]
-      : [{ label: '读取上下文', note: '偏好 / 方法卡' }, { label: '检索偏好', note: '1 条相关' }],
-    proposal,
+    html,
+    traces: traces.length ? traces : null,
+    thinking: payload.thinking,
     foot: true,
-    basis: '依据是本轮的工具轨迹、你的偏好原话，以及当前计划版本。',
+    basis: basisText(payload),
   });
+  if (payload.context) detail.context = payload.context;
 
   state.run = null;
   state.busy = false;
@@ -1036,6 +950,21 @@ async function startAssistantRun({ mode = 'reply', userText = '' } = {}) {
   bindInkDots();
   scrollThread(true);
 
+  // 与后端对齐但不重绘：这一轮可能改了计划版本，侧栏的时间也变了
+  try {
+    const before = detail.plan ? detail.plan.version : null;
+    await loadDetail(sessionId, { render: false });
+    renderRail();
+    renderTopbar();
+    const fresh = state.details[sessionId];
+    // 计划版本变了要重画；上下文数字这一轮也变了，同样要重画 ——
+    // 只判断计划的话，改了上下文却没改计划的那些轮次会留着旧数字。
+    if (fresh && (fresh.plan ? fresh.plan.version : null) !== before) renderMargin();
+    else if (state.marginTab === 'context') renderMargin();
+  } catch (err) {
+    toast(err.message, 'danger');
+  }
+
   if (state.queue.length && state.busyBehavior === 'queue' && state.currentSession) {
     const next = state.queue.shift();
     if (next.el) next.el.remove();
@@ -1043,6 +972,45 @@ async function startAssistantRun({ mode = 'reply', userText = '' } = {}) {
     await wait(350);
     beginUserTurn(next.text);
   }
+}
+
+function traceLabel(tool) {
+  return ({
+    propose_plan_change: '起草计划改动',
+    update_task_plan: '改计划',
+    read_context: '读取上下文',
+    search_preferences: '检索偏好',
+  })[tool] || tool;
+}
+
+/** 依据那句话：只写这一轮**真的发生了什么**，不预支结论。 */
+function basisText(payload) {
+  if (!payload.toolTrace.length) {
+    return '这一轮没有调用工具：回答只基于这个会话里的目标、动机与你的这句话。';
+  }
+  const tools = Array.from(new Set(payload.toolTrace.map((t) => traceLabel(t.tool)))).join('、');
+  const blocked = payload.toolTrace.filter((t) => ['rejected', 'error'].includes(t.status)).length;
+  return blocked
+    ? `依据来自这一轮的 ${tools}。其中 ${blocked} 个动作被守卫拦下了 —— 拦下的原因写在工具轨迹里。`
+    : `依据来自这一轮的 ${tools}；每一步的入参与返回都记在那条消息的工具轨迹里。`;
+}
+
+function failLive({ run, article, message }) {
+  clearInterval(run.statusTimer);
+  article.classList.remove('is-live');
+  const thinking = article.querySelector('.thinking-field');
+  if (thinking) thinking.remove();
+  const meta = article.querySelector('.msg-meta');
+  if (meta) meta.textContent = '中断了';
+  const prose = article.querySelector('.msg-prose');
+  prose.classList.remove('streaming');
+  prose.insertAdjacentHTML('beforeend', `<p class="muted">${escape(message || '这一轮没有得出结论。')}</p>`);
+  state.run = null;
+  state.busy = false;
+  threadWrap.classList.remove('is-thinking');
+  updateBusyUI();
+  toast(message || '这一轮中断了', 'danger');
+  scrollThread(true);
 }
 
 function beginUserTurn(text, { fromQueue = false } = {}) {
@@ -1061,9 +1029,11 @@ function beginUserTurn(text, { fromQueue = false } = {}) {
   }
   scrollThread(true);
 
-  const mode = detail.demoDone ? 'reply' : 'demo';
-  detail.demoDone = true;
-  startAssistantRun({ mode, userText: text });
+  // 锚点只在这一句话上有效，发出去就清掉 —— 否则下一条消息会莫名带上它
+  const stepId = state.anchorStep;
+  state.anchorStep = null;
+  if (composerInput) composerInput.placeholder = COMPOSER_PLACEHOLDER;
+  void startLiveRun({ userText: text, stepId });
 }
 
 function sendFromComposer({ programmaticText = null } = {}) {
@@ -1235,16 +1205,18 @@ function bindInkDots() {
 }
 
 /* ── session & folder actions ─────────────────────────────────────── */
-function selectSession(id, { silent = false } = {}) {
+function selectSession(id) {
   const found = findSession(id);
   if (!found) return;
   if (state.busy) cancelRun({ interrupted: false, silent: true });
   state.currentSession = id;
   state.currentFolder = found.folderId;
   found.folder.open = true;
-  if (!state.details[id]) state.details[id] = makeDetail(found.detail || '');
+  if (!state.details[id]) state.details[id] = makeDetail();
+  // 先用缓存画一次：点击必须立刻有反应，网络不能挡在点击和画面之间
   renderSession();
   if (window.innerWidth <= 1180) workspace.classList.add('is-margin-closed');
+  void loadDetail(id).catch((err) => toast(err.message, 'danger'));
 }
 
 function ensureSelection() {
@@ -1264,21 +1236,26 @@ function ensureSelection() {
   marginBody.innerHTML = '<div class="mpanel"><p class="mpanel-sub">尚无会话。</p></div>';
 }
 
-function archiveSession(id) {
-  const found = findSession(id);
-  if (!found) return;
-  found.folder.sessions = found.folder.sessions.filter((s) => s.id !== id);
-  state.archivedSessions.push({
-    id, title: found.title, folderId: found.folderId, folderName: found.folder.name,
-    state: found.state, time: found.time,
-  });
-  if (state.currentSession === id) {
-    state.currentSession = found.folder.sessions[0]?.id || null;
+/* 侧栏这些动作以前是**本地搬家**（把对象从一个数组挪到另一个）。
+   现在它们都是一次真实请求 + 一次重新读侧栏 —— 因为"归档"在库里是一个
+   时间戳，不是界面上的另一种状态。失败时把后端那句话原样报给用户。 */
+
+async function runRailAction(label, action) {
+  try {
+    await action();
+    await loadWorkspace();
+    ensureSelection();
+    renderRail();
+    renderTopbar();
+    toast(label);
+  } catch (err) {
+    toast(err.message || '这一步没成', 'danger');
   }
+}
+
+function archiveSession(id) {
   closePopover();
-  ensureSelection();
-  renderRail();
-  toast('已归档 · 可在「已归档」中找回');
+  void runRailAction('已归档 · 可在「已归档」中找回', () => api.archiveSession(id));
 }
 
 function deleteSession(id) {
@@ -1288,32 +1265,17 @@ function deleteSession(id) {
     title: '删除这个会话？',
     body: `「${found.title}」的对话、计划版本与动机修订都会被删除。归档不会删除内容，删除会。`,
     ok: '删除会话',
-    onOk: () => {
-      found.folder.sessions = found.folder.sessions.filter((s) => s.id !== id);
+    onOk: () => void runRailAction('会话已删除', async () => {
+      await api.deleteSession(id);
       delete state.details[id];
-      if (state.currentSession === id) state.currentSession = found.folder.sessions[0]?.id || null;
-      closePopover();
-      ensureSelection();
-      renderRail();
-      toast('会话已删除', 'danger');
-    },
+      if (state.currentSession === id) state.currentSession = null;
+    }),
   });
 }
 
 function archiveFolder(id) {
-  const idx = state.folders.findIndex((f) => f.id === id);
-  if (idx === -1) return;
-  const [folder] = state.folders.splice(idx, 1);
-  state.archivedFolders.push({
-    id: folder.id, name: folder.name, sessionCount: folder.sessions.length, sessions: folder.sessions,
-  });
-  if (!state.folders.length || findSession(state.currentSession) === null) {
-    state.currentSession = null;
-    ensureSelection();
-  }
   closePopover();
-  renderRail();
-  toast('领域已归档 · 会话一并收起');
+  void runRailAction('领域已归档 · 会话一并收起', () => api.archiveFolder(id));
 }
 
 function deleteFolder(id) {
@@ -1323,50 +1285,60 @@ function deleteFolder(id) {
     title: '删除这个领域？',
     body: `「${folder.name}」以及里面 ${folder.sessions.length} 个会话会被一并删除。这个动作无法撤销，也不会进入修订史。`,
     ok: '删除领域',
-    onOk: () => {
+    onOk: () => void runRailAction('领域已删除', async () => {
       for (const s of folder.sessions) delete state.details[s.id];
-      state.folders = state.folders.filter((f) => f.id !== id);
+      await api.deleteFolder(id);
       if (folder.sessions.some((s) => s.id === state.currentSession)) state.currentSession = null;
-      closePopover();
-      ensureSelection();
-      renderRail();
-      toast('领域已删除', 'danger');
-    },
+    }),
   });
 }
 
 function restoreSession(id) {
-  const idx = state.archivedSessions.findIndex((s) => s.id === id);
-  if (idx === -1) return;
-  const [item] = state.archivedSessions.splice(idx, 1);
-  const folder = findFolder(item.folderId) || state.folders[0];
-  if (!folder) { toast('没有可恢复的领域', 'danger'); return; }
-  folder.sessions.push({ id: item.id, title: item.title, state: item.state, time: item.time });
-  folder.open = true;
-  if (!state.details[item.id]) state.details[item.id] = makeDetail('');
   closePopover();
-  renderRail();
-  toast('已恢复到原领域');
+  void runRailAction('已恢复到原领域', () => api.restoreSession(id));
 }
 
 function restoreFolder(id) {
-  const idx = state.archivedFolders.findIndex((f) => f.id === id);
-  if (idx === -1) return;
-  const [item] = state.archivedFolders.splice(idx, 1);
-  state.folders.push({ id: item.id, name: item.name, goal: '', open: true, sessions: item.sessions || [] });
   closePopover();
-  renderRail();
-  toast('领域已恢复');
+  void runRailAction('领域已恢复', () => api.restoreFolder(id));
 }
 
 /* ── plan / proposal ──────────────────────────────────────────────── */
-function toggleStep(stepId) {
+/** 标一步完成 / 取消完成。**服务端说了算**：把版本号带过去，撞车就报冲突。 */
+async function toggleStep(stepId) {
   const detail = activeDetail();
   if (!detail || !detail.plan) return;
   const step = detail.plan.steps.find((s) => s.id === stepId);
   if (!step) return;
-  step.status = step.status === 'done' ? 'pending' : 'done';
-  renderMargin();
+  const next = step.status === 'done' ? 'pending' : 'done';
+  try {
+    await api.markStep(state.currentSession, stepId, next, detail.plan.version);
+    await loadDetail(state.currentSession, { render: false });
+    renderMargin();
+    renderRail();
+    toast(next === 'done' ? '这一步记下了' : '已改回未完成');
+  } catch (err) {
+    toast(err.message, 'danger');
+  }
+}
+
+/**
+ * 点开某一步 → 它是这一轮讨论的锚点。
+ *
+ * ★ 锚点是**「用户点了这一项」的证据**，所以它只能由这一次点击产生 ——
+ * 模型拿不到这个字段，只能被它限制（这正是计划守卫放行改动的依据）。
+ */
+function discussStep(stepId) {
+  const detail = activeDetail();
+  const step = detail && detail.plan ? detail.plan.steps.find((s) => s.id === stepId) : null;
+  if (!step) return;
+  state.anchorStep = stepId;
+  if (composerInput) {
+    composerInput.placeholder = `关于第 ${step.seq} 步「${String(step.action).slice(0, 18)}」…`;
+  }
+  composerInput.focus();
+  autoGrow();
+  scrollThread(true);
 }
 
 function resolveProposal(id, resolution) {
@@ -1387,11 +1359,10 @@ function resolveProposal(id, resolution) {
     const label = node.querySelector('.proposal-label');
     if (label) label.textContent = '计划 · 第 4 版 · 已处理';
   }
-  if (resolution === 'approved' && detail) {
-    detail.plan = structuredClone(PLAN_V4);
-    if (detail.context.sections[4]) detail.context.sections[4].value = '第 4 版 · 5 步';
-    renderMargin();
-  }
+  // 计划的真实写入由服务端的工具 + 守卫完成（`propose_plan_change` 只在
+  // 「用户点过那一项」时才被放行）。这里不本地伪造一个新版本 ——
+  // 界面上的计划必须与库里的那一版是同一份。
+  if (resolution === 'approved' && detail) void loadDetail(state.currentSession);
 }
 
 /* ── settings rendering ───────────────────────────────────────────── */
@@ -1621,11 +1592,18 @@ function handleAction(el, event) {
     case 'rename-session': {
       const session = findSession(id);
       if (session) {
-        openRename(el, '重命名会话', session.title, (name) => {
-          session.title = name;
-          renderRail();
-          renderTopbar();
-          toast('会话已重命名');
+        openRename(el, '重命名会话', session.title, async (name) => {
+          try {
+            await api.renameSession(id, name);
+            // 改**列表里那一行**，不是 `findSession` 给的副本
+            const row = findSessionRow(id);
+            if (row) row.title = name;
+            renderRail();
+            renderTopbar();
+            toast('会话已重命名');
+          } catch (err) {
+            toast(err.message, 'danger');
+          }
         });
       }
       break;
@@ -1633,11 +1611,16 @@ function handleAction(el, event) {
     case 'rename-folder': {
       const folder = findFolder(id);
       if (folder) {
-        openRename(el, '重命名领域', folder.name, (name) => {
-          folder.name = name;
-          renderRail();
-          renderTopbar();
-          toast('领域已重命名');
+        openRename(el, '重命名领域', folder.name, async (name) => {
+          try {
+            await api.renameFolder(id, name);
+            folder.name = name;
+            renderRail();
+            renderTopbar();
+            toast('领域已重命名');
+          } catch (err) {
+            toast(err.message, 'danger');
+          }
         });
       }
       break;
@@ -1657,23 +1640,23 @@ function handleAction(el, event) {
     case 'restore-session':
       restoreSession(id);
       break;
-    case 'delete-archived-session': {
-      state.archivedSessions = state.archivedSessions.filter((s) => s.id !== id);
+    case 'delete-archived-session':
       closePopover();
-      renderRail();
-      toast('已从归档中删除', 'danger');
+      void runRailAction('已从归档中删除', () => api.deleteSession(id));
       break;
-    }
     case 'restore-folder':
       restoreFolder(id);
       break;
-    case 'delete-archived-folder': {
-      state.archivedFolders = state.archivedFolders.filter((f) => f.id !== id);
+    case 'delete-archived-folder':
       closePopover();
-      renderRail();
-      toast('已从归档中删除', 'danger');
+      void runRailAction('已从归档中删除', () => api.deleteFolder(id));
       break;
-    }
+    case 'toggle-step':
+      void toggleStep(el.dataset.stepId);
+      break;
+    case 'discuss-step':
+      discussStep(el.dataset.stepId);
+      break;
     case 'send':
       sendFromComposer();
       break;
@@ -1681,7 +1664,8 @@ function handleAction(el, event) {
       cancelRun({ interrupted: true });
       break;
     case 'replay':
-      replayDemo();
+      void loadDetail(state.currentSession).catch((err) => toast(err.message, 'danger'));
+      toast('已重新读取这个会话');
       break;
     case 'approve-proposal':
       resolveProposal(el.dataset.id, 'approved');
@@ -1715,11 +1699,20 @@ function handleAction(el, event) {
       composerInput.focus();
       autoGrow();
       break;
-    case 'inspect-context':
-      toast('逐条来源：偏好 4 · 方法卡 3 · 基线 6 · 策略库 2');
+    case 'inspect-context': {
+      // 原来这里写死「偏好 4 · 方法卡 3 · 基线 6 · 策略库 2」——
+      // 四个数字没有任何来源。改成读这个会话真实测到的那一份。
+      const context = activeDetail() && activeDetail().context;
+      if (!context || !context.measured) {
+        toast('这个会话的上下文还没测到：后端没有给出窗口上限，也就不编一个百分比');
+        break;
+      }
+      toast(`${context.note || ''}${context.used} / ${context.total} token · 占用 ${context.pct}%`);
       break;
+    }
     case 'open-side-note':
       $('#side-note').classList.add('is-open');
+      refreshSideNoteMeter(activeDetail());
       $('#sn-input').focus();
       break;
     case 'close-side-note':
@@ -1839,10 +1832,22 @@ function startBench(form) {
   toast(form === 'quick' ? '简短版已开始 · 自述轮' : '完整版已开始 · 自述轮');
 }
 
-function sendSideNote() {
+/**
+ * 侧记：**真的写一条笔记**（`POST /sessions/{id}/notes`）。
+ *
+ * 原来是界面自己 setTimeout 造一条回复、再把上下文数字写成 `6.5k / 16k` ——
+ * 用户会以为笔记存下来了。现在回复里带的是后端给的笔记编号：
+ * 没写成功就没有编号，也就不会有这条回复。
+ */
+async function sendSideNote() {
   const input = $('#sn-input');
   const text = input.value.trim();
   if (!text) return;
+  const detail = activeDetail();
+  if (!detail || !state.currentSession) {
+    toast('还没有选中会话，笔记没有地方可存');
+    return;
+  }
   input.value = '';
   const threadEl = $('#sn-thread');
   const mine = document.createElement('div');
@@ -1850,32 +1855,28 @@ function sendSideNote() {
   mine.innerHTML = `<span class="sn-role">你</span><p>${escapeHtml(text)}</p>`;
   threadEl.appendChild(mine);
   threadEl.scrollTop = threadEl.scrollHeight;
-  setTimeout(() => {
+  try {
+    const note = await api.addNote(state.currentSession, text);
+    detail.notes = detail.notes || [];
+    detail.notes.push({ id: note.note_id, text: note.content, time: '刚刚' });
     const reply = document.createElement('div');
     reply.className = 'sn-msg from-bot';
-    reply.innerHTML = `<span class="sn-role">记</span><p>记下了。我只把它放进侧记的记忆里，不改动计划。要落进会话，我会先给你一张提案。</p>`;
+    reply.innerHTML = `<span class="sn-role">记</span><p>已存为笔记 ${escapeHtml(note.note_id)}。笔记不进上下文、也不改动计划；要它影响计划，得在会话里明说。</p>`;
     threadEl.appendChild(reply);
     threadEl.scrollTop = threadEl.scrollHeight;
-    const tokens = $('#sn-tokens');
-    tokens.textContent = '6.5k / 16k';
-  }, 900);
+    refreshSideNoteMeter(detail);
+    toast('已存为笔记');
+  } catch (err) {
+    toast(err.message, 'danger');
+  }
 }
 
-function replayDemo() {
-  if (state.currentSession !== 'S-0001') {
-    toast('重播只对示例会话「一 unit 1 的词根网络」可用');
-    return;
-  }
-  if (state.busy) cancelRun({ silent: true });
-  const detail = activeDetail();
-  detail.messages = structuredClone(BASE_MESSAGES_S1);
-  detail.plan = structuredClone(PLAN_V3);
-  detail.context = structuredClone(CONTEXT_S1);
-  detail.demoDone = false;
-  state.marginTab = 'plan';
-  renderSession();
-  toast('推演将重播 · 计划回到第 3 版');
-  setTimeout(() => startAssistantRun({ mode: 'demo' }), 600);
+/** 侧记顶上的上下文数字 —— 用这个会话**真实测到**的那一份，没测到就说没测到。 */
+function refreshSideNoteMeter(detail) {
+  const el = $('#sn-tokens');
+  if (!el) return;
+  const context = detail && detail.context;
+  el.textContent = context && context.measured ? `${context.used} / ${context.total}` : '没测到';
 }
 
 function openInlineForm(kind) {
@@ -1898,32 +1899,38 @@ function closeInlineForm() {
   $('#rail-form-input').value = '';
 }
 
-function commitInlineForm() {
+async function commitInlineForm() {
   const value = $('#rail-form-input').value.trim();
   if (!value) { $('#rail-form-input').focus(); return; }
-  if (state.inlineKind === 'folder') {
-    state.folderSeq += 1;
-    const id = `F-${pad(state.folderSeq)}`;
-    state.folders.push({ id, name: value, goal: '', open: true, sessions: [] });
-    closeInlineForm();
-    renderRail();
-    toast('领域已创建');
-  } else {
+  try {
+    if (state.inlineKind === 'folder') {
+      await api.createFolder(value);
+      await loadWorkspace();
+      closeInlineForm();
+      renderRail();
+      toast('领域已创建');
+      return;
+    }
+
+    // 会话必须落在某个领域里（库里有 NOT NULL 的 folder_id）。
+    // 一个领域都没有时先建「未归类」—— 界面不假装存在一个不存在的归属。
     let folder = findFolder(state.currentFolder) || state.folders[0];
     if (!folder) {
-      folder = { id: 'F-99', name: '未归类', goal: '', open: true, sessions: [] };
-      state.folders.push(folder);
+      await api.createFolder('未归类');
+      await loadWorkspace();
+      folder = state.folders[0];
     }
-    state.sessionSeq += 1;
-    const id = `S-${String(state.sessionSeq).padStart(4, '0')}`;
-    folder.sessions.unshift({ id, title: value, state: 'draft', time: clock() });
-    folder.open = true;
-    state.details[id] = makeDetail('');
+    const created = await api.createSession(folder.id, value);
+    await loadWorkspace();
     closeInlineForm();
-    state.currentSession = id;
-    state.currentFolder = folder.id;
+    state.currentSession = created.session_id;
+    state.currentFolder = created.folder_id;
+    state.details[created.session_id] = makeDetail();
     renderSession();
+    await loadDetail(created.session_id);
     toast('会话已创建 · 落笔即开始');
+  } catch (err) {
+    toast(err.message, 'danger');
   }
 }
 
@@ -2110,10 +2117,13 @@ function toggleDomain(chip) {
 }
 
 /* ── init ─────────────────────────────────────────────────────────── */
-function init() {
+async function boot() {
   document.documentElement.dataset.cite = 'on';
   document.documentElement.dataset.motion = state.motion;
   if (window.innerWidth <= 1180) workspace.classList.add('is-margin-closed');
+
+  // 先把壳画出来（侧栏空、对话区空），再从后端取数据 ——
+  // 反过来做的话，首屏会有一段时间是白屏
   renderRail();
   renderTopbar();
   renderThread();
@@ -2122,14 +2132,36 @@ function init() {
   renderBench();
   updateBusyUI();
 
-  // auto-play the demonstration once
-  setTimeout(() => {
-    const detail = activeDetail();
-    if (detail && !detail.demoDone && state.currentSession === 'S-0001' && !state.busy) {
-      detail.demoDone = true;
-      startAssistantRun({ mode: 'demo' });
+  try {
+    await loadWorkspace();
+    if (!state.currentSession) {
+      for (const folder of state.folders) {
+        if (!folder.sessions.length) continue;
+        state.currentSession = folder.sessions[0].id;
+        state.currentFolder = folder.id;
+        break;
+      }
     }
-  }, 1100);
+    renderSession();
+    if (state.currentSession) await loadDetail(state.currentSession);
+    else ensureSelection();
+  } catch (err) {
+    // 后端没起来时**说清楚是哪一步没成**，而不是留一个空白界面让人以为"没有数据"
+    thread.innerHTML = `<div class="empty-thread"><span class="empty-seal">未</span>
+      <h2>连不上后端</h2>
+      <p>${escape(err.message || String(err))}</p>
+      <p class="muted">界面上的每一条数据都来自接口；接口不通时这里不会摆一份假数据。</p></div>`;
+    threadEnd.hidden = true;
+    toast(err.message || '连不上后端', 'danger');
+  }
+
+  // 无头验收的缝：带 ?probe=1 时加载探针，跑一轮真实对话并把结果写进 DOM。
+  // 不带参数时这段代码不会被加载（动态 import），正式使用没有任何多余的东西。
+  if (new URLSearchParams(location.search).get('probe') === '1') {
+    import('./src/selftest.js')
+      .then((mod) => mod.run())
+      .catch((err) => toast(String(err && err.message ? err.message : err), 'danger'));
+  }
 }
 
-init();
+boot();

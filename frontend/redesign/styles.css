@@ -883,6 +883,12 @@ html[data-cite="off"] .cite::after { display: none; }
   animation: tracePulse 1.2s infinite;
 }
 .trace-item.is-done::before { background: var(--jade); }
+/* 「被拦下」—— 模型想做、守卫不允许。它必须和"做成了"长得不一样：
+   把一次被拒绝的写入画成成功的绿点，是这个界面最不能犯的错。 */
+.trace-item.is-rejected::before { background: var(--gold); }
+/* 「出错」比「被拦下」更重：被拦下是守卫按规则拒绝（结果确定），
+   出错是工具自己坏了（结果未知）。两者不能同色。 */
+.trace-item.is-error::before { background: var(--vermilion); }
 @keyframes tracePulse {
   0%, 100% { box-shadow: 0 0 0 0 var(--vermilion-soft); }
   50% { box-shadow: 0 0 0 4px transparent; }
