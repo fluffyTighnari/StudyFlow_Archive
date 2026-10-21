@@ -36,3 +36,13 @@ frontend/*/dist/
 .vscode/
 Thumbs.db
 desktop.ini
+.DS_Store
+
+# ── 本地工具（不属于这个项目）───────────────────────────────────────
+.claude/
+.stfolder/
+.stignore
+
+# ── 验收时浏览器留下的东西（几百 MB，绝不能进库）────────────────────
+var_ref/_edgeprofile*/
+var_ref/_syntax/
