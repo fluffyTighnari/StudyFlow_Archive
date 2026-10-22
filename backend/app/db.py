@@ -14,7 +14,7 @@ from pathlib import Path
 from sqlalchemy import Integer, String, create_engine, event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 
 class Base(DeclarativeBase):
@@ -53,6 +53,15 @@ def make_engine(url: str | None = None, *, echo: bool = False) -> Engine:
     if url.endswith(":memory:"):
         kwargs["poolclass"] = StaticPool
         kwargs["connect_args"] = {"check_same_thread": False}
+    if url.startswith("sqlite") and ":memory:" not in url:
+        # ★ 不用连接池：每个请求一条新连接。
+        #
+        # 现场：刚建出来的会话，紧接着的 PATCH 报「会话不存在」，而 GET /state 又读得到；
+        # 同一时刻的列表也少这一条，过一会儿再试全好。这是**旧连接看旧快照**：
+        # WAL 下读事务一旦开着就一直看那一刻的库，连接池却把这种连接留着复用。
+        # 单用户本地应用没有并发收益可言，省掉连接池就把这类"偶尔读不到刚写的东西"消掉。
+        kwargs["poolclass"] = NullPool
+        kwargs["pool_pre_ping"] = True
     engine = create_engine(url, **kwargs)
 
     if url.startswith("sqlite"):
