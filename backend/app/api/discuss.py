@@ -240,7 +240,9 @@ def discuss(
     max_steps: int = Depends(get_agent_max_steps),
     external: ExternalToolbox | None = Depends(get_external_toolbox),
 ) -> DiscussResponse:
-    # 会话不存在 → 404；没有计划 → 404 `not_found`（`require_plan` 抛的）。
+    # 会话不存在 → 404。**没有计划不再算错**：那时这次讨论就没有锚点
+    # （`resolve_anchor` 返回 `None`），模型在「还没有计划」的上下文里照样能回答、
+    # 也能当场排一版 —— 新建的会话因此开得了口。
     # **在任何 LLM 调用之前**先把它查出来：让一次注定失败的请求不花掉模型的时间。
     reads.get_session(session, session_id)
 
@@ -597,11 +599,14 @@ def discuss_stream(
     若把"会话不存在"留到流里，客户端只会收到 200 + 一条 error 事件 ——
     而 404、409 是它能自动分辨并正确处理的东西。
 
-    锚点那一条是被自己的实现纠正过来的：`/discuss` 在"会话没有计划"时抛 404，
-    而 `/discuss/stream` 起初会把同一个错误推迟到流里变成一条事件。
-    **同一个错误在两个端点上状态码不同**，客户端于是分不清
-    "没有计划"与"模型挂了"。修法是让预检也把锚点定下来 ——
+    锚点那一条是被自己的实现纠正过来的：`/discuss` 与 `/discuss/stream`
+    曾经在"会话没有计划"时给出**不同的状态码**（404 与 200+error 事件），
+    客户端于是分不清"没有计划"与"模型挂了"。修法是让预检也把锚点定下来 ——
     用的是循环自己的 `resolve_anchor`，没有第二份锚点规则。
+
+    ★ 现在更进一步：**没有计划不是错误**。`resolve_anchor` 返回 `None`，
+    预检只是"把这次讨论针对什么定下来"，不再抛 404。理由是那条 404
+    把新会话锁死了：要聊先要有计划，要有计划先要能聊。
     """
     reads.get_session(session, session_id)
 
@@ -628,7 +633,8 @@ def discuss_stream(
         user_gestures=frozenset(gestures),
         external=external,
     )
-    # 预检：锚点定不下来（没有计划 / 计划里没有步骤）就不要开始流。
+    # 预检：先把「这次讨论针对哪一步」定下来（可能没有 —— 没有计划时就为空）。
+    # 它**不是**准入检查：定不出锚点照样可以聊，只是上下文里少一条“针对第几步”。
     loop.resolve_anchor(body.step_id)
 
     frames = stream_events(

@@ -19,7 +19,7 @@
    ═══════════════════════════════════════════════════════════════════ */
 
 import { api } from './src/api.js';
-import { adaptDetail, adaptWorkspace, escape, paragraphs } from './src/adapt.js';
+import { adaptDetail, adaptWorkspace, dotClass, escape, paragraphs } from './src/adapt.js';
 import { runDiscussion } from './src/live.js';
 
 const $  = (sel, root = document) => root.querySelector(sel);
@@ -1082,6 +1082,64 @@ function sendFromComposer({ programmaticText = null } = {}) {
   beginUserTurn(text);
 }
 
+/* ── 状态：把 M7 §8 的边表搬到界面上 ─────────────────────────────────
+ *
+ * 后端 `guards.TRANSITIONS` 是唯一的真相，这里只是它的**界面投影**：
+ * 每一条都必须在后端存在，否则点了就是一发 409。
+ * （为什么不在前端"自己算能去哪"：两处推导一旦分叉，界面就会给出
+ * 一个后端不接受的按钮 —— 那比没有按钮更糟。）
+ */
+const STATE_ACTIONS = {
+  draft: [['active', '开始执行']],
+  active: [['review', '结束执行'], ['completed', '完成']],
+  review: [['active', '回到执行'], ['completed', '完成']],
+  completed: [['review', '重新打开'], ['active', '回到执行']],
+  abandoned: [],
+};
+
+function openStateMenu(anchor) {
+  const session = currentSession();
+  if (!session) {
+    toast('先选一个会话');
+    return;
+  }
+  const targets = STATE_ACTIONS[session.state] || [];
+  if (!targets.length) {
+    toast('这个会话已经放弃，没有可走的下一步');
+    return;
+  }
+  openPopover(anchor, `
+    <div class="popover-label">${stateLabel(session.state)} · 下一步</div>
+    ${targets.map(([target, label]) =>
+      popoverItem('go-state', label, 'arrow', `data-target="${target}"`)).join('')}
+  `);
+}
+
+async function goState(target) {
+  const session = currentSession();
+  if (!session) return;
+  closePopover();
+  const said = { active: '已开始执行', review: '进入整理期', completed: '已归档完成', abandoned: '已放弃' };
+  try {
+    // 版本号**现读**：它可能被另一次写入（比如刚跑完一轮讨论）改过，
+    // 用界面上记得的旧版本去转，换来的是一次 409。
+    const fresh = await api.state(session.id);
+    const row = await api.transition(session.id, target, fresh.session.version);
+    const sessionRow = findSessionRow(session.id);
+    if (sessionRow) {
+      sessionRow.state = row.state;
+      sessionRow.dot = dotClass(row.state);
+    }
+    await loadDetail(session.id);
+    renderRail();
+    renderTopbar();
+    toast(said[target] || '状态已更新');
+  } catch (err) {
+    // 后端的 409/422 原文比一句"操作失败"有用得多
+    toast(err.message, 'danger');
+  }
+}
+
 /* ── popovers ─────────────────────────────────────────────────────── */
 function closePopover() {
   popLayer.innerHTML = '';
@@ -1710,6 +1768,12 @@ function handleAction(el, event) {
       toast(`${context.note || ''}${context.used} / ${context.total} token · 占用 ${context.pct}%`);
       break;
     }
+    case 'state-menu':
+      openStateMenu(el);
+      break;
+    case 'go-state':
+      goState(el.dataset.target);
+      break;
     case 'open-side-note':
       $('#side-note').classList.add('is-open');
       refreshSideNoteMeter(activeDetail());

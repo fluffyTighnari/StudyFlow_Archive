@@ -313,19 +313,24 @@ def test_the_agent_cannot_choose_the_intent_id(sandbox) -> None:
 
 
 def test_operational_errors_become_rejected_not_crashes(sandbox) -> None:
-    """会话结束时不能写 stage —— 这是**可预期**的运行期状态，不是缺陷。
+    """归档之后不能写 stage —— 这是**可预期**的运行期状态，不是缺陷。
 
     它必须变成一句模型能照做的话，而不是一个 409 冒泡到用户那里。
+
+    ★ 政策变更：样本状态从 `review` 换成 `completed`。整理期现在**可以**
+    写 stage（`review` 不再是"执行已经结束"），而归档之后仍然关着。
+    拒绝的**形状**没有变（`rejected` + 一句人话 + 说明允许哪些状态），
+    变的只是"哪个状态会拒"——这正是政策与测试该有的关系。
     """
     session = session_reads.get_session(sandbox.db, sandbox.session_id)
     session_writes.transition(
-        sandbox.db, sandbox.session_id, target="review", expected_version=session.version
+        sandbox.db, sandbox.session_id, target="completed", expected_version=session.version
     )
     result = Dispatcher(sandbox.db, sandbox.session_id).execute(
         _call("write_stage", type="idea", content="还想试试别的")
     )
     assert result.status is ToolStatus.REJECTED
-    assert "review" in result.message
+    assert "completed" in result.message
 
 
 def test_capability_and_invariant_errors_are_not_swallowed() -> None:

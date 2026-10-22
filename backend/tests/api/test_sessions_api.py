@@ -108,7 +108,13 @@ def test_state_404s_for_an_unknown_session(client: TestClient) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_activation_without_a_goal_is_a_422_with_a_field(client: TestClient) -> None:
+def test_activation_no_longer_needs_a_goal(client: TestClient) -> None:
+    """★ 政策变更：`draft → active` 不再要求先写目标（旧断言是 422 + `field=goal`）。
+
+    撤掉那条前置条件的理由：目标空着执行起来，定义区那一栏就是空的（看得见）、
+    计划 `goal_derived` 为空（可核对）—— 没有任何一行在说谎，所以这里
+    没有"必须拦"的数据理由；它挡住的却是"新建会话必须先想出一句目标才能开始"。
+    """
     folder_id = _folder(client)
     created = client.post(
         "/api/sessions", json={"folder_id": folder_id, "title": "没有目标"}
@@ -119,9 +125,8 @@ def test_activation_without_a_goal_is_a_422_with_a_field(client: TestClient) -> 
         f"/api/sessions/{session_id}/transitions",
         json={"target": "active", "expected_version": 1},
     )
-    assert response.status_code == 422
-    assert response.json()["code"] == "missing_prerequisite"
-    assert response.json()["detail"]["field"] == "goal"
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "active"
 
 
 def test_an_illegal_transition_reports_where_it_can_go_instead(client: TestClient) -> None:
@@ -137,27 +142,27 @@ def test_an_illegal_transition_reports_where_it_can_go_instead(client: TestClien
     assert response.json()["detail"]["allowed_targets"] == ["abandoned", "active"]
 
 
-def test_chatting_in_a_completed_session_is_refused(client: TestClient) -> None:
+def test_an_archived_session_still_takes_chat_and_notes(client: TestClient) -> None:
+    """★ 政策变更：归档之后**仍然能聊**（旧断言是 409 `state_not_writable`）。
+
+    说话是 append-only 的：不涨版本、不参与任何判定，所以拦它挡掉的只是
+    "回来再问一句"，而不会让任何数据自相矛盾。笔记与它同类（草稿纸）。
+    真正关着的仍然是**内容写入** —— 改定义区那条在
+    `test_completed_session_refuses_definition_writes`（session 域）里钉着。
+    """
     folder_id = _folder(client)
     session_id = _session(client, folder_id)
     _activate(client, session_id)
     version = _state(client, session_id)["versions"]["session"]
-    client.post(
-        f"/api/sessions/{session_id}/transitions",
-        json={"target": "review", "expected_version": version},
-    )
-    version = _state(client, session_id)["versions"]["session"]
+    # `active → completed` 现在是一条直边（政策变更），不必先绕 review。
     client.post(
         f"/api/sessions/{session_id}/transitions",
         json={"target": "completed", "expected_version": version},
     )
 
-    refused = client.post(f"/api/sessions/{session_id}/chat", json={"content": "再聊两句"})
-    assert refused.status_code == 409
-    assert refused.json()["code"] == "state_not_writable"
-    assert refused.json()["detail"]["allowed_states"] == ["active"]
+    chatted = client.post(f"/api/sessions/{session_id}/chat", json={"content": "再聊两句"})
+    assert chatted.status_code == 201, chatted.text
 
-    # 笔记是终态的唯一例外口子
     note = client.post(f"/api/sessions/{session_id}/notes", json={"content": "三个月后回看"})
     assert note.status_code == 201
 

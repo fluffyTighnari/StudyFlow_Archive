@@ -172,7 +172,12 @@ SYSTEM_PROMPT = """\
 | 入口条件 | 用哪个 |
 | --- | --- |
 | **用户本人点了某个计划项**（见下面「用户此刻的动作」那一节） | `propose_plan_change`，且逐条回答 `constraint_checks` |
+| **他这一句里有可引用的原话**：把那段原话放进 `user_quote` | 两者都行；指向某一项用 `propose_plan_change`，动整体结构用 `update_task_plan` |
 | **有落在库里的证据**：检查点判 fail、或 stage 里还悬着想法 | `update_task_plan`，且必须带 `reason` |
+
+- `user_quote` **必须是他这一句话里的连续原文**（至少四个字，空白不计）。
+  服务端会在他刚发的这条消息里逐字比对 —— 编一句"他觉得太慢"是过不去的。
+  所以：他说了要改哪里，直接改；他没说，就别替他改。
 
 - **不要猜他有没有点。** 上下文里写着。写着"他点开了计划项"就是点了，
   那就用 `propose_plan_change` —— **更不要回复他让他去点**，那会让他去点他刚点过的东西。
@@ -255,18 +260,29 @@ def _render_context(
         lines += [
             "## 用户此刻的动作：**他没有点任何计划项**，只是直接说话",
             "",
-            "因此 `propose_plan_change` 现在**用不了**。"
-            "想改计划结构只有两条路：有落库的证据（检查点判 fail / stage 里悬着想法）"
-            "走 `update_task_plan`，否则把建议讲给他听、告诉他点开哪一项就能改。",
+            "这**不影响改计划**：他说了要改哪一步，把**他那句原话**放进 `user_quote`"
+            "（必须在他说过的这一句里逐字出现）就能改。有落库的证据"
+            "（检查点判 fail / stage 里悬着想法）也一样能改。"
+            "两条都没有、他也确实没说过 ⇒ 那就别改，把建议讲给他听。",
             "",
         ]
 
-    lines += [
-        f"## 当前这一步（{ctx.step.step_id}）",
-        f"- 做什么：{ctx.step.action}",
-        f"- 产出：{ctx.step.output or '（没写）'}",
-        f"- 状态：{ctx.step.status.value}",
-    ]
+    if ctx.step is None:
+        # 没有计划：不能假装有一步。说清楚现状，并把"可以当场排一版"摆在手边。
+        lines += [
+            "## 这个会话还没有计划",
+            "",
+            "所以这次讨论**没有锚定到任何一步**。可以照常聊：先把他的目标、现状、"
+            "卡点问清楚；他觉得合适时，你可以用 `create_task_plan` 当场排一版"
+            "（起草期就能排，不需要先「激活」）。",
+        ]
+    else:
+        lines += [
+            f"## 当前这一步（{ctx.step.step_id}）",
+            f"- 做什么：{ctx.step.action}",
+            f"- 产出：{ctx.step.output or '（没写）'}",
+            f"- 状态：{ctx.step.status.value}",
+        ]
 
     if ctx.attachments:
         # **这一节是 `SectionReport(precedence=0)` 的落点，所以它必须排在
@@ -434,7 +450,7 @@ class AgentLoop:
         #: 拿到 `LoopResult` 时已经写完了助手消息，而**锚点是那条消息的属性**。
         #: 让它从这里取，比让端点再算一遍 `resolve_anchor` 更可信 ——
         #: 算两遍意味着两处可能给出不同的答案，而其中一个会进留档。
-        self.last_anchor: str = ""
+        self.last_anchor: str | None = None
         # 走 `_make_dispatcher` 而不是直接 `Dispatcher(...)`：
         # 子类（侧边栏）要换成"没有会话"的那种，而**这次调用发生在基类
         # `__init__` 里**，所以它必须是一个可覆写的方法在 MRO 里被找到。
@@ -773,30 +789,34 @@ class AgentLoop:
         """
         return "\n\n".join(getattr(self, "_thinking_parts", []))
 
-    def resolve_anchor(self, step_id: str | None) -> str:
-        """讨论锚定到哪一步。**必须在任何模型调用之前定下来。**
+    def resolve_anchor(self, step_id: str | None) -> str | None:
+        """讨论锚定到哪一步。**必须在任何模型调用之前定下来**。
 
         它是公开方法（而不是藏在 `_walk` 里）的唯一原因：
-        流式端点的预检要在**开流之前**调用它。
+        流式端点的预检要在**开流之前**调用它，这样"这次讨论针对什么"
+        在花掉一次模型调用之前就已经确定。
 
-        为什么这件事必须发生开流之前：HTTP 的响应头一旦发出就改不了状态码，
-        于是"会话没有计划"这条错误在 `/discuss` 上是 404、在 `/discuss/stream`
-        上会变成 200 + 一条 error 事件 —— **同一个错误在两个端点上不一样**，
-        而客户端没法对后者做自动处理（它分不清"没有计划"和"模型挂了"）。
+        ★ **没有计划时返回 `None`，不抛错。** 原来这里 `require_plan` 抛 404，
+        结果是：新建的会话没有计划 → 讨论 404 → 模型进不来 → 永远建不出计划。
+        一条把自己锁死的门。"先聊两句、边聊边让它排一版"是最正常的开场，
+        而锚点本来就是可空的（`chat_message.anchor_step_id`），
+        没有锚点不制造任何矛盾，只是少一条"这次针对哪一步"的提示。
         """
         return step_id or self._current_step_id()
 
-    def _current_step_id(self) -> str:
-        """没指定讨论哪一项时，锚定到"当前这一步"。
+    def _current_step_id(self) -> str | None:
+        """没指定讨论哪一项时，锚定到"当前这一步"；没有计划就没有锚点。
 
         规则：**第一个还没做完的步骤**；全都做完了就取最后一步。
         这个选择必须是确定性的 —— 否则同一个会话在两次请求里会锚到不同的步骤，
         用户会看到上下文莫名其妙地变。
         """
-        plan = session_reads.require_plan(self.db, self.session_id)
+        plan = session_reads.get_plan(self.db, self.session_id)
+        if plan is None:
+            return None
         steps = session_reads.plan_steps(self.db, plan.plan_id)
         if not steps:
-            raise ValueError(f"会话 {self.session_id} 的计划里没有任何步骤")
+            return None
         for step in steps:
             if step.status.value != "done":
                 return step.step_id

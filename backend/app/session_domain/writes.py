@@ -464,10 +464,12 @@ def transition(
 ) -> SessionModel:
     """状态转移。**边表之外的转移一概拒绝**（`guards.TRANSITIONS`）。
 
-    两个附带后果，都是这次实施里刻意加上的：
+    一个附带后果（另有一条**曾经**在这里、已经撤掉）：
 
-    1. `draft → active` 要求定义区**至少写了目标**。没有目标的会话被执行起来，
-       只会把"我不知道要做什么"变成一大堆动作记录。
+    1. ~~`draft → active` 要求定义区至少写了目标~~ —— 撤了。判据是不拦会不会
+       写出自相矛盾的数据：目标空着执行起来，定义区那一栏就是空的（可看见），
+       计划 `goal_derived` 为空（可核对），没有任何一行在说谎。它挡住的却是
+       "新建会话必须先想出一句目标才能开始"，而这句话用户本来就会在聊的过程中说出来。
     2. 进入 `completed` / `abandoned` 时，仍处于 `active` 的 stage 条目
        一律转 `archived`（用户裁定：**保留行，不删除**）。
        这就是"结束即弃"在数据上的真实含义 —— 弃的是它的待定身份，不是这条记录。
@@ -476,15 +478,6 @@ def transition(
     edge = assert_transition(row.state, _state(target))
     assert_writable(row.state, SessionOperation.TRANSITION)
     _check_version(row.version, expected_version, f"会话 {session_id}")
-    if edge.target.value == "active":
-        input_row = reads.get_input(db, session_id)
-        if not (input_row.goal and input_row.goal.strip()):
-            raise MissingPrerequisite(
-                "激活之前要先写下这次会话的目标（任务定义区的 goal）。"
-                "没有目标的执行，只会把「我不知道要做什么」记录成一大堆动作。",
-                detail={"session_id": session_id, "field": "goal"},
-            )
-
     row.state = edge.target
     now = _now()
     if edge.target.value == "active" and row.activated_at is None:
@@ -751,15 +744,10 @@ def _assert_task_is_clear_enough(
     input_row = reads.get_input(db, session_id)
     values = {slot.name: getattr(input_row, slot.name, None) for slot in clarify.SLOTS}
     gate = clarify.plan_gate(values, reads.latest_status_by_slot(db, session_id))
-    if not gate.ok:
-        raise MissingPrerequisite(
-            gate.message(),
-            detail={
-                "blocked_slots": [slot.name for slot in gate.blocked],
-                "reasons": list(gate.reasons),
-            },
-        )
-    return clarify.guess_note(gate.guessed)
+    # ★ 不抛了。缺 goal 就拒会让计划**永久**改不了：模型问过之后闸门就锁死，
+    # 而界面上没有回答澄清的入口。改成把"这是按判断排的、缺了哪一项"写进
+    # 计划自己的理由里 —— 那句话是可核对的，比一次拒绝更有用。
+    return clarify.guess_note(gate.guessed, gate.blocked)
 
 
 def _same(a: Any, b: Any) -> bool:

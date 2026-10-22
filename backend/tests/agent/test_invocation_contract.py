@@ -76,13 +76,20 @@ def test_no_click_is_also_rendered_as_a_fact(sandbox) -> None:
 
     只写"点了"那一种、不写"没点"，模型就得靠**缺失**去推断 ——
     而"缺失"既可能是没点，也可能是我们忘了渲染。它只能猜。
+
+    ★ 政策变更：这段文案原来写的是「`propose_plan_change` 现在**用不了**」。
+    现在没点计划项**不等于**改不了计划 —— 所以渲染的是"**这不妨碍改计划**，
+    把他那句原话放进 `user_quote` 就能改"。改计划的两条路（更新 / 提议）
+    都还在上下文里，模型要看到的是**怎么做到**，而不是一句禁令。
     """
     text = _render(sandbox, clicked=None)
 
     assert "用户此刻的动作" in text
     assert "他没有点任何计划项" in text
-    assert "用不了" in text or "用不了" in text
-    assert "update_task_plan" in text
+    assert "user_quote" in text, "没点的时候必须给出那条可核对的路（他的原话）"
+    # 第二条路也要在：落在库里的证据（失败检查点 / stage 里悬着的想法）。
+    # 两条都不在的话，"不点就改不了"这句事实会变成模型心里的默认规则。
+    assert "检查点判 fail" in text or "检查点" in text
 
 
 def test_the_rendered_click_and_the_gesture_token_agree(sandbox) -> None:
@@ -219,11 +226,26 @@ class _RecordingLLM:
         return self._inner.stream(messages, tools=tools)
 
 
-def test_the_rejection_tells_the_truth_about_the_click(sandbox) -> None:
-    """用户**点了**、但没有落库证据、模型却调了 `update_task_plan`：
+def _user_says(sandbox, text: str) -> None:
+    """把用户这句话写进库里（`discuss.py` 在跑循环之前做的正是这件事）。
 
-    驳回语必须说"用户已经点了，改用 propose_plan_change"，
-    **不能**说"他点开那个计划项就能改"（条件句会被读成"还没点"）。
+    `user_quote` 的证据是"**这一轮用户最新那条 chat 消息**逐字比对"，
+    所以凡是要用引文当入口条件的用例，必须先把那句话真的写进去。
+    """
+    session_writes.add_chat_message(
+        sandbox.db, sandbox.session_id, content=text, role="user"
+    )
+
+
+def test_a_click_also_opens_the_model_initiated_tool(sandbox) -> None:
+    """★ 政策变更：**用户点了**时，`update_task_plan` 也受理（不再"必须换工具"）。
+
+    旧断言（"驳回语必须说『用户已经点了，改用 propose_plan_change』"）钉的是
+    旧政策里两个工具**证据互斥**：点了只能走 `propose_plan_change`。
+    但那条规矩的初衷已经不是问题了 —— 硬约束逐条覆盖现在由
+    `_constraint_gate` **两条路共用**，所以模型不必因为"选错工具"被驳回一次
+    再重来。入口条件统一成「界面手势 **或** 可核对引文」，
+    而证据（依据）仍然进结果与轨迹：`evidence` 里写着"用户点开了这一项要求改"。
     """
     llm = FakeLLM(
         [
@@ -235,7 +257,7 @@ def test_the_rejection_tells_the_truth_about_the_click(sandbox) -> None:
                     diff={"steps": [{"step_id": "ST-001", "action": "少一点", "output": "记录"}]},
                 ),
             ),
-            reply("好，我用正确的方式再来一次。"),
+            reply("改好了。"),
         ]
     )
     result = AgentLoop(
@@ -246,21 +268,19 @@ def test_the_rejection_tells_the_truth_about_the_click(sandbox) -> None:
     ).run("第一步太多了")
 
     assert result.stop_reason is StopReason.COMPLETED
-    rejection = next(t for t in result.traces if t.status == "rejected")
-    # 事实要说对
-    assert "用户已经点了那个计划项" in rejection.message
-    # 出路要指名
-    assert "propose_plan_change" in rejection.message
-    # **不要**让他去点已经点过的东西
-    assert "不要回复用户让他去点击" in rejection.message
-    # 旧的那句条件句不能再出现（它就是误导源）
-    assert "他点开那个计划项说要改，就能改" not in rejection.message
+    (trace,) = result.traces
+    assert trace.status == "success", trace.message
+    assert "用户点开了这一项要求改" in trace.message
+    # 计划真的改了（不是"说了要改"）
+    assert session_reads.require_plan(sandbox.db, sandbox.session_id).version == 2
 
 
-def test_the_rejection_when_nobody_clicked_is_different(sandbox) -> None:
-    """没人点时驳回语是**另一句**：这时候才该让用户去点。
+def test_without_a_click_the_model_needs_the_users_own_words(sandbox) -> None:
+    """没人点时，驳回语说的是**那一句唯一能补的路**：把他的原话带进来。
 
-    两条分支必须真的不同 —— 否则"按真实状态分支"就成了一句注释。
+    旧断言是"驳回语必须让用户去点计划项"。新政策下那句话是错的方向：
+    用户本来就是在聊天框里表达要求的，让他再去界面上点一次是纯摩擦。
+    所以现在驳回语必须指向 `user_quote` —— 而且**不能**声称他点过。
     """
     llm = FakeLLM(
         [
@@ -280,84 +300,80 @@ def test_the_rejection_when_nobody_clicked_is_different(sandbox) -> None:
     ).run("第一步太多了")
 
     rejection = next(t for t in result.traces if t.status == "rejected")
-    assert "用户也**没有点任何计划项**" in rejection.message
-    assert "点开那个计划项再说" in rejection.message
-    assert "用户已经点了那个计划项" not in rejection.message
+    assert "user_quote" in rejection.message, "驳回语要给出那条可核对的路"
+    assert "你说话" not in rejection.message
+    assert "点开计划项" in rejection.message or "点开那一项" in rejection.message
+    # 计划一动不动
+    assert session_reads.require_plan(sandbox.db, sandbox.session_id).version == 1
 
 
-def test_the_model_can_read_the_rejection_and_switch_tools(sandbox) -> None:
-    """**可恢复性的证明**：选错工具 → 读驳回语 → 换对工具 → 计划真的改了。
+def test_the_model_can_read_the_rejection_and_come_back_with_the_quote(sandbox) -> None:
+    """**可恢复性的证明**：被驳回 → 读驳回语 → 带上他的原话重来 → 计划真的改了。
 
     这一条覆盖的是"多测试联合"里最后那一环：
     前两条测的是"驳回语说得对不对"，这一条测的是"**说得对有没有用**"。
     一个只会拒绝、拒绝之后模型仍然原地打转的系统，与坏掉的系统等价 ——
     用户看到的是同一件事：什么都没发生。
 
-    顺带钉住渲染层的效果：模型在**第二轮**收到的消息里，
-    必须看得到"他点开了计划项"这句事实。
+    ★ 政策变更：原来这里是"选错工具 → 换对工具"。现在两条路的入口条件统一，
+    所以"换对"变成了"**补上他说的那句话**"—— 这恰好也是新政策唯一新增的能力。
+
+    顺带钉住渲染层的效果：模型在**第一轮**收到的消息里就该看到
+    "把他的话放进 `user_quote` 就能改"，否则它只会反复试同一条死路。
     """
-    # 第一轮：故意选错工具（这是真实运行里 27B 干的事）
+    _user_says(sandbox, "第一步太多了，改成每天 20 个吧")
+
+    steps_v2 = {
+        "steps": [
+            {"step_id": "ST-001", "action": "每天过 20 个新词", "output": "20 词的记录"},
+            {"step_id": "ST-002", "action": "读技术文档并标注生词", "output": "标注过的文档"},
+        ],
+        "change": "第一步从 50 个降到 20 个",
+    }
+    # 第一轮：没带引文（模型还没有"这是他说的话"这个概念）
     llm = FakeLLM(
         [
-            reply(
-                "我把第一步拆细。",
-                call(
-                    "update_task_plan",
-                    reason="用户觉得一次太多",
-                    diff={
-                        "steps": [
-                            {"step_id": "ST-001", "action": "每天过 20 个新词", "output": "20 词的记录"},
-                            {"step_id": "ST-002", "action": "读技术文档并标注生词", "output": "标注过的文档"},
-                        ]
-                    },
-                ),
-            ),
-            # 第二轮：读了驳回语之后换成正确的入口
+            reply("我把第一步拆细。", call("update_task_plan", reason="用户觉得一次太多", diff=steps_v2)),
+            # 第二轮：读了驳回语之后，把他那句原话带上
             reply(
                 "我换一种方式改。",
                 call(
-                    "propose_plan_change",
-                    target="ST-001",
-                    user_view="一次 50 个新词太多了",
-                    suggested_change={
-                        "steps": [
-                            {"step_id": "ST-001", "action": "每天过 20 个新词", "output": "20 词的记录"},
-                            {"step_id": "ST-002", "action": "读技术文档并标注生词", "output": "标注过的文档"},
-                        ],
-                        "change": "第一步从 50 个降到 20 个",
-                    },
+                    "update_task_plan",
+                    reason="用户说第一步太多了",
+                    user_quote="第一步太多了",
+                    diff=steps_v2,
                 ),
             ),
             reply("改好了：第一步现在每天 20 个新词。"),
         ]
     )
     recorder = _RecordingLLM(llm)
-    result = AgentLoop(
-        sandbox.db,
-        sandbox.session_id,
-        recorder,
-        user_gestures=frozenset({GESTURE_PLAN_CHANGE}),
-        # 这两件事在真实系统里由 `discuss.py` 从**同一个 `step_id`** 推出来：
-        # 令牌加上、并把 `step_id` 传给循环。这里照做，否则测的就不是真实形状。
-    ).run("第一步太多了", step_id="ST-001")
+    result = AgentLoop(sandbox.db, sandbox.session_id, recorder).run("第一步太多了")
 
     assert result.stop_reason is StopReason.COMPLETED
     # 真的改了（不是"说了要改"）
     plan = session_reads.require_plan(sandbox.db, sandbox.session_id)
-    assert plan.version == 2, "模型读了驳回语、换了工具，但计划没变 —— 闭环没通"
+    assert plan.version == 2, "模型读了驳回语、补上了引文，但计划没变 —— 闭环没通"
     assert _plan_steps(sandbox)[0] == "每天过 20 个新词"
-    # 工具序列：先错、后对
+    # 工具序列：先被拒、后成功（同一条路，靠"可核对的引文"翻过来）
     tools = [t.tool for t in result.traces]
-    assert tools == ["update_task_plan", "propose_plan_change"]
+    assert tools == ["update_task_plan", "update_task_plan"]
     assert [t.status for t in result.traces] == ["rejected", "success"]
 
-    # **渲染层真的起作用了**：模型实际收到的消息里看得到"他点了"。
-    # 看的是第一轮（从一开始它就该知道），而不是"被驳回之后才补给它"。
+    # **渲染层真的起作用了**：第一轮就告诉它"引他的话就能改"，
+    # 而不是等它被拒之后才补。看的是第一轮，因为那才是它做第一个决定时的世界。
     first_round = recorder.seen[0]
     system_text = "\n".join(m.content for m in first_round if m.role == "system")
-    assert "他点开了计划项 ST-001" in system_text, (
-        "模型收到的 system 消息里没有'他点了'这句事实 —— "
-        "那么它选择 update_task_plan 就是**我们没有告诉它**，而不是它判断错"
+    assert "user_quote" in system_text, (
+        "模型收到的 system 消息里没有『把他那句原话放进 user_quote 就能改』—— "
+        "那么它选错入口就是**我们没有告诉它**，而不是它判断错"
+    )
+
+    # ★ 连带一条：引文有**四字下限**（`core.quotes.MIN_QUOTE_CHARS`）。
+    # 不告诉它这件事，它引一个「改」字就会再被拒一次，而它无从知道为什么 ——
+    # 一条模型看不出来的规则，等于一条它只能靠试错撞上的规则。
+    assert "四个字" in system_text, (
+        "system 消息没写引文的长度下限，模型引一个短词被拒时无法自纠"
     )
 
 

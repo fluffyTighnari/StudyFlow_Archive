@@ -5,10 +5,12 @@
 
 1. **帧格式真的是 SSE**（`event:` + `data:` + 空行）。前端用 `fetch` 手工解析它，
    所以格式不是"反正浏览器会懂"的东西 —— 破一格就是前端全盘收不到。
-2. **同一个错误在两个端点上状态码一致。** 响应头一发出就改不了状态码，
+2. **同一个处境在两个端点上答案一致。** 响应头一发出就改不了状态码，
    于是"预检做没做全"变成一个可观测的差别：`/discuss` 报 404 的事，
    `/discuss/stream` 不能变成 200 + 一条事件。这条缺陷是写这个文件时
    被自己的测试抓出来的（锚点没有在开流前解析）。
+   ★ 政策变更之后那个"一致的答案"换了取值：**没有计划不再是错误**
+   （锚点为空、照常开流），而"会话不存在"仍然是 404 —— 两边必须仍然一致。
 3. **断线要留下真话。** 回答没写完时不许把半句话当回答（那会让用户以为
    他读到的是完整的），但必须留下"这次讨论发生过、而且没结论"。
 4. **未预期的错误要看得见**：流已经开始，改不了状态码，唯一出路是发一条
@@ -212,13 +214,19 @@ def test_a_missing_session_is_a_404_and_costs_no_model_call(app, client) -> None
     assert fake.seen == [], "一次注定失败的请求不该让本地模型白跑"
 
 
-def test_a_planless_session_gives_the_same_404_on_both_endpoints(app, client) -> None:
-    """**同一个错误，两个端点必须同一个状态码。**
+def test_a_planless_session_behaves_the_same_on_both_endpoints(app, client) -> None:
+    """**同一个处境，两个端点必须同一个答案。**
 
     这条是写这个文件时被自己的实现绊出来的：预检起初只查了"会话在不在"，
     于是"会话没有计划"在 `/discuss` 上是 404、在 `/discuss/stream` 上
     变成 200 + 一条 error 事件 —— 客户端再也分不清"没有计划"与"模型挂了"。
     修法是让预检也把锚点定下来（`AgentLoop.resolve_anchor`）。
+
+    ★ 政策变更：**没有计划不再算错**。`resolve_anchor` 返回 `None`
+    （锚点为空），两个端点都照常讨论 —— 新建的会话因此开得了口，
+    模型在「这个会话还没有计划」的上下文里回答并可以当场排一版。
+    「两个端点一致」这条不变量没有变，变的是那个一致的取值：
+    从 404 变成 200。
     """
     folder = client.post("/api/folders", json={"name": "空会话"}).json()["folder_id"]
     session_id = client.post(
@@ -230,32 +238,48 @@ def test_a_planless_session_gives_the_same_404_on_both_endpoints(app, client) ->
         f"/api/sessions/{session_id}/transitions",
         json={"target": "active", "expected_version": state["versions"]["session"]},
     )
-    fake = _use(app, reply("这句不该被用到"))
+    _use(
+        app,
+        reply("先说说你手里有什么材料？"),
+        reply("那我们从 unit 1 开始。"),
+    )
 
     sync = client.post(DISCUSS.format(session_id=session_id), json={"message": "在吗"})
     stream = client.post(STREAM.format(session_id=session_id), json={"message": "在吗"})
 
-    assert sync.status_code == 404
-    assert stream.status_code == 404, stream.text[:200]
-    assert stream.json()["code"] == "not_found"
-    assert fake.seen == []
+    assert sync.status_code == 200, sync.text
+    assert stream.status_code == 200, stream.text[:200]
+    # 流照常跑完（不是 200 + error 事件那种"看起来成功"）
+    events = _events(stream.text)
+    assert [name for name, _ in events][-1] == "done"
+    # 两条路都留下了记录，且锚点为空 —— 编一个锚点会让"当时的上下文"重放不出来
+    assistant = [row for row in _chat(client, session_id) if row["role"] == "assistant"]
+    assert len(assistant) == 2
+    assert all(row["anchor_step_id"] is None for row in assistant)
 
 
-def test_a_state_that_cannot_be_chatted_in_is_a_real_409(app, client) -> None:
-    """状态机拒绝要在**花掉一次模型调用之前**给出 409，而不是 SSE 事件。"""
+def test_a_draft_session_can_still_be_chatted_in(app, client) -> None:
+    """★ 政策变更：`draft` 会话也能开流讨论（旧断言是 409 + 不调模型）。
+
+    说话不涨版本、不参与任何判定，所以状态机在这里没有数据理由可讲 ——
+    拦它挡掉的正是「新建的会话第一句话说不出去」。
+    这条用例仍然钉着预检的一条真本事：**错误必须在开流之前决定**
+    （响应头一发出就改不了状态码）—— 它现在由下面那条 404 用例承担。
+    """
     folder = client.post("/api/folders", json={"name": "草稿"}).json()["folder_id"]
     session_id = client.post(
         "/api/sessions",
         json={"folder_id": folder, "title": "还没开始", "input_goal": "先想想"},
     ).json()["session_id"]
-    fake = _use(app, reply("这句不该被用到"))
+    fake = _use(app, reply("想聊什么？"))
 
     response = client.post(
         STREAM.format(session_id=session_id), json={"message": "聊两句"}
     )
-    assert response.status_code == 409, response.text[:200]
-    assert response.json()["code"] == "state_not_writable"
-    assert fake.seen == []
+    assert response.status_code == 200, response.text[:200]
+    events = _events(response.text)
+    assert [name for name, _ in events][-1] == "done"
+    assert fake.seen, "draft 不是'不该调模型'的理由 —— 它只是还没有计划"
 
 
 # --------------------------------------------------------------------------- #

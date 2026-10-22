@@ -523,22 +523,32 @@ def test_the_sidebar_and_a_session_use_the_same_meter(sandbox) -> None:
 def test_sidebar_messages_are_not_gated_by_any_state_machine(sandbox) -> None:
     """★ 侧边栏**没有终态**，所以它不该被会话的状态机拦住。
 
-    会话写完总结就不能再聊；而侧边栏是常驻的 —— 一个"侧边栏写不进去"
-    的报错只能是 bug，不可能是用户的处境。
-    """
-    db, sid = sandbox.db, sandbox.session_id
-    # `active → completed` 不是允许的转移（必须先 review）—— 这是状态机本身的
-    # 规矩，与本测试无关，所以走那条合法的两跳。
-    row = reads.get_session(db, sid)
-    writes.transition(db, sid, target="review", expected_version=row.version,
-                      reason="用户看完了")
-    row = reads.get_session(db, sid)
-    writes.transition(db, sid, target="completed", expected_version=row.version,
-                      reason="确认完成")
+    会话归档之后，**内容写入**仍然被拒；而侧边栏是常驻的 ——
+    一个"侧边栏写不进去"的报错只能是 bug，不可能是用户的处境。
 
-    # 会话这边被拦住了（这是对的）
+    ★ 政策变更：这条测试原来拿 `add_chat_message` 当"会话被拦住"的样本
+    （"会话写完总结就不能再聊"）。现在说话全状态可写（append-only、
+    不涨版本、不参与任何判定），所以样本换成真正仍然关着的那个：
+    往已归档的会话里加一条 stage —— 那是在改写归档记录的内容。
+    """
+    from app.session_domain.enums import StageItemType
+
+    db, sid = sandbox.db, sandbox.session_id
+    # `active → completed` 现在是**一条直边**（政策变更），不再需要先绕 review。
+    row = reads.get_session(db, sid)
+    writes.transition(
+        db, sid, target="completed", expected_version=row.version, reason="确认完成"
+    )
+
+    # 会话这边被拦住了（这是对的）：归档之后不再新增内容
     with pytest.raises(StateNotWritable):
-        writes.add_chat_message(db, sid, content="还能聊吗")
+        writes.add_stage_item(
+            db,
+            sid,
+            item_type=StageItemType.IDEA,
+            content="还想试试别的",
+            expected_version=reads.get_session(db, sid).version,
+        )
 
     # 侧边栏照常能写
     row = writes.add_sidebar_message(db, content="侧边栏不关心会话状态")

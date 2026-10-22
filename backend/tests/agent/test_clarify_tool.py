@@ -60,9 +60,22 @@ def test_the_scripted_model_asks_instead_of_guessing() -> None:
     )
 
 
-def test_the_tool_writes_a_question_and_tells_the_model_what_it_blocks(
+def test_the_tool_writes_a_question_and_tells_the_model_what_it_changes(
     sandbox,
 ) -> None:
+    """★ 政策变更：这个工具**不再挡住计划**，它改变的是计划的署名。
+
+    旧断言（`"计划改不了" in trace[0].message`）与旧文案是配套的：
+    那时缺 `goal` 时 `plan_gate` 会拒，所以"问了就等于锁住计划"是真的。
+    现在不再拒 —— 计划照排，但理由里会被追加"这是按助手判断排的"。
+    所以模型该被告知的是**这件事**：不必等答案，可他排的东西会被标记。
+
+    关键在于指出这句话**为什么必须跟着改**：那句"计划改不了"是
+    **模型读到的、关于系统行为的陈述**。它一旦不真，模型就会按一个
+    不存在的规则工作（以为要等答案、或者以为自己越权了）——
+    而"系统用一个理由解释自己的行为，而那个理由不是真的"正是本项目
+    反复栽的那一类。
+    """
     llm = FakeLLM(
         [
             reply(
@@ -82,7 +95,10 @@ def test_the_tool_writes_a_question_and_tells_the_model_what_it_blocks(
     trace = list(result.traces)
     assert [entry.tool for entry in trace] == ["ask_about_task"]
     assert trace[0].status == "success", trace[0].message
-    assert "计划改不了" in trace[0].message
+    # 真话：它不挡计划，但它决定署名
+    assert "按助手判断排的" in trace[0].message
+    assert "不挡住改计划" in trace[0].message
+    assert "计划改不了" not in trace[0].message
 
     rows = session_reads.list_clarifications(sandbox.db, sandbox.session_id)
     assert len(rows) == 1

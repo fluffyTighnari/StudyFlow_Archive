@@ -104,7 +104,12 @@ def test_repeating_a_rejected_call_stops_the_loop(sandbox) -> None:
     """**零进展检测**：把已经被拒的调用原样再来一次。
 
     再给它步数只会让用户看到一段"它一直在试同一件事"的对话。
-    这条测试里的 `mark_step_done` 没有用户手势 → 必然被拒。
+    这条测试里的 `mark_step_done` 既没有用户手势、也没有可核对的引文
+    → 必然被拒（政策变更只改了**入口条件有两条**，没改"没证据就打不了勾"）。
+
+    ★ 末句断言从"一键操作"改成 `user_quote`：拒绝理由换了措辞，
+    而这条测试真正钉的是**循环在零进展时把最后那条拒绝理由端出来**，
+    不是那句措辞。用新版理由里的关键词，才能让"端出来的确实是最后那条"成立。
     """
     llm = FakeLLM(
         [
@@ -117,7 +122,7 @@ def test_repeating_a_rejected_call_stops_the_loop(sandbox) -> None:
     assert result.stop_reason is StopReason.REJECTED_BY_DISPATCHER
     assert result.steps == 2
     assert "原样又试了一次" in result.reply
-    assert "一键操作" in result.reply  # 最后一次的拒绝理由被端出来了
+    assert "user_quote" in result.reply  # 最后一次的拒绝理由被端出来了
 
 
 def test_a_corrected_call_is_not_treated_as_no_progress(sandbox) -> None:

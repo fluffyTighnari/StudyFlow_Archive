@@ -20,7 +20,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-q --strict-markers"
+# 不加 `-q`：命令行再给一个 `pytest -q` 会叠成 `-qq`，pytest 会把
+# "N passed" 那一行一起吞掉 —— 于是"这次跑了多少条"永远看不见。
+addopts = "--strict-markers"
 # 这条来自 starlette 自己（新版建议装 httpx2）。它是上游的迁移提醒，不是本项目的
 # 问题，也没有可执行的修复动作 —— 留着它只会训练我们忽略 warnings 输出。
 # 注意类别是 `UserWarning` 的子类（不是 DeprecationWarning），别按名字想当然。

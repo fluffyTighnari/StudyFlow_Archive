@@ -2414,20 +2414,23 @@ def step_clarify_ask_and_answer(j: Journey) -> None:
         j.fail(f"同一槽位重复提问没有被拒（{code}）")
         return
 
-    # ③.5 ★ 闸门真的挡着：让助手**再试一次改计划** —— 必须被拒，且计划一个字都没动
-    #     这一段是这一步最要紧的一格：前面几格证明"问题记下来了"，
-    #     只有这一格证明"它真的挡住了什么"。
+    # ③.5 ★ 闸门**不再拦**（P16）：目标空着时，助手改计划不该因为"缺 goal"被拒。
+    #     判据只有一条：不拦会不会写出自相矛盾或无法核对的数据。缺 goal 排出来的
+    #     计划并不矛盾 —— 它自己带版本号，缺的那一项写在修订理由里，回看可核对。
+    #     所以这一格现在断言两件事：
+    #       1) 没有任何一条拒绝的理由指向"缺 goal"（闸门真的撤了）；
+    #       2) 若计划真的变了，新修订的理由里必须写着"这是按助手判断排的"。
     step_id = (j.memo.get("plan_steps") or [None])[0]
     if step_id is None:
         j.fail("拿不到计划步骤 id（`step_plan_item` 那一步没留下 memo）")
         return
     _, plan_before = j.req("GET", f"/api/sessions/{j.session}/plan")
-    _, blocked_run = j.req(
+    _, run_after = j.req(
         "POST",
         f"/api/sessions/{j.session}/discuss",
         {"message": "顺便把第一步拆细一点", "step_id": step_id},
     )
-    traces = blocked_run.get("tool_trace") or []
+    traces = run_after.get("tool_trace") or []
     gate_hits = [
         t
         for t in traces
@@ -2436,15 +2439,21 @@ def step_clarify_ask_and_answer(j: Journey) -> None:
     _, plan_after = j.req("GET", f"/api/sessions/{j.session}/plan")
     version_before = plan_before.get("version_no") or plan_before.get("version")
     version_after = plan_after.get("version_no") or plan_after.get("version")
-    if not gate_hits:
+    if gate_hits:
         j.fail(
-            "★ 目标空着时助手改计划**没有被拦**（闸门没生效）—— "
-            f"轨迹：{[(t.get('tool'), t.get('status')) for t in traces]}"
+            "★ 目标空着时助手改计划仍被'缺 goal'拦下（闸门没撤干净）—— "
+            f"轨迹：{[(t.get('tool'), t.get('message')) for t in gate_hits]}"
         )
         return
     if version_after != version_before:
-        j.fail(f"★ 计划被改了（v{version_before} → v{version_after}），而闸门本该拦住它")
-        return
+        _, revisions = j.req("GET", f"/api/sessions/{j.session}/plan/revisions")
+        rows = revisions["items"] if isinstance(revisions, dict) else revisions
+        if not any("按助手判断排的" in str(row) for row in rows):
+            j.fail(
+                "★ 缺 goal 时计划被改了，但修订理由里没写'这是按助手判断排的' —— "
+                "三个月后回看，没人分得清这是按他说的排的，还是猜的"
+            )
+            return
 
     # ④ 回答 → **真的写进定义区**并留下修订
     _, state = j.req("GET", f"/api/sessions/{j.session}/state")

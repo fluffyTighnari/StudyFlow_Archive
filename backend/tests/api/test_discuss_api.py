@@ -152,18 +152,23 @@ def test_the_user_message_is_recorded_even_when_the_model_fails(app, client) -> 
     assert chat[1]["tags"] == ["stop:llm_error"]
 
 
-def test_the_step_id_is_what_tells_the_agent_the_user_asked_for_a_change(
+def test_without_a_click_or_his_words_the_agent_cannot_change_the_plan(
     app, client
 ) -> None:
-    """带上 `step_id` = 用户在界面上点了那个计划项。
+    """既没 `step_id`、也没可核对引文 → 模型想改计划但没有资格。
 
-    这条证据来自**界面**，不是模型的声明。缺了它，`propose_plan_change`
-    必须拒绝 —— 一个"模型自己觉得该改"的计划改动没有资格生效。
+    这条证据来自**界面手势或他自己那句话**，不是模型的声明。
+    缺了两者时计划改动没有资格生效 —— 一个"模型自己觉得该改"的计划改动
+    不能落到用户的计划上。
 
-    **这是一条补上来的断言。** 原先的实现里 `propose_plan_change` 完全不查入口条件，
-    它唯一的依据是模型自己写的那段 `user_view`：
+    **这是一条补上来的断言。** 原先的实现里 `propose_plan_change` 完全不查
+    入口条件，它唯一的依据是模型自己写的那段 `user_view`：
     于是"用户觉得太慢"这句话由模型说了算，而没有任何东西验证过它。
     面向用户的工具比面向模型的 `update_task_plan` 更松，是反的。
+
+    ★ 政策变更：拒绝语不再是"去界面上点一下"，而是"**把他那句原话带进来**"
+    （`user_quote`）—— 手势不是唯一的入口条件了，但"没有可核对的证据就不许改"
+    这条本身没有变。
     """
     session_id, _ = _prepare(client)
     _use(
@@ -193,24 +198,25 @@ def test_the_step_id_is_what_tells_the_agent_the_user_asked_for_a_change(
     assert response.status_code == 200, response.text
     trace = response.json()["tool_trace"]
     assert trace[0]["status"] == "rejected"
-    assert "改计划要有据" in trace[0]["message"]
+    assert "user_quote" in trace[0]["message"], trace[0]["message"]
     # 计划没有被改动
     assert client.get(f"/api/sessions/{session_id}/plan").json()["version"] == 1
 
 
 def test_a_failed_checkpoint_routes_to_the_model_initiated_tool(app, client) -> None:
-    """**反过来的那一半，而且路径变了。**
+    """**落库的证据只够开一条路。**
 
     这条测试原先断言"有失败检查点 → `propose_plan_change` 成功"。
-    P6 的真实运行抓出一条绕道之后，它被反转过来了：
+    P6 的真实运行抓出一条绕道之后，它被反转过来了。
 
-    `propose_plan_change` 现在只认**用户这次点了那一项**，
-    因为它是唯一强制"硬约束逐条覆盖"的路径；而模型可以挑参数更少的
-    `update_task_plan` 来绕开覆盖率检查 —— 真实运行里它就正是这么做的。
-    于是两条路各自只认一种证据：落库的证据（失败检查点 / 未结案的 stage）
-    归 `update_task_plan`。
+    ★ 政策变更之后两条路的差别变小了（入口条件都接受"他说过那句话"、
+    都共用 `_constraint_gate`），但仍然不是对称的：
+    **落库的证据（失败检查点 / 未结案的 stage）只算 `update_task_plan` 的入口**，
+    `propose_plan_change` 要的是"用户这次要求改"（手势或引文）。
+    所以一条失败检查点足以让 `update_task_plan` 开工，却不足以让
+    `propose_plan_change` 开工 —— 这一格不对称仍然要在端到端上被看见。
 
-    所以这里断言的是：**同样的场景下，模型该走哪条路，以及走错时的提示**。
+    所以这里断言的是：**同样的场景下哪条路开得动，以及另一条被拒时说的是什么**。
     """
     session_id, step_id = _prepare(client)
     # 先加一个检查点，并把它标成 fail
@@ -243,7 +249,12 @@ def test_a_failed_checkpoint_routes_to_the_model_initiated_tool(app, client) -> 
     )
     assert recorded.status_code == 200, recorded.text
 
-    # ① 走错路：用户没点任何计划项，`propose_plan_change` 被拒，并被指到另一条路
+    # ① 走错路：`propose_plan_change` 没收到"用户这次要求改"的证据 —— 被拒，
+    #    而且驳回语指向那条**可核对**的路（他的原话），不是让他去界面上点。
+    #
+    #    ★ 政策变更：原来这里断言"驳回语要指向 update_task_plan"。现在两个工具
+    #    共用同一份入口条件与硬约束覆盖，所以"换工具"不再是唯一的出路；
+    #    被拒的原因也统一成"没人可核对的证据"。
     _use(
         app,
         reply(
@@ -260,7 +271,7 @@ def test_a_failed_checkpoint_routes_to_the_model_initiated_tool(app, client) -> 
     wrong = client.post(DISCUSS.format(session_id=session_id), json={"message": "默写没过"})
     trace = wrong.json()["tool_trace"]
     assert trace[0]["status"] == "rejected", trace[0]["message"]
-    assert "update_task_plan" in trace[0]["message"]
+    assert "user_quote" in trace[0]["message"], trace[0]["message"]
 
     # ② 走对路：`update_task_plan` 凭那条落库的检查点结果成功
     version_before = client.get(f"/api/sessions/{session_id}/plan").json()["version"]
@@ -291,13 +302,17 @@ def test_a_failed_checkpoint_routes_to_the_model_initiated_tool(app, client) -> 
     assert after["version"] == version_before + 1
 
 
-def test_a_click_alone_does_not_unlock_the_model_initiated_tool(app, client) -> None:
-    """**绕道被堵住的证据。**
+def test_a_click_alone_is_enough_for_the_model_initiated_tool(app, client) -> None:
+    """★ 政策变更：**点了就够**，不必再补一条落库证据。
 
-    用户在界面上点了第一步（手势存在），但库里没有任何"计划该被改"的记录。
-    此时 `update_task_plan` 必须拒绝 —— 否则模型只要选它，
-    就能免掉 `propose_plan_change` 要求的硬约束逐条覆盖，
-    而那正是真实运行里发生的事。
+    旧断言是"点了也不许用 `update_task_plan`"，理由是它会免掉
+    `propose_plan_change` 要求的硬约束逐条覆盖。那条理由现在不成立了：
+    两个工具**共用** `_constraint_gate`（见 `app/agent/tools.py`），
+    所以"绕道"在结构上已经不存在 —— 硬约束的覆盖率归门禁，
+    入口条件归证据，两件事被分开了。
+
+    真正要防的那一半仍然钉在 `tests/agent/test_tools.py`：
+    `update_task_plan` 必须逐条回答硬约束，漏一条就整次拒绝。
     """
     session_id, step_id = _prepare(client)
     _use(
@@ -315,16 +330,17 @@ def test_a_click_alone_does_not_unlock_the_model_initiated_tool(app, client) -> 
                 },
             ),
         ),
-        reply("那我还是先问你。"),
+        reply("那就这么改。"),
     )
     response = client.post(
         DISCUSS.format(session_id=session_id),
         json={"message": "这一步我想改", "step_id": step_id},
     )
     trace = response.json()["tool_trace"]
-    assert trace[0]["status"] == "rejected", trace[0]["message"]
-    assert "没有「计划该被改」的记录在案" in trace[0]["message"]
-    assert client.get(f"/api/sessions/{session_id}/plan").json()["version"] == 1
+    assert trace[0]["status"] == "success", trace[0]["message"]
+    # 依据要说出来：这次改动的资格来自"用户点开了这一项"
+    assert "用户点开了这一项要求改" in trace[0]["message"]
+    assert client.get(f"/api/sessions/{session_id}/plan").json()["version"] == 2
 
 
 def test_a_partial_change_now_drops_the_rest_of_the_plan(app, client) -> None:
@@ -457,24 +473,79 @@ def test_a_step_renamed_keeps_the_other_rows_intact(app, client) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_the_agent_cannot_tick_a_step_on_its_own(app, client) -> None:
-    """模型不能自己打勾 —— 打勾是**用户做过的事**。
+def test_the_agent_cannot_tick_a_step_the_user_did_not_claim(app, client) -> None:
+    """模型不能替用户打勾 —— 打勾是**用户的判断**。
 
-    `step_done` 手势只能由界面给出（他在界面上点了完成），
-    这条测试就是"模型拿不到那个手势"的证据。
+    入口条件现在有两条（界面手势 / 他的原话），但这条用例两条都没有：
+    用户说的是「第一步做完了」吗？不是 —— 这一轮他的消息是"帮我看看进度"，
+    而模型**没有**带 `user_quote`。所以它仍然必须被拒。
+
+    ★ 政策变更：拒绝语从"那是用户的一键操作"变成"把他说过的那句原话带进来"。
+    「没证据就不许替他打勾」没有变。
     """
     session_id, step_id = _prepare(client)
     _use(
         app,
         reply("我帮你标一下。", call("mark_step_done", step_id=step_id)),
-        reply("这个我不能替你点，你自己点一下就行。"),
+        reply("这个我不能替你点，你自己说一句就行。"),
     )
     response = client.post(
-        DISCUSS.format(session_id=session_id), json={"message": "第一步做完了"}
+        DISCUSS.format(session_id=session_id), json={"message": "帮我看看进度"}
     )
     trace = response.json()["tool_trace"]
     assert trace[0]["status"] == "rejected"
-    assert "一键操作" in trace[0]["message"]
+    assert "user_quote" in trace[0]["message"]
+    plan = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert plan["steps"][0]["status"] == "pending"
+
+
+def test_his_own_words_are_enough_to_tick_a_step(app, client) -> None:
+    """★ 政策变更的那一半：他说过"第一步做完了"，把那句原话带进来就能打勾。
+
+    这条覆盖的正是旧政策挡住的最正常场景：用户在聊天框里说做完了，
+    系统回他一句"请自己去界面上点一下"。
+    """
+    session_id, step_id = _prepare(client)
+    _use(
+        app,
+        reply(
+            "好，标好了。",
+            call("mark_step_done", step_id=step_id, user_quote="第一步做完了"),
+        ),
+        reply("标好了。"),
+    )
+    response = client.post(
+        DISCUSS.format(session_id=session_id),
+        json={"message": "第一步做完了，词都过了一遍"},
+    )
+    trace = response.json()["tool_trace"]
+    assert trace[0]["status"] == "success", trace[0]["message"]
+    plan = client.get(f"/api/sessions/{session_id}/plan").json()
+    assert plan["steps"][0]["status"] == "done"
+
+
+def test_a_fabricated_quote_cannot_tick_a_step(app, client) -> None:
+    """★ 反例（防的就是"模型替用户发言"）。
+
+    用户说的是「第一步还没做完」。模型却引了一句"第一步做完了" ——
+    那句话在这一轮他的消息里逐字找不到，所以入口条件不成立。
+    打勾之后「做完了没有」就不再是他的判断了，所以这一格必须是硬的。
+    """
+    session_id, step_id = _prepare(client)
+    _use(
+        app,
+        reply(
+            "好，标好了。",
+            call("mark_step_done", step_id=step_id, user_quote="第一步做完了"),
+        ),
+        reply("那我不标。"),
+    )
+    response = client.post(
+        DISCUSS.format(session_id=session_id),
+        json={"message": "第一步还没做完，卡在生词太多"},
+    )
+    trace = response.json()["tool_trace"]
+    assert trace[0]["status"] == "rejected", trace[0]["message"]
     plan = client.get(f"/api/sessions/{session_id}/plan").json()
     assert plan["steps"][0]["status"] == "pending"
 
@@ -528,13 +599,20 @@ def test_an_unknown_request_field_is_refused(client) -> None:
     assert response.status_code == 422
 
 
-def test_discussing_in_a_session_without_a_plan_is_a_readable_refusal(app, client) -> None:
-    """还没建计划 → 说得清楚，且**不花掉一次模型调用**。
+def test_discussing_in_a_session_without_a_plan_still_works(app, client) -> None:
+    """★ 政策变更：**还没有计划也能讨论**，锚点为空，而不是 404。
 
-    状态码是 **404 `not_found`** 而不是 422：`require_plan` 在 P4 就把
-    「会话还没有计划」定成这条子资源不存在。这里不改它 ——
-    改一个已被 P4 端到端测试钉住的状态码，代价是整条前端错误分支要重看一遍；
-    而 404 配 `code=not_found` 与一句「会话 S-0001 还没有计划」已经足够分辨。
+    旧断言是 404 `not_found`（`require_plan` 在 P4 把"会话还没有计划"定成
+    那条子资源不存在）。但那是把**流程顺序**当成了错误码：
+    新建的会话里用户的第一句话就是"我该做什么"，而这句话正是**排计划之前**
+    必须说的那一步。回他 404 等于"想聊先有计划，想有计划先能聊"的死循环。
+
+    现在 `resolve_anchor` 返回 `None`，上下文照常装配（`step=None`、
+    `plan_version=0`），模型在「这个会话还没有计划」的上下文里回答，
+    并可以当场用 `create_task_plan` 排一版。
+
+    同时钉住落库那一侧：助手消息的 `anchor_step_id` 必须是 `None` ——
+    拼一个假锚点会让"事后重放当时的上下文"指向一个从未存在过的步骤。
     """
     folder = client.post("/api/folders", json={"name": "英语学习"}).json()["folder_id"]
     session_id = client.post(
@@ -546,16 +624,25 @@ def test_discussing_in_a_session_without_a_plan_is_a_readable_refusal(app, clien
         f"/api/sessions/{session_id}/transitions",
         json={"target": "active", "expected_version": state["versions"]["session"]},
     )
-    fake = _use(app, reply("不该走到这里"))
+    fake = _use(app, reply("我还不知道你想做什么。先说说你手里有什么材料？"))
 
     response = client.post(
         DISCUSS.format(session_id=session_id), json={"message": "我该做什么"}
     )
 
-    assert response.status_code == 404, response.text
-    assert response.json()["code"] == "not_found"
-    assert "还没有计划" in response.json()["message"]
-    assert fake.seen == []
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["stop_reason"] == "completed"
+    assert fake.seen, "没有计划时更要真的问一句，而不是直接拒绝"
+    # 上下文里写的是"这个会话还没有计划"，模型不该被喂一个假锚点
+    system_text = "\n".join(m.content for m in fake.seen[0] if m.role == "system")
+    assert "还没有计划" in system_text
+
+    chat = _chat(client, session_id)
+    assert [row["role"] for row in chat] == ["user", "assistant"]
+    assert chat[-1]["anchor_step_id"] is None, (
+        "没有计划时锚点必须为空 —— 编一个锚点会让'当时的上下文'再也重放不出来"
+    )
 
 
 @pytest.mark.parametrize("message", ["", " ", "\n"])
@@ -597,27 +684,35 @@ def test_the_user_message_survives_an_empty_reply(app, client) -> None:
     assert chat[0]["content"] == "在吗"
 
 
-def test_a_refused_session_costs_no_model_call(app, client) -> None:
-    """会话不在 `active` 时，**在花掉一次模型调用之前**就拒绝。
+def test_an_archived_session_can_still_be_chatted_in(app, client) -> None:
+    """★ 政策变更：**归档之后仍然能聊**（旧断言是 409 `state_not_writable`）。
 
-    用户的消息先写、循环后跑，这条顺序顺带带来的好处：
-    状态机不允许时 `add_chat_message` 自己会拒，于是本地模型不必白跑一百多秒。
+    旧行为在"花掉一次模型调用之前"就用状态机拒绝了 —— 那件事本身没错，
+    但前提错了：说话是 append-only 的，不涨任何版本、也不被任何判定读取，
+    所以没有任何数据理由拦它。挡住的却是最正常的一句话：回来再问一句。
+    真正该关的（改定义区、改计划）仍然关着，见 `tests/session/test_guards.py`。
+
+    这里同时钉住"拒绝发生在写消息那一步"这条顺序的另一面：
+    用户的话必须先落库 —— 所以归档会话里这次讨论留下的记录是完整的。
     """
     session_id, _ = _prepare(client)
     state = client.get(f"/api/sessions/{session_id}/state").json()
     client.post(
         f"/api/sessions/{session_id}/transitions",
-        json={"target": "review", "expected_version": state["versions"]["session"]},
+        json={"target": "completed", "expected_version": state["versions"]["session"]},
     )
-    fake = _use(app, reply("不该走到这里"))
+    fake = _use(app, reply("你问吧，我还能陪你复盘。"))
 
     response = client.post(
         DISCUSS.format(session_id=session_id), json={"message": "再聊两句"}
     )
 
-    assert response.status_code == 409, response.text
-    assert response.json()["code"] == "state_not_writable"
-    assert fake.seen == []
+    assert response.status_code == 200, response.text
+    assert response.json()["stop_reason"] == "completed"
+    assert fake.seen, "归档不是'模型不该被调用'的理由 —— 它只是不再接受内容写入"
+    chat = _chat(client, session_id)
+    assert [row["role"] for row in chat][-2:] == ["user", "assistant"]
+    assert chat[-2]["content"] == "再聊两句"
 
 
 def test_the_response_declares_every_field_the_ui_needs(app, client) -> None:

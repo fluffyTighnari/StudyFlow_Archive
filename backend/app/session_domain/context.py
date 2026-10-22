@@ -261,7 +261,10 @@ class DiscussionContext(BaseModel):
 
     session_id: str
     plan_version: int
-    step: StepContext
+    #: 这次讨论锚定的那一步。**可空** —— 会话还没有计划时就是空的
+    #: （"先聊两句再说"，或者"让它当场排一版"）。空着不塞假步骤：
+    #: 塞一个空步骤，模型会把它当成真的第 0 步。
+    step: StepContext | None
     constraints: list[PreferenceItem]
     soft_preferences: list[PreferenceItem]
     checkpoints: list[CheckpointItem]
@@ -320,17 +323,21 @@ def _step_history(db: DbSession, plan: TaskPlan, step_id: str) -> list[StepVersi
 
 
 def _strategies_for_step(
-    db: DbSession, step: PlanStep
+    db: DbSession, step: PlanStep | None
 ) -> tuple[list, list[str]]:
     """这一步相关的策略：`method_ref` 命中则只用它，否则取权重最高的 4 条。
 
     返回 `(策略行, 未被选中的策略名)` —— 第二个值是排除清单的原料。
+
+    `step=None`（会话还没有计划）与"这一步没指定方法"走同一条分支：
+    没有 `method_ref` 就按权重取前 4 条。**不编一条 `method_ref` 出来。**
     """
     catalog = global_reads.list_strategies(db, limit=None)
     by_id = {row.strategy_id: row for row in catalog}
-    if step.method_ref and step.method_ref in by_id:
-        return [by_id[step.method_ref]], sorted(
-            row.strategy_id for row in catalog if row.strategy_id != step.method_ref
+    method_ref = step.method_ref if step is not None else None
+    if method_ref and method_ref in by_id:
+        return [by_id[method_ref]], sorted(
+            row.strategy_id for row in catalog if row.strategy_id != method_ref
         )
     selected = global_reads.list_strategies(db, limit=4)
     chosen = {row.strategy_id for row in selected}
@@ -338,13 +345,17 @@ def _strategies_for_step(
 
 
 def assemble_discussion_context(
-    db: DbSession, session_id: str, step_id: str
+    db: DbSession, session_id: str, step_id: str | None
 ) -> DiscussionContext:
-    """组装一次讨论所需的上下文。**纯读取、无副作用、不调 LLM。**"""
+    """组装一次讨论所需的上下文。**纯读取、无副作用、不调 LLM。**
+
+    ★ 没有计划、或没有给锚点时**不抛错**：`step=None`、`plan_version=0`。
+    这就是"新建的会话也能开口"那条路的落点（原先是 `require_plan` → 404）。
+    """
     session_row = reads.get_session(db, session_id)
-    plan = reads.require_plan(db, session_id)
-    steps = reads.plan_steps(db, plan.plan_id)
-    step = _find_step(steps, step_id, session_id)
+    plan = reads.get_plan(db, session_id)
+    steps = reads.plan_steps(db, plan.plan_id) if plan is not None else []
+    step = _find_step(steps, step_id, session_id) if step_id else None
 
     sections: list[SectionReport] = []
 
@@ -408,10 +419,10 @@ def assemble_discussion_context(
     # 前者回答"怎么算过关"，后者回答"上次为什么没过"。
     # 后者不限于本步 —— 一次失败的检查点是**改计划的证据**（`_recorded_evidence`
     # 就是靠它），而讨论任何一步时都可能用得上它。
-    all_checkpoints = reads.plan_checkpoints(db, plan.plan_id)
+    all_checkpoints = reads.plan_checkpoints(db, plan.plan_id) if plan is not None else []
     relevant: list[tuple[object, str]] = []
     for cp in all_checkpoints:
-        if cp.at_step == step.step_id:
+        if step is not None and cp.at_step == step.step_id:
             relevant.append((cp, "本步骤的验收标准"))
         elif cp.result is CheckpointResult.FAIL:
             relevant.append((cp, "判为未通过（改计划的证据）"))
@@ -563,14 +574,18 @@ def assemble_discussion_context(
 
     return DiscussionContext(
         session_id=session_id,
-        plan_version=plan.current_version,
-        step=StepContext(
-            step_id=step.step_id,
-            seq=step.seq,
-            action=step.action,
-            output=step.output,
-            method_ref=step.method_ref,
-            status=step.status,
+        plan_version=plan.current_version if plan is not None else 0,
+        step=(
+            StepContext(
+                step_id=step.step_id,
+                seq=step.seq,
+                action=step.action,
+                output=step.output,
+                method_ref=step.method_ref,
+                status=step.status,
+            )
+            if step is not None
+            else None
         ),
         constraints=[
             PreferenceItem(
@@ -649,7 +664,9 @@ def assemble_discussion_context(
             )
             for row in strategies
         ],
-        step_history=_step_history(db, plan, step.step_id),
+        step_history=(
+            _step_history(db, plan, step.step_id) if plan is not None and step is not None else []
+        ),
         situation=Situation(
             motivation_type=motivation.type.value,
             motivation_strength=motivation.strength.value,

@@ -239,7 +239,7 @@ def _replay_context(db: DbSession, message: ChatMessage) -> ContextReplay:
             step_id=None,
             sections=(),
             reason=(
-                "这条消息没有记录锚点（它写下时还没有这个字段），"
+                "这条消息没有记录锚点（可能它写下时还没有这个字段，也可能那个会话当时还没有计划 —— P16 之后「没有计划」是正常状态），"
                 "所以不按今天的规则猜一个 —— 猜出来的节标题会看起来像当时的证据。"
                 "下方的工具轨迹仍然是**当时真实发生**的。"
             ),

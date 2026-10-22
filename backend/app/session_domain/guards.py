@@ -57,52 +57,64 @@ class WriteGuard:
 
 #: **允许写**的状态集合（不是「拒绝」—— 准入表漏一行的后果是「哪里都写不了」，
 #: 立刻在测试里炸；漏一行的拒绝表后果是「哪里都能写」，永远不炸）。
+#:
+#: ★ 判据只有一条：**不拦就会写出自相矛盾、或无法核对的数据**，才值得拒绝。
+#: 其余都是流程偏好，它们的代价由用户付：新建会话聊不起来、整理期改不了计划、
+#: 完成要点两次 —— 这些都不是数据问题，是"系统替用户决定了他不该做什么"。
+#: 所以 `completed` / `abandoned` 之后仍然关着（归档之后再改定义区与动机，
+#: 「当时为什么这么总结」就再也核对不了），而 `review` 一律放开。
 WRITE_GUARDS: tuple[WriteGuard, ...] = (
     WriteGuard(
         SessionOperation.UPDATE_INPUT,
-        frozenset({SessionState.DRAFT, SessionState.ACTIVE}),
-        "定义区是「这次要做什么」的约定：起草与执行中都可以改，"
-        "但进入整理期（review/completed）之后再改，会让总结与已沉淀的结论对不上",
+        frozenset({SessionState.DRAFT, SessionState.ACTIVE, SessionState.REVIEW}),
+        "定义区是「这次要做什么」的约定：起草、执行、整理期都可以改。"
+        "**只有归档之后不行** —— 那时再改，总结与已沉淀的结论就对不上原话了，"
+        "而「当时为什么这么总结」正是回看时唯一能核对的东西",
     ),
     WriteGuard(
         SessionOperation.UPDATE_MOTIVATION,
-        frozenset({SessionState.DRAFT, SessionState.ACTIVE}),
+        frozenset({SessionState.DRAFT, SessionState.ACTIVE, SessionState.REVIEW}),
         "动机驱动计划与推进节奏；计划已经定稿、会话已经归档之后再改动机，"
         "不会影响任何已经发生的事，只会改写历史叙述",
     ),
     WriteGuard(
         SessionOperation.UPDATE_SNAPSHOT,
-        frozenset({SessionState.DRAFT, SessionState.ACTIVE}),
+        frozenset({SessionState.DRAFT, SessionState.ACTIVE, SessionState.REVIEW}),
         "精力/压力/环境是**当下**的状态（M7 §4.1）。归档之后它描述的不再是任何时刻，"
         "写它等于往一张历史表里填新数据",
     ),
     WriteGuard(
         SessionOperation.CREATE_PLAN,
-        frozenset({SessionState.ACTIVE}),
-        "计划要在激活之后生成：draft 期连目标都还没确认，"
-        "此时生成的计划没有可依据的定义区（M7 §8 的 draft ──激活──▶ active）",
+        frozenset({SessionState.DRAFT, SessionState.ACTIVE, SessionState.REVIEW}),
+        "计划不挑状态：起草期最想做的事往往就是「先帮我排一版」。"
+        "它写出来的是一份带版本号的计划，goal_derived 空着也自洽 —— "
+        "拦它只会让新会话在界面上无从下手（要聊先有计划，要有计划先能聊）",
     ),
     WriteGuard(
         SessionOperation.REVISE_PLAN,
-        frozenset({SessionState.ACTIVE}),
-        "调整计划是执行中的动作。**无理由不改计划**（M7 §9 第 3 条）："
+        frozenset({SessionState.ACTIVE, SessionState.REVIEW}),
+        "计划在执行期与整理期都能改（整理期发现要改是正常诉求，"
+        "改出来的是一份新版本，自洽）。**无理由不改计划**（M7 §9 第 3 条）："
         "`plan_revision.reason` 在库层是 NOT NULL",
     ),
     WriteGuard(
         SessionOperation.MARK_STEP,
-        frozenset({SessionState.ACTIVE}),
-        "步骤进度只在执行中有意义",
+        frozenset({SessionState.ACTIVE, SessionState.REVIEW}),
+        "步骤进度在执行期与整理期都有意义（整理期补记「昨天做完了」是常见的事）；"
+        "归档之后它描述的是当时的事实，不该再被改写",
     ),
     WriteGuard(
         SessionOperation.RECORD_CHECKPOINT,
-        frozenset({SessionState.ACTIVE}),
-        "检查点记录的是「这个关键步骤过没过」，它属于执行过程",
+        frozenset({SessionState.ACTIVE, SessionState.REVIEW}),
+        "检查点记录的是「这个关键步骤过没过」：执行期随时记，整理期补记也允许；"
+        "归档之后它就是当时的判定，不能再改",
     ),
     WriteGuard(
         SessionOperation.ADD_STAGE_ITEM,
-        frozenset({SessionState.ACTIVE}),
-        "stage 是「本次会话想试但还没决定要不要沉淀」的暂存区（M7 §7.1），"
-        "它只在执行中存在；会话结束后它只剩归宿（见 SETTLE_STAGE_ITEM）",
+        frozenset({SessionState.ACTIVE, SessionState.REVIEW}),
+        "stage 是「本次会话想试但还没决定要不要沉淀」的暂存区（M7 §7.1）："
+        "执行期与整理期都能往里放（整理期正是最容易想起「还有个想法没试」的时候）；"
+        "归档之后它只剩归宿（见 SETTLE_STAGE_ITEM）",
     ),
     WriteGuard(
         SessionOperation.SETTLE_STAGE_ITEM,
@@ -112,9 +124,11 @@ WRITE_GUARDS: tuple[WriteGuard, ...] = (
     ),
     WriteGuard(
         SessionOperation.ADD_CHAT,
-        frozenset({SessionState.ACTIVE}),
-        "**对话只能发生在执行中**。这是「讨论要落到这件事上」的结构保证："
-        "归档之后还能继续聊，聊天就会变成漫谈，而漫谈的结论无处可去",
+        _ALL_STATES,
+        "**说话不设门**。消息是 append-only 的：它不涨任何版本、不参与任何判定、"
+        "也不会让哪两条记录互相矛盾。原来只在 active 开口子，代价是「新建一个会话"
+        "之后连一句 hello 都说不出去」—— 那是一条没有数据理由的门，"
+        "它挡掉的正是最正常的动作。想说什么就说什么，话题跑偏由用户自己负责",
     ),
     WriteGuard(
         SessionOperation.ADD_NOTE,
@@ -125,7 +139,7 @@ WRITE_GUARDS: tuple[WriteGuard, ...] = (
     ),
     WriteGuard(
         SessionOperation.ADD_ATTACHMENT,
-        frozenset({SessionState.DRAFT, SessionState.ACTIVE}),
+        frozenset({SessionState.DRAFT, SessionState.ACTIVE, SessionState.REVIEW}),
         "资料是**讨论的输入**：起草（还没计划）时最想先把它传上来，"
         "执行中则用它改计划。**刻意不跟着 `ADD_NOTE` 一起开到终态** —— "
         "笔记是草稿纸（无生命周期，随手补一句），而资料是一份会被归档进"
@@ -133,18 +147,18 @@ WRITE_GUARDS: tuple[WriteGuard, ...] = (
     ),
     WriteGuard(
         SessionOperation.ATTACHMENT_REMOVE,
-        frozenset({SessionState.DRAFT, SessionState.ACTIVE}),
+        frozenset({SessionState.DRAFT, SessionState.ACTIVE, SessionState.REVIEW}),
         "删除与上传同域：它是**整理材料**（传错了、传重了），不是补一句话。"
         "理由同上 —— 归档记录不该被改写",
     ),
     WriteGuard(
         SessionOperation.ADD_MILESTONE,
-        frozenset({SessionState.ACTIVE}),
+        frozenset({SessionState.ACTIVE, SessionState.REVIEW}),
         "里程碑是执行期的路标",
     ),
     WriteGuard(
         SessionOperation.COMPLETE_MILESTONE,
-        frozenset({SessionState.ACTIVE}),
+        frozenset({SessionState.ACTIVE, SessionState.REVIEW}),
         "同上：达成只发生在执行中",
     ),
     WriteGuard(
@@ -203,6 +217,14 @@ TRANSITIONS: tuple[Transition, ...] = (
         "active ──▶ review：执行完了，进入整理期（写总结、挑要沉淀的东西）",
     ),
     Transition(
+        SessionState.ACTIVE,
+        SessionState.COMPLETED,
+        "直接归档完成",
+        "active ──▶ completed：给了总结就能直接归档。"
+        "原来缺这条边，`/complete` 在 active 下必然 409 —— 而且是**总结写完现实之后**"
+        "才在转移那一步失败，用户看到的是「点完成报了个状态错」",
+    ),
+    Transition(
         SessionState.REVIEW,
         SessionState.ACTIVE,
         "回到执行",
@@ -218,8 +240,14 @@ TRANSITIONS: tuple[Transition, ...] = (
         SessionState.COMPLETED,
         SessionState.REVIEW,
         "重新打开",
-        "completed ──▶ review：**只回到整理期，不直接回到执行**。"
-        "两跳才能回到 active，是刻意让「重新打开一个已归档的会话」变成一个需要两次确认的动作",
+        "completed ──▶ review：回到整理期看看（先读一遍再动手）",
+    ),
+    Transition(
+        SessionState.COMPLETED,
+        SessionState.ACTIVE,
+        "回到执行",
+        "completed ──▶ active：重开一个归档的会话继续干。"
+        "原来只允许两跳，那是纯摩擦 —— 状态与时间戳在任何一跳上都是一致的",
     ),
     Transition(
         SessionState.DRAFT,

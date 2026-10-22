@@ -87,42 +87,70 @@ def test_folder_gets_a_default_retrieval_dimension(session: Session) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_draft_cannot_create_a_plan(session: Session) -> None:
-    """draft 期连目标都还没确认，此生成的计划没有可依据的定义区。"""
+def test_draft_can_create_a_plan(session: Session) -> None:
+    """★ 政策变更：`CREATE_PLAN` 不再要求先激活。
+
+    旧断言是"draft 期连目标都还没确认，生成的计划没有可依据的定义区" ——
+    而代价是「要有计划先能激活，要能激活先有目标，要有目标先聊」这一圈：
+    新建的会话在**起草期**最想做的事恰恰是"先帮我排一版"。
+
+    现在它写出来的是一份带版本号的计划（`goal_derived` 空着也自洽），
+    缺目标这件事由**计划理由**记着（见 `test_clarify.py` 的猜测说明），
+    而不是靠拒绝。
+    """
     folder = writes.create_folder(session, name="英语学习")
     row = writes.create_session(session, folder_id=folder.folder_id, title="背单词")
     session.flush()
 
-    with pytest.raises(StateNotWritable) as excinfo:
-        writes.create_plan(
-            session,
-            row.session_id,
-            steps=[writes.StepDraft(action="通读 unit 1")],
-            expected_session_version=row.version,
-        )
-    assert excinfo.value.detail["allowed_states"] == ["active"]
-
-
-def test_activation_requires_a_goal(session: Session) -> None:
-    """没有目标的执行，只会把"我不知道要做什么"记录成一大堆动作。"""
-    folder = writes.create_folder(session, name="英语学习")
-    row = writes.create_session(session, folder_id=folder.folder_id, title="背单词")
-    session.flush()
-
-    with pytest.raises(MissingPrerequisite) as excinfo:
-        writes.transition(session, row.session_id, target="active", expected_version=1)
-    assert excinfo.value.detail["field"] == "goal"
+    plan = writes.create_plan(
+        session,
+        row.session_id,
+        steps=[writes.StepDraft(action="通读 unit 1")],
+        expected_session_version=row.version,
+    )
+    assert plan.version == 1
+    assert reads.require_plan(session, row.session_id) is plan
+    assert reads.plan_steps(session, plan.plan_id)
+    # 建计划**不推进状态**：起草期的计划仍然是一份草稿，不会把会话偷偷激活。
     assert row.state is SessionState.DRAFT
 
 
-def test_blank_goal_does_not_count_as_a_goal(session: Session) -> None:
+def test_activation_no_longer_requires_a_goal(session: Session) -> None:
+    """★ 政策变更：`draft → active` 不再要求先写目标（原来会抛 `MissingPrerequisite`）。
+
+    撤掉它的理由就是新判据：目标空着执行起来，定义区那一栏**就是空的**
+    （界面上看得见）、计划 `goal_derived` 为空（可核对）——
+    没有任何一行在说谎，所以这里没有"必须拦"的数据理由。
+    它挡住的却是"新建会话必须先想出一句目标才能开始"，
+    而那句话用户本来就会在聊的过程中说出来。
+    """
+    folder = writes.create_folder(session, name="英语学习")
+    row = writes.create_session(session, folder_id=folder.folder_id, title="背单词")
+    session.flush()
+
+    activated = writes.transition(session, row.session_id, target="active", expected_version=1)
+    assert activated.state is SessionState.ACTIVE
+    # 空着的目标仍然是**空着**：不拦不等于替它编一个值。
+    assert reads.get_input(session, row.session_id).goal is None
+
+
+def test_a_blank_goal_is_still_not_a_goal(session: Session) -> None:
+    """`goal="   "` 不算填过 —— 这条判断没有变，变的只是**它不再挡住激活**。
+
+    旧断言把它写成"激活要抛 MissingPrerequisite"。现在激活放行，
+    而"空白不算内容"这件事仍然要成立：`clarify.is_empty` 仍判它为空，
+    于是排计划时它照样算"缺 `goal`"、照样要带上"这是按助手判断排的"。
+    否则一个空格就会让计划看起来像是**照着用户说的**排的。
+    """
+    from app.session_domain import clarify
+
     folder = writes.create_folder(session, name="英语学习")
     row = writes.create_session(
         session, folder_id=folder.folder_id, title="背单词", input_goal="   "
     )
     session.flush()
-    with pytest.raises(MissingPrerequisite):
-        writes.transition(session, row.session_id, target="active", expected_version=1)
+    writes.transition(session, row.session_id, target="active", expected_version=1)
+    assert clarify.is_empty(reads.get_input(session, row.session_id).goal)
 
 
 def test_transition_records_timestamps(session: Session) -> None:
@@ -137,7 +165,17 @@ def test_transition_records_timestamps(session: Session) -> None:
     assert row.state is SessionState.COMPLETED
 
 
-def test_completed_session_refuses_content_writes_but_takes_notes(session: Session) -> None:
+def test_completed_session_refuses_content_writes_but_takes_notes_and_chat(
+    session: Session,
+) -> None:
+    """★ 归档之后关的是**内容写入**，说话与笔记开着（政策变更）。
+
+    旧断言里还有一条"`completed` 之后不能再聊"。它被删掉的理由与笔记一样：
+    消息是 append-only 的，不涨版本、也不被任何判定读取 ——
+    拦它挡掉的只是"回来再问一句"，而那不会让任何数据自相矛盾。
+    真正该关的仍然关着：改定义区会让"当时为什么这么总结"对不上，
+    所以它照旧抛 `StateNotWritable`。
+    """
     _folder, row = _live_session(session)
     writes.transition(session, row.session_id, target="review", expected_version=row.version)
     writes.transition(
@@ -151,11 +189,11 @@ def test_completed_session_refuses_content_writes_but_takes_notes(session: Sessi
             changes={"goal": "换个目标"},
             expected_version=reads.get_input(session, row.session_id).version,
         )
-    with pytest.raises(StateNotWritable):
-        writes.add_chat_message(session, row.session_id, content="还想再聊两句")
 
     note = writes.add_note(session, row.session_id, content="三个月后再来回看这条")
     assert note.note_id
+    message = writes.add_chat_message(session, row.session_id, content="还想再聊两句")
+    assert message.msg_id
 
 
 # --------------------------------------------------------------------------- #

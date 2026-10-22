@@ -49,6 +49,7 @@ from sqlalchemy.orm import Session as DbSession
 from app.agent.llm import ToolSchema
 from app import attachments as attachment_layer
 from app.core.errors import InvalidField, NotFound
+from app.core.quotes import contains_quote
 from app.global_domain import reads as global_reads
 from app.global_domain.targets import target_for_variable
 from app.router.contracts import CEvidenceValue, M1ParameterValue, M2PreferenceValue
@@ -754,12 +755,13 @@ def _update_task_definition(ctx: ToolContext, args: dict[str, Any]) -> ToolResul
             f"可改的是：{'、'.join(DEFINITION_FIELDS)}。"
             "`intent_raw` / `intent_confidence` / `input_revisions` 是系统字段。",
         )
-    if not ctx.has(f"{GESTURE_DEFINITION}{field_name}"):
+    quote = _quoted_user_words(ctx, args.get("user_quote"))
+    if not ctx.has(f"{GESTURE_DEFINITION}{field_name}") and not quote:
         return ToolResult(
             ToolStatus.REJECTED,
-            "任务定义只能由用户自己改（M8 §4.2：仅侧页/用户显式要求）。"
-            "如果你想建议一个改动，**在回复里说出来**让用户自己决定或确认；"
-            "不要替他改目标。",
+            "这次没有证据表明是用户自己要在定义区改这一项：既没有界面手势，"
+            "`user_quote` 也引不出他这句里的原话。把改动讲给他听让他确认；"
+            "要你代改，就带上一段**他的原话**（必须能在这一轮那句话里逐字找到）。",
         )
     if field_name == "goal" and not str(args.get("reason") or "").strip():
         return ToolResult(ToolStatus.REJECTED, "改 goal 必须带 reason（M8 §4.2）。")
@@ -792,11 +794,16 @@ def _update_motivation(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             ToolStatus.REJECTED,
             "动机修订必须写清楚「改了什么」（reason）—— 空的一次修订无法回看。",
         )
+    # ★ `expected_version` 比的是**会话**版本：`session_motivation` 表没有
+    # `version` 列（`update_motivation` 内部取的是 `session.version`）。
+    # 原来这里读 `motivation.version` → AttributeError 冲出 dispatch →
+    # 整个请求 500 且事务回滚，连用户刚说的那句话一起没了。
+    session_row = session_reads.get_session(ctx.db, ctx.session_id)
     motivation = session_writes.update_motivation(
         ctx.db,
         ctx.session_id,
         change=change,
-        expected_version=session_reads.get_motivation(ctx.db, ctx.session_id).version,
+        expected_version=session_row.version,
         type=MotivationType(changes["type"]) if changes.get("type") else None,
         strength=changes.get("strength"),
         drivers=changes.get("drivers"),
@@ -809,7 +816,8 @@ def _update_motivation(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         ToolStatus.SUCCESS,
         "已记录动机变化。",
         {
-            "motivation_version": motivation.version,
+            # 动机自己没有版本号，能报的是它跟着变的那个：会话版本
+            "session_version": session_row.version + 1,
             "type": motivation.type.value if motivation.type else None,
             "strength": motivation.strength.value if motivation.strength else None,
             "drivers": motivation.drivers,
@@ -1093,24 +1101,110 @@ def _recorded_evidence(ctx: ToolContext) -> tuple[bool, str]:
     return False, ""
 
 
-def _user_asked_for_a_change(ctx: ToolContext) -> bool:
-    """用户**这次**明确要求改（点开了某个计划项）。
+def _quoted_user_words(ctx: ToolContext, quote: Any) -> str:
+    """用户这句话里**真的有**这段原话吗？有就返回它，没有返回空串。
 
-    这是 `propose_plan_change` 的入口条件，也是它存在的全部理由：
-    「用户点了某一项」这个动作由界面转成手势带进来，
-    模型自己产出的任何一句话（包括它转述的"用户觉得"）都不算。
+    ★ 门槛是 `app.core.quotes.contains_quote`：去空白后**至少四个字**。
+    少于四个字的"引文"在任何一句话里都找得到，核对就不成立了。
+
+    ## 为什么引文算证据，而"点击"不是唯一的证据
+
+    原来改计划 / 改定义区 / 标步骤完成都只认界面手势（"用户点过那一项"）。
+    可用户是在聊天框里表达的：他说「第 3 步拆成两天」，系统回他
+    「请先点开计划项」。那是一道**没有数据理由的门**：放行不会写出任何
+    自相矛盾的行，拦下却挡住了最正常的动作。
+
+    换成的判据是"能不能引出他这句话里的原文" —— 门仍然可核对，
+    而且可核对得更彻底：引文由服务端在**用户刚写下的那条消息**里逐字比对，
+    模型编不出一句用户没说过的引文。防的是"模型替用户发言"，
+    而这恰恰是可验证的那一半。
     """
-    return ctx.has(GESTURE_PLAN_CHANGE)
+    text = str(quote or "").strip()
+    if not text:
+        return ""
+    messages = [
+        row
+        for row in session_reads.list_chat_messages(ctx.db, ctx.session_id)
+        if str(getattr(row.role, "value", row.role)) == "user"
+    ]
+    if not messages:
+        return ""
+    said = str(messages[-1].content or "")
+    # ★ 比对只用 `app.core.quotes.contains_quote` —— 它含 `MIN_QUOTE_CHARS=4`
+    # 下限。自己写一份 `in` 的话，一个"改"字就能满足改计划的入口条件，
+    # 而这条下限存在的理由正是"一两个字的词在任何句子里都找得到"。
+    return text if contains_quote(said, text) else ""
+
+
+def _user_asked_for_a_change(ctx: ToolContext, args: dict[str, Any]) -> tuple[bool, str]:
+    """用户**这次**要求改吗？返回 (有没有, 可引用的原话)。
+
+    两条路都算，且都可核对：
+    - 界面手势：用户点了某个计划项（`GESTURE_PLAN_CHANGE`）；
+    - 他自己的话：`user_quote` 能在这一轮那句话里逐字找到。
+    """
+    if ctx.has(GESTURE_PLAN_CHANGE):
+        return True, ""
+    quote = _quoted_user_words(ctx, args.get("user_quote"))
+    return (bool(quote), quote)
+
+
+def _constraint_gate(ctx: ToolContext, checks: Any) -> ToolResult | None:
+    """硬约束逐条覆盖 + 冲突即拒。**两条改计划的路共用这一份。**
+
+    ★ 为什么必须共用：原来只有 `propose_plan_change` 查这一关，
+    `update_task_plan` 不查。模型会挑松的那条走（实测抓到过），
+    于是"计划与用户亲口说的硬约束冲突"在数据里成立，而系统假装不可能。
+    同一条规矩在两个地方不一样严，等于没有这条规矩。
+    """
+    constraints = global_reads.list_active_constraints(ctx.db)
+    if not constraints:
+        return None
+    if checks is None:
+        return ToolResult(
+            ToolStatus.REJECTED,
+            f"当前有 {len(constraints)} 条硬约束，必须逐条给出判断"
+            "（constraint_checks），不能整批略过。",
+            {"constraint_ids": [row.pref_id for row in constraints]},
+        )
+    answered = {item.get("pref_id") for item in checks}
+    missing = [row for row in constraints if row.pref_id not in answered]
+    if missing:
+        return ToolResult(
+            ToolStatus.REJECTED,
+            "还有硬约束没有被逐条判断："
+            + "；".join(f"{row.pref_id}「{row.statement}」" for row in missing)
+            + "。**漏掉一条约束就整次拒绝** —— 沉默地略过一条用户亲口说的话，"
+            "比明确说「这条我违反了」危险得多。",
+            {"constraint_ids": [row.pref_id for row in constraints]},
+        )
+    conflicts = [item for item in checks if item.get("verdict") == "conflict"]
+    if conflicts:
+        return ToolResult(
+            ToolStatus.REJECTED,
+            "这次调整与硬约束冲突，因此没有生效："
+            + "；".join(
+                f"{item['pref_id']}（{item.get('why', '未说明')}）" for item in conflicts
+            )
+            + "。这不影响你继续当前步骤 —— 可以把冲突讲给用户，由他决定要不要改口。",
+            {"conflicts": conflicts},
+        )
+    return None
 
 
 def _ask_about_task(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     """任务不明确时**反问**（P13）。
 
-    ★ 这个工具存在的理由：**改定义区需要用户的手势**
-    （`_update_task_definition` 只在用户自己要求时才动得了），
+    ★ 这个工具存在的理由：**改定义区需要用户自己要求**
+    （`_update_task_definition` 只在他点开那一项、或引得出他那句原话时才动得了），
     所以当 `goal` 是空的时候，模型**没有别的办法**知道要做什么 ——
     它只能猜或者问。这个工具把"问"变成一个有后果的动作：
-    问题记下来、界面显示出来、**并且挡住计划修改**。
+    问题记下来、界面显示出来，**并且决定之后排出来的计划带不带「这是猜的」**。
+
+    ★ 它**不挡计划**（政策变更：`plan_gate` 不再拒）。原来那句
+    "在被回答之前计划改不了"已经不真了 —— 现在缺 `goal` 时计划照排，
+    只是理由里会被追加一句"这是按助手判断排的"（`clarify.guess_note`）。
+    模型看到的必须是这件事的**现状**：它不必等答案，但它排的东西会被标记。
 
     ★ 它不检查问题问得好不好。"问得含糊"是模型的问题，
     而"问了两遍 / 问了一个不存在的字段"是系统的问题 —— 后者能判，前者不能。
@@ -1140,9 +1234,10 @@ def _ask_about_task(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     return ToolResult(
         ToolStatus.SUCCESS,
         f"问题已记下（{item.clarification_id}，关于 `{slot}`），"
-        f"会显示在任务定义区。在它被回答或搁置之前**计划改不了** —— "
-        f"`{slot}` 是计划离不开的东西，现在改计划改的是猜出来的那个任务。"
-        f"不要再自己填一个看起来合理的值。",
+        f"会显示在任务定义区。它**不挡住改计划** —— 但在他回答或说「先不管」之前，"
+        f"你排出来的计划会带上「这是按助手判断排的」，那句说明落在计划修订理由里"
+        f"（`{slot}` 仍然缺着，这一点别瞒着他）。"
+        f"不要再自己填一个看起来合理的值：那是伪造一条关于他的事实。",
         {
             "clarification_id": item.clarification_id,
             "slot": item.slot,
@@ -1172,29 +1267,22 @@ def _update_task_plan(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if not str(args.get("reason") or "").strip():
         return ToolResult(ToolStatus.REJECTED, "无理由不改计划（M7 §9 第 3 条）。")
     has_evidence, why = _recorded_evidence(ctx)
-    if not has_evidence:
-        # 驳回语**必须按真实手势分支**。曾经这里是一句写死的话：
-        # 「他点开那个计划项说要改，就能改。」—— 条件句。
-        # 于是当用户**已经点了**那个计划项时，模型读到的是"他还没点"，
-        # 它接着回复用户"请在界面上点击当前步骤"，让用户去点他刚点过的东西。
-        # 实测（`_M9` §6.4.4 的那次 27B 运行）就是这么发生的。
-        # 一句话在两个真实状态上被读出相反的含义，是这套系统里最贵的一类缺陷。
-        if ctx.has(GESTURE_PLAN_CHANGE):
-            return ToolResult(
-                ToolStatus.REJECTED,
-                "现在没有「计划该被改」的记录在案（没有判为未通过的检查点、"
-                "stage 里也没有悬着的想法），但**用户已经点了那个计划项** —— "
-                "那本身就是入口条件。**请改用 `propose_plan_change`**，"
-                "并对每一条硬约束逐条回答 `constraint_checks`。"
-                "**不要回复用户让他去点击** —— 他已经点过了。",
-            )
+    asked, quote = _user_asked_for_a_change(ctx, args)
+    if not has_evidence and not asked:
         return ToolResult(
             ToolStatus.REJECTED,
-            "现在没有「计划该被改」的记录在案：没有判为未通过的检查点，"
-            "stage 里也没有还悬着的想法；用户也**没有点任何计划项**。"
-            "**先把当前这一步做完**；如果你认为计划确实有问题，"
-            "就把理由讲给用户听，并告诉他：点开那个计划项再说，就能改。",
+            "这次改计划没有任何可核对的开头：没有判为未通过的检查点、"
+            "stage 里没有悬着的想法、也没有用户这一次要求改的依据"
+            "（他既没点开计划项，`user_quote` 也引不出他这句里的原话）。"
+            "把建议讲给用户听；他只要说一句要改哪里，"
+            "把那句原话带进 `user_quote` 就能改。",
         )
+    if asked and not why:
+        why = f"用户这一句要求改：「{quote}」" if quote else "用户点开了这一项要求改"
+
+    rejected = _constraint_gate(ctx, args.get("constraint_checks"))
+    if rejected is not None:
+        return rejected
 
     diff = args["diff"]
     plan = session_reads.require_plan(ctx.db, ctx.session_id)
@@ -1249,7 +1337,6 @@ def _propose_plan_change(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     """
     target = args["target"]
     checks = args.get("constraint_checks")
-    constraints = global_reads.list_active_constraints(ctx.db)
 
     # **先过"用户要求改"这一关。**
     #
@@ -1261,49 +1348,19 @@ def _propose_plan_change(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     #
     # 这正是本项目反复栽的那一类：「系统用一个理由解释自己的行为，
     # 而那个理由没人验证过」。区别在于这次的"理由"是模型产的。
-    if not _user_asked_for_a_change(ctx):
+    asked, quote = _user_asked_for_a_change(ctx, args)
+    if not asked:
         return ToolResult(
             ToolStatus.REJECTED,
-            "我没有看到「用户这次要求改这个计划项」的记录 —— 他没有点开它。"
-            "**改计划要有据**：要么他点开那一项说要改，"
-            "要么有检查点判为未通过或 stage 里还悬着想法（那时你该用 "
-            "`update_task_plan`）。现在两条都没有，所以先把建议讲给用户听。",
+            "没有证据表明用户这次要求改这个计划：他既没有点开那一项，"
+            "`user_quote` 也引不出他这句里的原话。**把建议讲给用户听**；"
+            "他说一句要改哪里，把那句原话带进 `user_quote` 就能改 —— "
+            "不需要他先去界面上点。",
         )
 
-    if constraints and checks is None:
-        return ToolResult(
-            ToolStatus.REJECTED,
-            f"当前有 {len(constraints)} 条硬约束，必须逐条给出判断"
-            "（constraint_checks），不能整批略过。",
-        )
-
-    answered = {item.get("pref_id") for item in (checks or ())}
-    missing = [row for row in constraints if row.pref_id not in answered]
-    if missing:
-        return ToolResult(
-            ToolStatus.REJECTED,
-            "还有硬约束没有被逐条判断："
-            + "；".join(f"{row.pref_id}「{row.statement}」" for row in missing)
-            + "。**漏掉一条约束就整次拒绝** —— 沉默地略过一条用户亲口说的话，"
-            "比明确说「这条我违反了」危险得多。",
-            {"constraint_ids": [row.pref_id for row in constraints]},
-        )
-
-    conflicts = [
-        item for item in (checks or ()) if item.get("verdict") == "conflict"
-    ]
-    if conflicts:
-        # 违反硬约束 → rejected，且**不影响执行**（M8 §4.4）：
-        # 拒绝只是"这次调整不生效"，会话照常继续。
-        return ToolResult(
-            ToolStatus.REJECTED,
-            "这次调整与硬约束冲突，因此没有生效："
-            + "；".join(
-                f"{item['pref_id']}（{item.get('why', '未说明')}）" for item in conflicts
-            )
-            + "。这不影响你继续当前步骤 —— 可以把冲突讲给用户，由他决定要不要改口。",
-            {"conflicts": conflicts},
-        )
+    rejected = _constraint_gate(ctx, checks)
+    if rejected is not None:
+        return rejected
 
     diff = args["suggested_change"]
     plan = session_reads.require_plan(ctx.db, ctx.session_id)
@@ -1337,12 +1394,12 @@ def _propose_plan_change(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         f"调整已应用（计划版本 {revised.version}）。{report}"
         "三查中：硬约束逐条回答且无冲突；"
         "stage 一致性与 C 证据由你的判断负责。"
-        "改动依据：用户本人点了这个计划项并提出看法。",
+        f"改动依据：用户本人要求改（{quote or '点开了这个计划项'}）。",
         {
             "plan_id": revised.plan_id,
             "version": revised.version,
             "target": target,
-            "evidence": "用户本人要求改",
+            "evidence": quote or "用户本人要求改",
             "constraint_checks": list(checks or ()),
         },
     )
@@ -1371,12 +1428,13 @@ def _write_stage(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
 
 def _mark_step_done(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     step_id = args["step_id"]
-    if not ctx.has(f"{GESTURE_STEP_DONE}{step_id}"):
+    quote = _quoted_user_words(ctx, args.get("user_quote"))
+    if not ctx.has(f"{GESTURE_STEP_DONE}{step_id}") and not quote:
         return ToolResult(
             ToolStatus.REJECTED,
-            "标记步骤完成是**用户的一键操作**（M8 §4.5），不能由你代替。"
-            "如果用户只是说「我做完第 3 步了」，请让他自己在计划里点一下；"
-            "你也可以把这句话作为一条 chat_note 记下来。",
+            "没有证据表明这一步是他自己说做完的：既没有界面手势，"
+            "`user_quote` 也引不出他这句里的原话。他说过「第 3 步做完了」就把那句原话带进来；"
+            "他没说过，就别替他打勾 —— 打勾之后「做完了没有」就不再是他的判断了。",
         )
     plan = session_reads.require_plan(ctx.db, ctx.session_id)
     step = session_writes.mark_step(
@@ -1556,9 +1614,10 @@ _TOOLS: tuple[ToolSpec, ...] = (
         scope=ToolScope.SESSION_WRITE,
         summary=(
             "任务定义区缺了计划离不开的东西时**先问**，不要猜（P13）。"
-            "★ 你**改不了** `goal`（改定义区需要用户自己的手势），所以目标不明时"
-            "你只有两条路：问，或者猜。这个工具是前者，而它是有后果的 ——"
-            "问题会被记下、显示在定义区，并在被回答或搁置之前**挡住计划修改**。"
+            "★ 你改 `goal` 需要**用户自己要求**（他点开那一项、或引得出他那句原话），"
+            "所以目标不明时你只有两条路：问，或者猜。这个工具是前者，而它是有后果的 ——"
+            "问题会被记下、显示在定义区，并决定之后排出来的计划**带不带「这是猜的」**"
+            "（没答之前计划照排，但会注明那是按你的判断排的）。"
             "★ 什么时候该用：用户说「帮我复习第三章」而你不知道那是哪份材料；"
             "或者他说「学一下这个」而没有说清要达成什么。"
             "★ 什么时候不该用：槽位已经有内容（会被拒绝），"
@@ -1600,6 +1659,10 @@ _TOOLS: tuple[ToolSpec, ...] = (
                 },
                 "new_value": _string("新值。"),
                 "reason": _string("为什么改。改 goal 时必填。"),
+                "user_quote": _string(
+                    "用户这一句要求改的原话（必须能在他说过的那一句里逐字找到）。"
+                    "给了才会被当成「他自己要改」。"
+                ),
                 "scope_change_suspected": {
                     "type": "boolean",
                     "description": "是否属于大幅变更（目标对象/领域改变）。默认 false。",
@@ -1736,6 +1799,25 @@ _TOOLS: tuple[ToolSpec, ...] = (
                     description="计划的新版本内容（整份，不是补丁）。",
                 ),
                 "reason": _string("为什么改。必填。"),
+                "user_quote": _string(
+                    "用户这一句要求改的原话（必须逐字能在他那一句里找到）。"
+                    "没点开计划项时，这就是入口条件。"
+                ),
+                "constraint_checks": _array(
+                    _object(
+                        {
+                            "pref_id": _string("硬约束的 pref_id（如 P-0001）。"),
+                            "verdict": {
+                                "type": "string",
+                                "enum": ["ok", "conflict", "unclear"],
+                                "description": "ok = 不冲突；conflict = 冲突（会整次拒绝）；unclear = 说不清。",
+                            },
+                            "why": _string("为什么这么判。"),
+                        },
+                        required=["pref_id", "verdict"],
+                    ),
+                    "对当前每一条硬约束的逐条判断。**有硬约束时必须覆盖全部。**",
+                ),
             },
             required=["diff", "reason"],
         ),
@@ -1773,6 +1855,10 @@ _TOOLS: tuple[ToolSpec, ...] = (
             {
                 "target": _string("用户点的是哪一项（step_id / cp_id / '整个计划'）。"),
                 "user_view": _string("用户的原话或看法。**引原话**，不要替他润色。"),
+                "user_quote": _string(
+                    "用户这一句要求改的原话（必须逐字能在他那一句里找到）。"
+                    "没点开计划项时，这就是入口条件。"
+                ),
                 "constraint_checks": _array(
                     _object(
                         {
@@ -1835,12 +1921,18 @@ _TOOLS: tuple[ToolSpec, ...] = (
         name="mark_step_done",
         scope=ToolScope.SESSION_WRITE,
         summary=(
-            "把一个步骤标为完成。**这是用户的一键操作，你不能代替他按** —— "
-            "用户说「我做完了」时，请他自己在计划里点一下，"
-            "或者你把它记成一条 chat_note。"
+            "把一个步骤标为完成。用户说「我做完了」时，把**他那句原话**"
+            "放进 `user_quote` 就能替他打勾 —— 系统会在他这句话里逐字核对；"
+            "引不出原话就说明他没说过，那时候别替他打勾。"
         ),
         parameters=_object(
-            {"step_id": _string("步骤 id（如 ST-003）。")}, required=["step_id"]
+            {
+                "step_id": _string("步骤 id（如 ST-003）。"),
+                "user_quote": _string(
+                    "用户说这一步做完的那句原话（必须逐字能在他那一句里找到）。"
+                ),
+            },
+            required=["step_id"],
         ),
         handler=_mark_step_done,
     ),

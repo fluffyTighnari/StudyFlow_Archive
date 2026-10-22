@@ -9,7 +9,7 @@
       "name": "点开计划项",
       "ok": true,
       "stepId": "ST-001",
-      "placeholder": "关于第 1 步「分两天做：通读 unit 1 词表（」…"
+      "placeholder": "关于第 1 步「通读 unit 1 词表」…"
     },
     {
       "name": "已发送",
@@ -36,7 +36,7 @@
       "traces": [
         {
           "label": "起草计划改动",
-          "note": "调整已应用（计划版本 5）。步骤数量没变。三查中：硬约束逐条回答且无冲突；stage 一…",
+          "note": "调整已应用（计划版本 3）。步骤数量没变。三查中：硬约束逐条回答且无冲突；stage 一…",
           "state": "is-done"
         }
       ]
@@ -44,20 +44,20 @@
     {
       "name": "消息条数增长",
       "ok": true,
-      "from": 4,
-      "to": 6
+      "from": 0,
+      "to": 2
     },
     {
       "name": "计划版本（仅供参考）",
       "ok": true,
-      "before": 4,
-      "after": 5
+      "before": 2,
+      "after": 3
     },
     {
       "name": "侧记回执带笔记编号",
       "ok": true,
-      "noteId": "N-0003",
-      "text": "记已存为笔记 N-0003。笔记不进上下文、也不改动计划；要它影响计划，得在会话里明说。"
+      "noteId": "N-0002",
+      "text": "记已存为笔记 N-0002。笔记不进上下文、也不改动计划；要它影响计划，得在会话里明说。"
     },
     {
       "name": "侧记顶上的上下文数字",
@@ -67,13 +67,13 @@
     {
       "name": "新建会话",
       "ok": true,
-      "title": "探针会话 16:22:41",
+      "title": "探针会话 05:50:40",
       "current": true
     },
     {
       "name": "重命名会话",
       "ok": true,
-      "title": "探针会话 16:22:41 · 改过"
+      "title": "探针会话 05:50:40 · 改过"
     },
     {
       "name": "归档会话",
@@ -98,10 +98,10 @@
     "已恢复到原领域",
     "会话已删除"
   ],
-  "planBefore": 4,
-  "messagesBefore": 4,
-  "messages": 6,
+  "planBefore": 2,
+  "messagesBefore": 0,
+  "messages": 2,
   "messagesGrew": true,
-  "planAfter": 5,
+  "planAfter": 3,
   "planChanged": true
 }

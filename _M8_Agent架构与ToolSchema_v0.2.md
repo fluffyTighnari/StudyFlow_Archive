@@ -4,7 +4,7 @@
 > v0.2 为统一版：合并 M8 v0.1（Agent 架构）与 M8.1 v0.1（Tool Schema，六类 14 工具），修正工具数量与语义。
 > **修订（P15，用户要求「输出可标注某句并看推断理由」）**：**没有新工具**——这一层是给**用户**核对模型的，不是给模型用的（让模型解释自己，等于让它再编一段听起来合理的推理）。它落在沙箱读侧：`annotation` 表 + `session_domain/basis.py`，依据由「那条消息落库的 `tool_trace`」+「从轨迹文本里扫出的条目 id」+「按**当时记下的**锚点重放的上下文」+「一句 `limits`」拼成，**不调模型、不写库**；为此给 `chat_message` 加了一列 `anchor_step_id`（§4.12）。
 > **修订（P14，用户要求「MCP / 联网搜索」）**：外挂工具**不进**这 16 个（§4.11）。它们在 `app/external/`（`mcp.py` 手写 stdio JSON-RPC；`websearch.py` 只有缝：离线语料库 / 通用 HTTP）与 `app/agent/external.py`（接成 `ToolSpec`），由 `ExternalToolbox` 持有。三条边界：**作用域上限恒为 `read`**、**名字带 `mcp__<服务器>__<工具>` 前缀**、**能力缺失 = 工具不存在**（但"没起来"要看得见）。`tool_schemas()` 的输出与加这一层之前**逐字相同**，外挂工具拼在它后面。
-> **修订（P13，用户要求「任务不明确时反问」）**：新增第 16 个工具 `ask_about_task`（§4.2）—— 它存在的理由是一个结构性事实：**模型改不了 `goal`**（§4.2 的边界：改定义区需要用户自己的手势），所以目标不明时它只有"问"与"猜"两条路，而过去只有第二条被实现了。记下的问题会出现在定义区，并在**被回答或搁置之前挡住助手的计划写入**（`create_task_plan` / `update_task_plan` 都会拒绝）；用户自己不受影响（解释权永远在用户手里）；搁置必须带理由，且该理由会写进 `plan_revision.reason`（「这条计划是猜的」）。
+> **修订（P13，用户要求「任务不明确时反问」）**：新增第 16 个工具 `ask_about_task`（§4.2）—— 它存在的理由是一个结构性事实：**模型改不了 `goal`**（§4.2 的边界：改定义区需要用户手势，或他这一句里可逐字核对到的原话），所以目标不明时它只有"问"与"猜"两条路，而过去只有第二条被实现了。记下的问题会出现在定义区；**它不拦计划写入**（§4.4）：缺 `goal` 时计划照样建得出来，只是 `plan_revision.reason` 里会写明「按助手判断排的」。原来缺 `goal` 一律拒绝，而"问过一次"之后就永久锁死 —— 界面上根本没有回答入口，那是一条把功能锁死的门。搁置仍必须带理由（库层 CHECK），理由同样落进计划理由。
 > **修订（P6+.5，用户裁定「让 chat 支持文件」）**：新增会话资料（txt/md/docx 上传）与第 15 个工具 `read_attachment`（§4.10）；§3.3 补"用户上传的文件"这一信任层级；上下文采用序把资料清单排在**最前**；★ **缺口 G-01**：`R4c` 从 Agent 白名单移除（§4.6.1）；★ **缺口 G-01b**：`R3 + stated` 必须带 `basis_quote` 并由代码核对用户原话，对不上降级为 `experienced`（§4.6.2）—— 一行判定表都没改；★ 修掉「等确认被报成被拒」（§4.9.5）。
 > **修订（对齐 M0 v0.1 §11）**：A1 `session_state` 补 `state_snapshot`（§2）；A2 §4.5 补检查点结果记录机制（**当时工具数保持 14**，P6+.5 起为 15，见 §4.10）；A3 §3.3 冲突优先级明确为「上下文采用序」；A4 §4.1 `retrieve_cognitive` 增 `scope`；A5 §4.2.1 新增 `update_task_definition` 字段白名单与值域。
 
@@ -174,8 +174,8 @@
 ### 4.2 定义与动机（写 Session 持久状态）
 | Tool | 输入 | 输出 | 边界 |
 |---|---|---|---|
-| ask_about_task | slot（goal｜starting_point｜success_criteria）、question、options[] | 澄清问题行 + **闸门状态** | **任务不明确时先问，不要猜**（P13）；记下的问题会显示在定义区，并在被回答或搁置之前**挡住助手的计划写入**；槽位已有内容 / 同一槽位已问过 → rejected |
-| update_task_definition | field、new_value、reason | 新 input + input_revision | **仅侧页/用户显式要求**；Agent 主动 → rejected；field 白名单/值域见 §4.2.1；改 goal 必填 reason 且附 `scope_change_suspected` |
+| ask_about_task | slot（goal｜starting_point｜success_criteria）、question、options[] | 澄清问题行 + **闸门结论（`blocked` / `guessed` 与各自原因）** | **任务不明确时先问，不要猜**（P13）；记下的问题会显示在定义区；**拿到答案之前计划照样能排** —— 缺的槽位进 `guessed`，`guess_note()` 会把「按助手判断排的」写进计划理由（拦它会让"问过一次"变成永久锁死，而界面上没有回答入口）；槽位已有内容 / 同一槽位已问过 → rejected |
+| update_task_definition | field、new_value、reason、user_quote | 新 input + input_revision | **入口条件 = 界面手势，或 `user_quote` 是他这一句里的原话**（服务端在他**最新那条**用户消息里逐字比对、忽略空白）；两者都没有 → rejected。field 白名单/值域见 §4.2.1；改 goal 必填 reason 且附 `scope_change_suspected` |
 | update_motivation | changes（type/strength/drivers/obstacles）、reason、basis | 新 motivation + revision | Agent 可主动；区分动机陈述 vs 吐槽；drivers 引原文；**不管当次状态（精力/压力/环境）——那是 state_snapshot，Agent 只读**（M7 §4.1） |
 
 #### 4.2.1 update_task_definition 字段白名单与值域
@@ -201,24 +201,26 @@
 
 ### 4.4 规划写入
 
-> **两条改计划的路，各自只认一种证据（P6 真实运行抓出来的绕道，已堵）。**
+> **两条改计划的路，入口条件同一种，硬约束闸门共用一份（P6 抓出绕道，P16 收口）。**
 >
 > 实施时先是两条都认"用户点了 / 检查点没过 / stage 有想法"三者任一。真实运行立刻暴露了后果：模型被要求改计划时选了参数更少的 `update_task_plan`，而它当时唯一要满足的就是"用户点了那个计划项" —— 于是 `propose_plan_change` 的**硬约束逐条覆盖**被整个绕过，计划照样改了。
 >
-> 这是"同一条规矩在两个地方不一样严"的典型形态，而模型会挑松的那条。所以分工改成**互不重合**：
+> 这是"同一条规矩在两个地方不一样严"的典型形态，而模型会挑松的那条。所以规矩现在是**一份实现**（`_constraint_gate`，两条路共用），入口条件也统一成"可核对的证据"：
 >
 > | 工具 | 认什么证据 | 额外要求 |
 > |---|---|---|
-> | `propose_plan_change` | 用户本人这次点了那个计划项（界面手势） | 硬约束逐条覆盖（漏一条整次拒绝） |
-> | `update_task_plan` | 检查点判为未通过 / stage 里有未结案的想法（**落在库里的**） | 无（有据即可） |
+> | `propose_plan_change` | 用户本人这次要求改：**界面手势**，或 `user_quote` 能在他**这一轮那句话**里逐字找到 | 硬约束逐条覆盖（漏一条整次拒绝）+ 评估三查 |
+> | `update_task_plan` | 落在库里的证据（检查点判为未通过 / stage 里有未结案的想法），**或**上面那条同样的「手势 / 引文」 | 硬约束逐条覆盖（同一份 `_constraint_gate`，漏一条同样整次拒绝） |
+>
+> **引文为什么能当证据**：门仍然可核对，而且核对得更彻底 —— 引文由服务端在用户**刚写下的那条消息**里逐字比对（忽略空白），模型编不出一句用户没说过的引文。原来只认界面手势，代价是用户说「第 3 步拆成两天」时系统回他「请先点开计划项」—— 那是一道没有数据理由的门：放行不会写出任何自相矛盾的行，拦下却挡住了最正常的动作。
 >
 > 两条都不认模型自己写的理由。`user_view` 是模型转述用户的话，它读起来完全像"用户是这么说的"，但没有任何东西验证过这段转述 —— 拿它当权限就是让模型的一句话变成权限。真实运行里被拒绝的那一次，模型把这条规则**如实转述给了用户**（"直接修改步骤会被拒绝……你需要点击那一步"），这是它该有的表现。
 
 | Tool | 输入 | 输出 | 边界 |
 |---|---|---|---|
-| create_task_plan | goal、steps[]（带 output）、checkpoints[] | plan_id + revision | 步骤必须带 output（M2-A3） |
-| update_task_plan | diff（steps/checkpoints/change）、reason | 新 revision | **必须带 reason**；**要有落在库里的证据**（检查点 fail / 未结案的 stage），用户点计划项**不算** —— 那种情况走 `propose_plan_change`。**不接受模型给的 `basis`**（见下） |
-| propose_plan_change | target（step/cp）、user_view、constraint_checks[]、suggested_change | applied + revision 或 rejected + 理由 | **入口条件 = 用户本人点了那个计划项**；**评估三查**：① stage 一致性 ② 硬约束 ③ C 证据/历史，其中 ② 由代码强制逐条覆盖；拒绝不影响执行 |
+| create_task_plan | goal、steps[]（带 output）、checkpoints[] | plan_id + revision | 步骤必须带 output（M2-A3）；**不挑状态**（`draft/active/review` 都能建）—— 起草期最想做的事往往就是「先帮我排一版」，拦它只会让新会话在界面上无从下手；`completed`/`abandoned` 仍是禁区 |
+| update_task_plan | diff（steps/checkpoints/change）、reason、user_quote、constraint_checks[] | 新 revision | **必须带 reason**；入口 = **落在库里的证据**（检查点 fail / 未结案的 stage）**或**「手势 / `user_quote` 引文」之一；**硬约束逐条覆盖与冲突即拒由 `_constraint_gate` 与 `propose_plan_change` 共用**（漏一条整次拒绝）。**不接受模型给的 `basis`**（见下） |
+| propose_plan_change | target（step/cp）、user_view、user_quote、constraint_checks[]、suggested_change | applied + revision 或 rejected + 理由 | **入口条件 = 用户本人这次要求改**（界面手势，或 `user_quote` 逐字可核对）；**评估三查**：① stage 一致性 ② 硬约束 ③ C 证据/历史，其中 ② 由代码强制逐条覆盖（与 `update_task_plan` 同一份 `_constraint_gate`）；拒绝不影响执行 |
 | write_stage | type（temp_pref/idea/plan_override）、content | stage_id | 与 chat_note/motivation 边界区分（想试试→stage） |
 
 #### 4.4.1 `steps` 是整份有序表（用户裁定，方案 B）
@@ -246,12 +248,12 @@
 
 `revise_plan` 有 `basis` 参数，但工具的参数表里把它拿掉了。`basis` 说的是"这条改动的依据有多硬"，而这条路上**没有任何东西能验证模型凭什么说 `stated`** —— 那就是一句模型产的、读起来像事实的声明，与 `user_view` 是同一形态的缺陷，只是换了个字段名。
 
-对比 `propose_plan_change` 的 `basis="stated"`：那是**被入口条件强制的**（用户必须真的点了那一项），所以它有资格被记下来。**一条 `basis` 只有在别处被强制时才算事实。**
+对比 `propose_plan_change` 的 `basis="stated"`：那是**被入口条件强制的**（用户必须真的点了那一项，或他这一句的原话逐字可核对），所以它有资格被记下来。**一条 `basis` 只有在别处被强制时才算事实。**
 
 ### 4.5 执行推进（简化）
 | Tool | 输入 | 输出 | 边界 |
 |---|---|---|---|
-| mark_step_done | step_id | step_status=done | **无产出验证**（用户 UI 一键）；产出/收获/教训由用户主动在 chatbox 讨论 |
+| mark_step_done | step_id、user_quote | step_status=done | **无产出验证**（用户 UI 一键；或他自己说「第 3 步做完了」，把那句原话放进 `user_quote`——服务端在他最新那条消息里逐字核对）；产出/收获/教训由用户主动在 chatbox 讨论 |
 | checkpoint_milestone | milestone_id、result、assisted | milestone_status=done + suggested_deposit | 用户标记或 LLM 辅助（「已完成，我发现…」）；提示沉淀不自动沉淀 |
 
 **检查点结果（对齐 M2-A4，补缺失落点）**：`task_plan.checkpoints[]` 的**通过/失败**由**用户 UI 一键记录**（与 `mark_step_done` 同级，**不新增 LLM 工具**）。记录字段：`{cp_id, result: pass|fail, result_at, result_note}`。
@@ -465,21 +467,27 @@ ARCH-09 禁止 `app.router` import `session_domain`，而对话记录住在沙�
 |---|---|---|
 | 有 | 有 | 「**他点开了计划项 ST-00X**」+ 入口条件已满足 + **不要让他再点一次** |
 | 有 | 无 | 「他点开了某个计划项（没指名哪一项）」+ 入口条件已满足 |
-| 无 | — | 「他**没有**点任何计划项」+ `propose_plan_change` 现在用不了 + 有证据才走 `update_task_plan` |
+| 无 | — | 「他**没有**点任何计划项」+ 没有检查点 / stage 证据时，改计划要**引他这一句的原话**（`user_quote`） |
 
 第二行是第三种真实情况，**不能渲染成"他没点"**：工具层会放行，
 而模型以为自己没这个权力，于是连试都不试。这一层的一致性由
 `tests/agent/test_invocation_contract.py` 钉住。
 
+★ **P16 补的一格：没有手势不等于"改不了"**。用户说「第 3 步拆成两天」时，
+模型把那句话原样放进 `user_quote`，服务端在**他这一轮最新那条消息**里逐字比对
+（忽略空白），对得上就放行。所以渲染层不必再加一格 —— 引文这条路不靠渲染，
+靠核对；而它比"点击"更难伪造：模型编不出一句用户没说过的原话。
+
 ### 4.9.2 驳回语必须按**真实状态**分支
 
 `update_task_plan` 被拒时的理由是同一句话的两个意思。
-现在按 `ctx.has(GESTURE_PLAN_CHANGE)` 分成两句：
+现在按"这一句里到底有没有可核对的开头"分成两句：
 
 - **有手势**：「……但**用户已经点了那个计划项** —— 那本身就是入口条件。
   **请改用 `propose_plan_change`**……**不要回复用户让他去点击** —— 他已经点过了。」
-- **无手势**：「……用户也**没有点任何计划项**。先把当前这一步做完……
-  并告诉他：点开那个计划项再说，就能改。」
+- **两者都没有**：「……他既**没有点**任何计划项，`user_quote` 也**引不出**他的原话。
+  先把当前这一步做完……把建议讲给用户听；他说一句要改哪里，把那句原话带进
+  `user_quote` 就能改 —— **不需要他先去界面上点**。」
 
 一个模型读到"条件句"会把当前状态读成条件不满足 ——
 **这不是模型的理解问题，是我们的表达问题**。
@@ -500,6 +508,13 @@ ARCH-09 禁止 `app.router` import `session_domain`，而对话记录住在沙�
 **"不要猜他有没有点。上下文里写着。"** —— 工具声明是**选项**，
 提示词是**规则**；只有选项没有规则，模型得自己从三份长文本里归纳，
 而那正是它最容易归纳错的地方。
+
+★ **手势与引文是同一件事的两种写法**：点了就是点了，说过就是说过；两者都没有时，
+才必须先把建议讲给用户听、请他给一句话。漏掉"引文"的后果与当初漏掉"手势是事实"
+完全同形：模型会去让用户点一个他本来已经用嘴说过的东西。
+**现状与缺口**：那张"入口条件 → 用哪个工具"的表**还是两行**（手势 / 库里证据），
+引文这条路只写在上面「引用要照抄原话」那一段里 —— 而一段散文不构成选项；
+按这条要求，表应当补一行（"他这一句里说了要改 / 说了做完了" → 带 `user_quote`）。
 
 ### 4.9.4 验证层：按"跨层一致性"组织，而不是按模块
 
@@ -814,7 +829,7 @@ ARCH-09 禁止 `app.router` import `session_domain`，而对话记录住在沙�
 ## 8. 红线
 
 1. Agent 可读全局，不可直写全局；写全局唯一路径 = submit_global_update → 路由。
-2. 计划可改（plan_revision）、输入可改（input_revision）；调整被步骤锚定。
+2. 计划可改（plan_revision）、输入可改（input_revision）；调整被步骤锚定 —— 或被他这一句里**逐字可核对的原话**锚定。
 3. 聊天不自动沉淀；沉淀必确认（R4a/R4b 全确认；R4c 由**用户勾选**触发，所以它的 add_preference 直接生效 —— 但模型不能声称 R4c，见 A21 与 §4.6.1）。
 4. stage 是 Session 内即时生效的唯一写入区；stage → 全局 = 沉淀 = 走路由。
 5. submit_global_update 必须带 trigger_type；无触发类型被拒。
@@ -839,10 +854,13 @@ ARCH-09 禁止 `app.router` import `session_domain`，而对话记录住在沙�
    解释成用户没点，并让用户去点。**凡是"系统知道、模型不知道"的状态，
    都必须渲染进它看得见的地方**，而且渲染层与判断层要读**同一个变量**
    （§4.9.1）。三种手势状态（点了/没点名/没点）都要写成事实，
-   不能靠"缺失"让模型推断。
+   不能靠"缺失"让模型推断。**现在多一种情形**：没点、但引文对得上 ——
+   它不需要渲染，靠服务端在他那条消息里逐字核对（§4.9.1 的 ★）。
 10. **驳回语是对现实的描述，不是模板。** 同一句驳回语在两个真实状态下
     被读出相反含义，代价是用户被要求去做他已经做过的事（§4.9.2）。
     驳回语必须按**当前真实状态**分支，并给出下一步该换哪个工具。
+    "状态"里多一格：**「他既没点、也引不出原话」才是真正没有开头的那一种**；
+    引文对得上时，驳回语不许再要求他去点一下。
 11. **工具说明与实现不许分叉**（P6+.4）。两个工具写的是同一份步骤表时，
     `steps` 语义必须**逐字一致**；实现有的行为说明里必须有
     （`checkpoints` 的不对称、新增步骤不带 `step_id`）。
@@ -859,4 +877,4 @@ ARCH-09 禁止 `app.router` import `session_domain`，而对话记录住在沙�
 
 ---
 
-*文档版本：v0.2 ｜ 状态：draft ｜ 归属模块：M8 Agent 架构与 Tool Schema（觅学之契系列）｜ 取代 M8 v0.1 + M8.1 v0.1 ｜ 依赖：M7 v0.4、更新路由层 v0.4、M2 v0.3、M1 v0.4 ｜ 修订：v0.2 就地修正（对齐 M0 v0.1 §11，A1–A5）*
+*文档版本：v0.2 ｜ 状态：draft ｜ 归属模块：M8 Agent 架构与 Tool Schema（觅学之契系列）｜ 取代 M8 v0.1 + M8.1 v0.1 ｜ 依赖：M7 v0.4、更新路由层 v0.4、M2 v0.3、M1 v0.4 ｜ 修订：v0.2 就地修正（对齐 M0 v0.1 §11，A1–A5）；**§4.2 / §4.4 / §4.5 / §4.9 / §8 含 P16 写权限口径收敛回写（入口＝手势或引文；硬约束闸门两条路共用；P13 闸门不再拒绝）***

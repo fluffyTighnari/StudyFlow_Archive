@@ -135,19 +135,14 @@ class PlanGate:
 
     def message(self) -> str:
         """拒绝的理由。**要能直接照着做** —— 包含工具名与槽位名。"""
-        lines = ["任务定义区还缺计划离不开的东西，先把它弄清楚再改计划："]
-        for slot, reason in zip(self.blocked, self.reasons, strict=True):
+        lines = ["任务定义区还没写全，这版计划是按助手判断排的（不是拦你，是记下来）："]
+        for slot, reason in zip(self.guessed, self.reasons, strict=True):
             lines.append(f"· `{slot.name}`（{slot.label}）：{reason} —— {slot.why}")
         if any("没问过" in r for r in self.reasons):
             lines.append(
-                "用 `ask_about_task` 问一句（带上槽位名），"
-                "让界面把这个问题显示给他；**不要自己填一个看起来合理的值**。"
+                "想更准就先 `ask_about_task` 问一句（带上槽位名），他答了再排一版；"
+                "不问也能排，只是这一版要带上「这是猜的」。"
             )
-        if any("还在等答案" in r for r in self.reasons):
-            lines.append("问题已经显示在定义区了，等答案回来；现在改计划改的是猜出来的那个任务。")
-        if self.guessed:
-            names = "、".join(f"`{slot.name}`" for slot in self.guessed)
-            lines.append(f"（{names} 他选择了先不管，那部分我按判断来，但会在计划上写明是猜测）")
         return "\n".join(lines)
 
 
@@ -160,27 +155,34 @@ def plan_gate(
     ★ 只看**硬拦槽位**：软槽位缺了不拦（见模块文档）。
     但它们若被问过又被搁置，仍然会进 `guessed`，让计划带上"这是猜的"。
     """
+    # ★ 这里**不再拦**。原来缺 `goal` 时：没问过就拒、问过没答也拒 ——
+    # 而"问过"之后计划就**永久锁死**：界面上没有回答入口（`answer/dismiss`
+    # 只有 API），模型也不能自己搁置。一条把功能锁死的门，比它防的风险更贵。
+    # 现在一律放行，把"这是按我判断排的"记进计划自己的理由里（`guess_note`）——
+    # 那是可核对的：三个月后回看这条计划，能看见当时缺了哪一项。
     blocked: list[Slot] = []
     reasons: list[str] = []
     guessed: list[Slot] = []
     for slot in missing_slots(values):
         status = questions.get(slot.name)
         if status == STATUS_ANSWERED:
-            # 答过了却还是空的：答案没能写进去。这是一处**不该发生**的状态，
-            # 当成"没答"处理并说明 —— 沉默地放行会让计划建在一个空的槽位上。
-            blocked.append(slot)
-            reasons.append("问题答过，但定义区里还是空的（答案没写进去）—— 需要重问一次")
+            guessed.append(slot)
+            reasons.append("问过，但答案没有写进定义区")
             continue
         if status == STATUS_OPEN:
-            if slot.hard:
-                blocked.append(slot)
-                reasons.append("已经问过，还在等答案")
+            guessed.append(slot)
+            reasons.append("已经问过，还在等答案")
             continue
         if status == STATUS_DISMISSED:
             guessed.append(slot)
+            # ★ 必须同时追加 reason：`PlanGate.message()` 用
+            # `zip(self.guessed, self.reasons, strict=True)` 配对，
+            # 少一条就抛 ValueError —— 而 `message()` 会在"说明这版计划是猜的"
+            # 那条路上被调用，也就是最需要它说话的时候。
+            reasons.append("他说过先不管")
             continue
         if slot.hard:
-            blocked.append(slot)
+            guessed.append(slot)
             reasons.append("没问过")
     return PlanGate(blocked=tuple(blocked), guessed=tuple(guessed), reasons=tuple(reasons))
 
