@@ -57,10 +57,22 @@ def make_engine(url: str | None = None, *, echo: bool = False) -> Engine:
 
     if url.startswith("sqlite"):
         # SQLite 默认不强制外键，必须显式打开——否则 RESTRICT 形同虚设。
+        #
+        # 另外两条是**并发**用的，都是被现场逼出来的：
+        # - `journal_mode=WAL`：读写不再互相阻塞。默认的 rollback journal 下，
+        #   一个写事务会挡住所有其它写，而这里有一类特别长的写事务 ——
+        #   **讨论在等模型回答的那几十秒**。于是"讨论跑着的时候改设置"会拿到
+        #   `database is locked`，界面上是一次 500。
+        # - `busy_timeout=5000`：拿不到锁先等 5 秒再报错。默认是 0，即"别人正在写就
+        #   立刻失败"，而那种失败在用户眼里就是"这台机器随机报错"。
         @event.listens_for(engine, "connect")
         def _enable_foreign_keys(dbapi_connection, _record):  # pragma: no cover
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            # 内存库不支持 WAL（也没有意义），只在文件库上开。
+            if ":memory:" not in url:
+                cursor.execute("PRAGMA journal_mode=WAL")
             cursor.close()
 
     return engine

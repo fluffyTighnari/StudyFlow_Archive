@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, runtime_checkable
 
 Role = Literal["system", "user", "assistant", "tool"]
 
@@ -407,11 +407,18 @@ def _urllib_get(url: str, headers: dict[str, str], timeout: float) -> dict[str, 
     return parsed
 
 
+@runtime_checkable
 class ModelLister(Protocol):
     """能问出"这家有哪些模型"的客户端。
 
     **不放进 `LLMClient`**：循环只需要 `chat`/`stream`，而 `FakeLLM` 不该
     被迫实现一个它永远用不到的方法（那会变成一堆 `raise NotImplementedError`）。
+
+    ★ `@runtime_checkable` 不是装饰性细节：`api/llm.py` 里用
+    `isinstance(client, ModelLister)` 判断"这条客户端能不能列模型"。
+    少了它，每一次判断都抛 `TypeError: Instance and class checks can only be
+    used with @runtime_checkable protocols` —— 于是"列模型"对**所有**服务商
+    都是 500，而代码看起来完全正常。
     """
 
     def list_models(self) -> list[str]: ...
@@ -803,6 +810,41 @@ class OllamaClient:
     def _parse_call(self, position: int, item: Any) -> ToolCall:
         return _tool_call_from(position, item)
 
+    # ---- 模型清单 ------------------------------------------------------ #
+
+    #: ★ 这一块原先写在 `context_truncation_note()` 的 `return` 之后 ——
+    #: 缩进合法、永不执行，也从来没成为这个类的方法。于是 Ollama 档案的
+    #: 「探活 / 拉清单」直接 500（`AttributeError: ... has no attribute`）。
+    #: 它读 `self.base_url` 与 `self.timeout`，所以位置本身就是它的依赖。
+    def list_models(self, *, get: HttpGet | None = None) -> list[str]:
+        """`GET {base_url}/api/tags` → `["qwen3.6:27b", …]`。
+
+        Ollama 的字段是 `models[].name`（有的版本还有 `model`）。
+        两种都认，且**去重后排序** —— 界面上让它稳定，不要每次刷新都换顺序。
+        """
+        fetch = get or (
+            lambda url, headers, timeout: _urllib_get(url, headers, timeout)
+        )
+        raw = fetch(f"{self.base_url}/api/tags", {}, self.timeout)
+        items = raw.get("models")
+        if not isinstance(items, list):
+            raise LLMError(
+                f"{self.base_url}/api/tags 里没有 models 列表。"
+                "如果这个地址其实是个 OpenAI 兼容服务，请把服务商选成对应的那家"
+                "（它会走 /v1/models）。"
+            )
+        names: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in ("name", "model"):
+                value = item.get(key)
+                if isinstance(value, str) and value:
+                    names.add(value)
+                    break
+        return sorted(names)
+
+
 
 def _tool_call_from(position: int, item: Any) -> ToolCall:
     """把一条工具调用解析成 `ToolCall`。**两个客户端共用这一份。**
@@ -894,36 +936,6 @@ def context_truncation_note(reply: LLMReply) -> str | None:
         f"而我们发出去的是整份工具声明加会话状态（14 个工具约 1.7 万字符）。"
         "把窗口调大（`MOUXUE_LLM_NUM_CTX`），或者减少同时暴露的工具数。"
     )
-
-    # ---- 模型清单 ------------------------------------------------------ #
-
-    def list_models(self, *, get: HttpGet | None = None) -> list[str]:
-        """`GET {base_url}/api/tags` → `["qwen3.6:27b", …]`。
-
-        Ollama 的字段是 `models[].name`（有的版本还有 `model`）。
-        两种都认，且**去重后排序** —— 界面上让它稳定，不要每次刷新都换顺序。
-        """
-        fetch = get or (
-            lambda url, headers, timeout: _urllib_get(url, headers, timeout)
-        )
-        raw = fetch(f"{self.base_url}/api/tags", {}, self.timeout)
-        items = raw.get("models")
-        if not isinstance(items, list):
-            raise LLMError(
-                f"{self.base_url}/api/tags 里没有 models 列表。"
-                "如果这个地址其实是个 OpenAI 兼容服务，请把服务商选成对应的那家"
-                "（它会走 /v1/models）。"
-            )
-        names: set[str] = set()
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            for key in ("name", "model"):
-                value = item.get(key)
-                if isinstance(value, str) and value:
-                    names.add(value)
-                    break
-        return sorted(names)
 
 
 class OpenAICompatClient:

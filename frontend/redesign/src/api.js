@@ -124,6 +124,22 @@ export const api = {
       expected_version: expectedVersion,
       reason,
     }),
+
+  // ── 模型档案（`/api/llm`）：在界面里填、立即生效 ────────────────────
+  //
+  // 这一组不是"认知状态"：它不改基线/偏好/计划，只换接下来由谁说话。
+  // 密钥**永远不回显**（后端只给 `has_key` 与掩码），所以前端也没有地方存它。
+  llmProviders: () => get('/api/llm/providers'),
+  llmConfig: () => get('/api/llm/config'),
+  llmProfiles: () => get('/api/llm/profiles'),
+  llmCreateProfile: (body) => post('/api/llm/profiles', body),
+  llmUpdateProfile: (id, body) => patch(`/api/llm/profiles/${seg(id)}`, body),
+  llmDeleteProfile: (id) => del(`/api/llm/profiles/${seg(id)}`),
+  llmActivateProfile: (id) => post(`/api/llm/profiles/${seg(id)}/activate`, {}),
+  /** **POST 不是 GET**：它会拿密钥去请求外部服务（见后端 docstring）。 */
+  llmListModels: (id) => post(`/api/llm/profiles/${seg(id)}/models`, {}),
+  /** 真的发一次请求。清单里没有 ≠ 不能用，但"探活"必须是真动作。 */
+  llmProbe: (id) => post(`/api/llm/profiles/${seg(id)}/probe`, {}),
 };
 
 /**

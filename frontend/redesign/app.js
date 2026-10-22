@@ -151,32 +151,8 @@ const I18N = {
 const t = (key) => (I18N[state.lang] && I18N[state.lang][key]) || I18N.zh[key] || key;
 
 /* ── data ─────────────────────────────────────────────────────────── */
-const PROFILES = [
-  {
-    id: 'p-local', mark: '本', label: '本地 · 日常', short: 'Qwen 3.6 · 27B',
-    provider: 'Ollama', kind: 'local', model: 'qwen3.6:27b',
-    base: '127.0.0.1:11434', think: 'false', ctx: '32 768',
-    masked: '无需密钥', note: '离线可用 · 单次 90–190 s', probe: '上次探活 128 ms · 12 个模型',
-  },
-  {
-    id: 'p-deepseek', mark: '外', label: 'DeepSeek', short: 'DeepSeek V3',
-    provider: 'OpenAI 兼容', kind: 'external', model: 'deepseek-chat',
-    base: 'api.deepseek.com', think: 'auto', ctx: '64 000',
-    masked: 'sk-••••9f2c', note: '产品落点 · 流式稳定', probe: '上次探活 2026-10-19 · 可用',
-  },
-  {
-    id: 'p-kimi', mark: '外', label: 'Kimi K2', short: 'Kimi K2',
-    provider: 'OpenAI 兼容', kind: 'external', model: 'kimi-k2-0905',
-    base: 'api.moonshot.cn', think: 'auto', ctx: '128 000',
-    masked: 'sk-••••71ab', note: '长上下文 · 适合整卷复盘', probe: '尚未探活',
-  },
-  {
-    id: 'p-qwen', mark: '备', label: '本地 · 备用', short: 'Qwen 3.5 · 9B',
-    provider: 'Ollama', kind: 'local', model: 'qwen3.5:9b',
-    base: '127.0.0.1:11434', think: 'true', ctx: '32 768',
-    masked: '无需密钥', note: '快，但工具调用不稳', probe: '上次探活 96 ms · 12 个模型',
-  },
-];
+// 模型档案**不再写死在界面里**（原来是四份手抄的假档案）。
+// 真的那份在 `GET /api/llm/profiles`，由 `loadModels()` 拉进 `state.profiles`。
 
 const EMPTY_CONTEXT = {
   used: '0', total: '32k', pct: 0, segments: [0, 0, 0, 0],
@@ -263,8 +239,16 @@ const state = {
   cite: true,
   thinkView: 'fold',
   busyBehavior: 'queue',
-  activeProfile: 'p-local',
-  profiles: structuredClone(PROFILES),
+  //: 生效中的档案 id（来自 `is_active`），没有档案时为 `null`。
+  activeProfile: null,
+  //: 真档案（`/api/llm/profiles` → `mapProfile`）。
+  profiles: [],
+  //: 服务商目录（`/api/llm/providers`），新建档案时的下拉框。
+  providers: [],
+  //: `GET /api/llm/config`：此刻实际用的是 profile 还是 `.env`。
+  llmConfig: null,
+  //: 探活结果按档案记（`probe.detail` 原话），不编造延迟。
+  probeText: {},
   currentSession: null,
   currentFolder: null,
   //: 点开计划项后，这一轮讨论的锚点（只由用户点击产生）。
@@ -342,7 +326,144 @@ function activeDetail() {
   }
   return state.details[state.currentSession];
 }
-function activeProfile() { return state.profiles.find((p) => p.id === state.activeProfile) || state.profiles[0]; }
+function activeProfile() {
+  return state.profiles.find((p) => p.id === state.activeProfile) || null;
+}
+
+/**
+ * 顶栏/侧栏该显示哪个模型名。
+ *
+ * 没有档案时**不编一个名字**：这时真正在说话的是 `.env` 里那一个
+ * （`/api/llm/config` 的 `settings`），那就如实显示它。
+ */
+function currentModelLabel() {
+  const prof = activeProfile();
+  if (prof) return prof.short || prof.model;
+  const model = state.llmConfig?.settings?.llm_model;
+  return model ? `${model} · 来自 .env` : '未配置模型';
+}
+
+/** 后端的一行档案 → 界面用的视图模型（字段名照抄，方便对照接口）。 */
+function mapProfile(row) {
+  const meta = state.providers.find((x) => x.provider_id === row.provider_id);
+  return {
+    id: row.profile_id,
+    label: row.label || row.profile_id,
+    short: row.label || row.model,
+    model: row.model,
+    model2: row.model,
+    providerId: row.provider_id,
+    provider: meta ? meta.label : row.provider_id,
+    kind: row.kind,
+    base: row.base_url,
+    numCtx: row.num_ctx,
+    ctx: row.num_ctx ? String(row.num_ctx) : '—',
+    //: 三态：`auto` = 不发 think 字段（对不认识的模型更安全）。
+    think: row.think === 'true' ? 'true' : row.think === 'false' ? 'false' : 'auto',
+    note: row.note || '',
+    active: !!row.is_active,
+    hasKey: !!row.has_key,
+    masked: row.has_key ? (row.key_masked || '已设置') : (meta?.needs_key ? '未设置' : '无需密钥'),
+    mark: row.kind === 'local' ? '本' : '外',
+  };
+}
+
+/**
+ * 从后端读模型档案。**这是这一页唯一的数据来源。**
+ *
+ * 三件事一起读，因为它们互相解释：`profiles`（有哪些）、
+ * `providers`（能选哪些服务商）、`config`（此刻实际在用哪一份）。
+ * 只读 profiles 的话，"我配了怎么好像没生效"就没有答案来源。
+ */
+async function loadModels({ render = true } = {}) {
+  try {
+    const [profiles, config, providers] = await Promise.all([
+      api.llmProfiles(),
+      api.llmConfig(),
+      api.llmProviders(),
+    ]);
+    state.providers = providers.items || [];
+    state.llmConfig = config;
+    state.profiles = (profiles.items || []).map(mapProfile);
+    const active = state.profiles.find((p) => p.active);
+    state.activeProfile = active ? active.id : null;
+  } catch (err) {
+    state.profiles = [];
+    state.activeProfile = null;
+    toast(`模型档案读不到：${err.message}`, 'danger');
+  }
+  if (render) {
+    renderSettings();
+    renderTopbar();
+    renderRail();
+  }
+}
+
+/**
+ * 打开"新增/编辑一份档案"的表单。
+ *
+ * ★ 保存时**发整份**而不是只发改动的那几个字段：后端 `update_profile`
+ * 是整份覆盖写（`note`/`num_ctx`/`base_url` 都会被赋成你给的值），
+ * 只发一部分就会把它们悄悄抹掉 —— 那正是"我什么都没动，配置却变了"。
+ */
+function openProfileForm(existing) {
+  if (!state.providers.length) {
+    toast('服务商目录还没读到 · 稍后再试', 'danger');
+    return;
+  }
+  const p = existing || null;
+  const options = state.providers
+    .map(
+      (x) =>
+        `<option value="${x.provider_id}"${p && p.providerId === x.provider_id ? ' selected' : ''}>${escapeHtml(x.label)}</option>`,
+    )
+    .join('');
+  const pop = openPopover(
+    $('#profile-list') || document.body,
+    `<div class="popover-label">${p ? '编辑模型档案' : '新增模型档案'}</div>
+     <form class="profile-form">
+       <label>服务商<select class="pf-provider">${options}</select></label>
+       <label>模型名<input class="pf-model" value="${escapeHtml(p ? p.model : '')}" placeholder="例如 qwen3.6:27b"></label>
+       <label>档案名<input class="pf-label" value="${escapeHtml(p ? p.label : '')}" placeholder="不填就用模型名"></label>
+       <label>端点<input class="pf-base" value="${escapeHtml(p ? p.base : '')}" placeholder="留空用服务商默认"></label>
+       <label>上下文 tokens<input class="pf-ctx" type="number" min="512" step="512" value="${p && p.numCtx ? p.numCtx : ''}" placeholder="留空用默认"></label>
+       <label>密钥<input class="pf-key" type="password" autocomplete="off" placeholder="${p && p.hasKey ? '已设置 · 留空表示不改' : '需要密钥的服务商才填'}" /></label>
+       ${p && p.hasKey ? '<label class="pf-row"><input type="checkbox" class="pf-clear-key"> 清掉已存的密钥</label>' : ''}
+       <div class="inline-actions">
+         <button type="submit" class="mini-btn solid">保存</button>
+         <button type="button" class="mini-btn" data-action="close-popover">取消</button>
+       </div>
+     </form>`,
+    'popover-form',
+  );
+  pop.querySelector('form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const providerId = pop.querySelector('.pf-provider').value;
+    const meta = state.providers.find((x) => x.provider_id === providerId);
+    const model = pop.querySelector('.pf-model').value.trim() || meta?.default_model || '';
+    const body = {
+      label: pop.querySelector('.pf-label').value.trim() || model,
+      provider_id: providerId,
+      model,
+      base_url: pop.querySelector('.pf-base').value.trim() || null,
+      num_ctx: Number(pop.querySelector('.pf-ctx').value) || null,
+      note: p ? p.note : '',
+    };
+    const keyInput = pop.querySelector('.pf-key');
+    const clearKey = pop.querySelector('.pf-clear-key');
+    if (clearKey && clearKey.checked) body.api_key = '';
+    else if (keyInput.value) body.api_key = keyInput.value;
+    try {
+      if (p) await api.llmUpdateProfile(p.id, body);
+      else await api.llmCreateProfile(body);
+      closePopover();
+      await loadModels();
+      toast(p ? '档案已更新' : '档案已建好 · 点「启用」才生效');
+    } catch (err) {
+      toast(err.message, 'danger');
+    }
+  });
+}
 function stateLabel(key) { return t('state.' + key); }
 function statusLabel(status) {
   return ({ done: '已完成', doing: '进行中', pending: '待开始', skipped: '已跳过' })[status] || status;
@@ -427,10 +548,10 @@ function renderRail() {
   $('#archive-count').textContent = pad(state.archivedSessions.length + state.archivedFolders.length);
 
   const prof = activeProfile();
-  $('#rail-model-name').textContent = prof.short;
-  $('#rail-model .foot-model-text em').textContent = (state.lang === 'en')
-    ? `${prof.provider} · ${prof.ctx} context`
-    : `${prof.provider === 'Ollama' ? '本地 Ollama' : '外部 API'} · 上下文 ${prof.ctx.replace(' 000', 'k').replace(' 768', 'k')}`;
+  $('#rail-model-name').textContent = currentModelLabel();
+  $('#rail-model .foot-model-text em').textContent = prof
+    ? `${prof.provider} · 上下文 ${prof.ctx}`
+    : (state.llmConfig?.settings ? '设置 → 模型：加一份档案就能换' : '读不到模型配置');
 
   $('#bench-badge').textContent = state.bench.status === 'running' ? '进行中' : (state.bench.status === 'interrupted' ? '未完成' : '·');
 }
@@ -446,9 +567,9 @@ function renderTopbar() {
   pill.className = 'state-pill is-' + stateKey;
   pill.querySelector('span').textContent = stateLabel(stateKey);
 
+  $('#model-chip-name').textContent = currentModelLabel();
   const prof = activeProfile();
-  $('#model-chip-name').textContent = prof.short;
-  $('#composer-model-note').textContent = prof.short;
+  $('#composer-model-note').textContent = prof ? prof.model : (state.llmConfig?.settings?.llm_model || '未配置模型');
   $('#composer-busy-rule').textContent = t('composer.busyPrefix') + t('busy.' + state.busyBehavior);
 
   document.title = session ? `${session.title} · 觅学之契` : '觅学之契 · 学习流档案';
@@ -1429,53 +1550,88 @@ function thinkLabel(value) {
 }
 
 function renderSettings() {
-  const prof = activeProfile();
   const card = $('#active-model-card');
+  const prof = activeProfile();
   if (card) {
-    card.innerHTML = `
-      <span class="am-seal">当前印鉴</span>
-      <div class="am-left">
-        <div class="am-kicker"><span class="pulse-dot"></span>${state.lang === 'en' ? 'IN USE' : '正在使用'} · ${escapeHtml(prof.provider)}</div>
-        <div class="am-title"><h3>${escapeHtml(prof.label)}</h3><span class="am-model">${escapeHtml(prof.model)}</span></div>
-        <div class="am-meta">
-          <span>${state.lang === 'en' ? 'Endpoint' : '端点'} <b>${escapeHtml(prof.base)}</b></span>
-          <span>${state.lang === 'en' ? 'Context' : '上下文'} <b>${escapeHtml(prof.ctx)}</b></span>
-          <span>${state.lang === 'en' ? 'Key' : '密钥'} <b>${escapeHtml(prof.masked)}</b></span>
-        </div>
-        <div class="am-think">
-          <span>${t('model.think')}</span>
-          <div class="segmented" data-think-profile="${prof.id}">
-            ${['auto', 'false', 'true'].map((v) => `<button data-action="set-think" data-id="${prof.id}" data-value="${v}" class="${String(prof.think) === v ? 'is-on' : ''}">${thinkLabel(v)}</button>`).join('')}
+    if (!prof) {
+      // 一份档案都没有：这时真正在说话的是 `.env` 里那个模型。
+      // **不编一个档案出来**，如实说"还没有档案、现在用的是环境变量里的那个"。
+      const s = state.llmConfig?.settings;
+      card.innerHTML = `
+        <span class="am-seal">当前印鉴</span>
+        <div class="am-left">
+          <div class="am-kicker"><span class="pulse-dot"></span>正在使用 · .env 默认值</div>
+          <div class="am-title"><h3>还没有模型档案</h3><span class="am-model">${escapeHtml(s ? s.llm_model : '—')}</span></div>
+          <div class="am-meta">
+            <span>服务商 <b>${escapeHtml(s ? s.llm_provider : '—')}</b></span>
+            <span>端点 <b>${escapeHtml(s ? s.llm_base_url : '—')}</b></span>
+            <span>上下文 <b>${s && s.llm_num_ctx ? escapeHtml(String(s.llm_num_ctx)) : '—'}</b></span>
+            <span>密钥 <b>${s && s.has_api_key ? '已设置' : '未设置'}</b></span>
           </div>
-          <em>${state.lang === 'en' ? 'auto = do not send the field' : '自动 = 不发这个字段，对不认识的模型更安全'}</em>
+          <div class="am-think">
+            <em>在下面新建一份档案并点「启用」，讨论就改由它回答。这一栏显示的永远是<b>实际</b>在用的东西。</em>
+          </div>
+        </div>`;
+    } else {
+      card.innerHTML = `
+        <span class="am-seal">当前印鉴</span>
+        <div class="am-left">
+          <div class="am-kicker"><span class="pulse-dot"></span>${state.lang === 'en' ? 'IN USE' : '正在使用'} · ${escapeHtml(prof.provider)}</div>
+          <div class="am-title"><h3>${escapeHtml(prof.label)}</h3><span class="am-model">${escapeHtml(prof.model)}</span></div>
+          <div class="am-meta">
+            <span>${state.lang === 'en' ? 'Endpoint' : '端点'} <b>${escapeHtml(prof.base)}</b></span>
+            <span>${state.lang === 'en' ? 'Context' : '上下文'} <b>${escapeHtml(prof.ctx)}</b></span>
+            <span>${state.lang === 'en' ? 'Key' : '密钥'} <b>${escapeHtml(prof.masked)}</b></span>
+          </div>
+          <div class="am-think">
+            <span>${t('model.think')}</span>
+            <div class="segmented" data-think-profile="${prof.id}">
+              ${['auto', 'false', 'true'].map((v) => `<button data-action="set-think" data-id="${prof.id}" data-value="${v}" class="${String(prof.think) === v ? 'is-on' : ''}">${thinkLabel(v)}</button>`).join('')}
+            </div>
+            <em>自动 = 不发这个字段，对不认识的模型更安全（只能在新建时设定）</em>
+          </div>
         </div>
-      </div>
-      <div class="am-probe">
-        <button class="mini-btn" data-action="probe" data-id="${prof.id}">${state.lang === 'en' ? 'Probe' : '探活'}</button>
-        <span class="probe-result" id="probe-result">${escapeHtml(prof.probe || '尚未探活')}</span>
-      </div>`;
+        <div class="am-probe">
+          <button class="mini-btn" data-action="probe" data-id="${prof.id}">${state.lang === 'en' ? 'Probe' : '探活'}</button>
+          <span class="probe-result" id="probe-result">${escapeHtml(state.probeText[prof.id] || '尚未探活')}</span>
+        </div>`;
+    }
   }
 
   const list = $('#profile-list');
   if (list) {
-    list.innerHTML = state.profiles.map((p) => `
-      <div class="profile ${p.id === state.activeProfile ? 'is-active' : ''}">
+    if (!state.profiles.length) {
+      list.innerHTML = `<div class="profile-empty">还没有档案。点下面那一行新建一份 —— 本地 Ollama 或任意 OpenAI 兼容端点都行。</div>`;
+    } else {
+      list.innerHTML = state.profiles
+        .map(
+          (p) => `
+      <div class="profile ${p.active ? 'is-active' : ''}">
         <span class="profile-mark">${escapeHtml(p.mark)}</span>
         <div class="profile-main">
           <strong>${escapeHtml(p.label)}</strong>
-          <span>${escapeHtml(p.model)} · ${escapeHtml(p.note)}</span>
+          <span>${escapeHtml(p.model)}${p.note ? ' · ' + escapeHtml(p.note) : ''}</span>
         </div>
         <div class="profile-tags">
           <span class="tag">${escapeHtml(p.provider)}</span>
-          <span class="tag ${p.kind === 'local' ? 'jade' : ''}">${p.ctx}</span>
-          ${p.id === state.activeProfile ? `<span class="tag accent">${t('model.current')}</span>` : ''}
+          <span class="tag ${p.kind === 'local' ? 'jade' : ''}">${escapeHtml(p.ctx)}</span>
+          <span class="tag">${escapeHtml(p.masked)}</span>
+          ${p.active ? `<span class="tag accent">${t('model.current')}</span>` : ''}
         </div>
         <div class="profile-actions">
-          ${p.id === state.activeProfile
-      ? '<span class="tag jade">●</span>'
-      : `<button class="mini-btn" data-action="activate-profile" data-id="${p.id}">${t('model.use')}</button>`}
+          ${
+            p.active
+              ? '<span class="tag jade">●</span>'
+              : `<button class="mini-btn" data-action="activate-profile" data-id="${p.id}">${t('model.use')}</button>`
+          }
+          <button class="mini-btn" data-action="list-models" data-id="${p.id}">拉清单</button>
+          <button class="mini-btn" data-action="edit-profile" data-id="${p.id}">编辑</button>
+          <button class="mini-btn" data-action="delete-profile" data-id="${p.id}">删除</button>
         </div>
-      </div>`).join('');
+      </div>`,
+        )
+        .join('');
+    }
   }
 }
 
@@ -1825,15 +1981,50 @@ function handleAction(el, event) {
       break;
     case 'set-think': {
       const profile = state.profiles.find((p) => p.id === id);
-      if (profile) {
-        profile.think = el.dataset.value;
-        renderSettings();
-        toast(`思考 · ${thinkLabel(el.dataset.value)}`);
+      if (!profile) break;
+      const value = el.dataset.value;
+      if (value === 'auto') {
+        // 后端把 `think: null` 当"不改"，所以「自动」只能在新建时设定。
+        // 不假装切过去了 —— 假装的话，下一轮会照旧发送 think 字段。
+        toast('「自动」= 不发送 think 字段，只能在新建档案时设定（已设过的改不回去）', 'danger');
+        break;
       }
+      updateProfile(id, { think: value === 'true' });
       break;
     }
     case 'add-profile':
-      toast('新增档案：填 base URL 与密钥即可 · 演示版暂不写入');
+      openProfileForm(null);
+      break;
+    case 'edit-profile':
+      openProfileForm(state.profiles.find((p) => p.id === id) || null);
+      break;
+    case 'delete-profile': {
+      const target = state.profiles.find((p) => p.id === id);
+      if (!target) break;
+      askConfirm({
+        title: '删除模型档案',
+        body: `「${target.label}」（${target.model}）会被删掉${target.active ? '，它是当前生效的那一份 —— 删掉之后会自动接上另一份或退回 .env' : ''}。`,
+        ok: '删除',
+        onOk: async () => {
+          try {
+            const result = await api.llmDeleteProfile(id);
+            await loadModels();
+            const next = result.active_profile_id
+              ? state.profiles.find((p) => p.id === result.active_profile_id)
+              : null;
+            toast(next ? `已删除 · 现在生效的是「${next.label}」` : '已删除 · 现在用 .env 里的模型');
+          } catch (err) {
+            toast(err.message, 'danger');
+          }
+        },
+      });
+      break;
+    }
+    case 'list-models':
+      // `handleAction` 是同步的，所以真正的异步动作放在单独的 helper 里 ——
+      // 在这里 `await` 会让整个函数变成 async，而那会把调用方的同步语义
+      // （事件绑定、渲染顺序）一起改掉。
+      listProfileModels(id, el);
       break;
     case 'confirm-ok': {
       const fn = state.confirmAction;
@@ -1851,42 +2042,104 @@ function handleAction(el, event) {
   }
 }
 
-function activateProfile(id) {
+/**
+ * 拉一份档案的模型清单（`POST /models`）。
+ *
+ * 后端说明：拉不到也**算成功**（`models` 为空 + `note` 是人话解释）——
+ * 因为"这家服务问不出清单"不是用户的请求错了。所以这里把 `note` 原样说出来，
+ * 而不是显示一句"失败"。
+ */
+async function listProfileModels(id, button) {
+  if (button) button.disabled = true;
+  try {
+    const got = await api.llmListModels(id);
+    const models = got.models || [];
+    if (models.length) {
+      toast(`${models.length} 个模型：${models.slice(0, 6).join('、')}${models.length > 6 ? '…' : ''}`);
+    } else {
+      toast(got.note || '这家问不出模型清单 · 手动填模型名即可', 'danger');
+    }
+  } catch (err) {
+    toast(err.message, 'danger');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+/**
+ * 启用一份档案。**这是真的切换**：`POST /activate` 之后下一轮讨论就用它，
+ * 所以这里必须等后端回话，不能只改界面上的一个变量。
+ */
+async function activateProfile(id) {
   if (state.busy) {
     toast('正在生成 · 先停止这一轮再切换模型', 'danger');
     closePopover();
     return;
   }
-  if (!state.profiles.some((p) => p.id === id)) return;
-  state.activeProfile = id;
-  closePopover();
-  renderSettings();
-  renderTopbar();
-  renderRail();
-  updateBusyUI();
-  toast(`已切换到 ${activeProfile().short}`);
+  try {
+    const row = await api.llmActivateProfile(id);
+    closePopover();
+    await loadModels({ render: false });
+    renderSettings();
+    renderTopbar();
+    renderRail();
+    updateBusyUI();
+    toast(`已切换到 ${row.label || row.model} · 下一轮就由它回答`);
+  } catch (err) {
+    toast(err.message, 'danger');
+  }
 }
 
-function probeProfile(id, button) {
-  const profile = state.profiles.find((p) => p.id === id);
-  if (!profile) return;
+/**
+ * 改一份档案。**发整份**字段：后端 `update_profile` 是覆盖写，
+ * 只发改动的那几个会把 `note`/`num_ctx`/`base_url` 一起抹掉。
+ */
+async function updateProfile(id, changes) {
+  const current = state.profiles.find((p) => p.id === id);
+  if (!current) return;
+  try {
+    await api.llmUpdateProfile(id, {
+      label: current.label,
+      provider_id: current.providerId,
+      model: current.model,
+      base_url: current.base,
+      num_ctx: current.numCtx || null,
+      note: current.note,
+      ...changes,
+    });
+    await loadModels();
+  } catch (err) {
+    toast(err.message, 'danger');
+  }
+}
+
+/**
+ * 探活：真的去问端点一次。
+ *
+ * 原来是 `setTimeout(1200)` 之后拿 `Math.random()` 编一个延迟和模型数，
+ * 再 `toast('探活成功')` —— 那一整块代码里没有一个字来自后端。
+ * 现在慢就是慢（本地大模型首次要进显存），失败就把后端那句话原样显示。
+ */
+async function probeProfile(id, button) {
   const result = $('#probe-result');
   button.disabled = true;
   if (result) {
-    result.textContent = '探活中 · 正在请求端点…';
+    result.textContent = '探活中 · 真的发一次请求（本地模型首次加载可能要十几秒）…';
     result.classList.add('is-pending');
   }
-  setTimeout(() => {
-    const latency = 80 + Math.floor(Math.random() * 180);
-    const models = profile.kind === 'local' ? 12 : 3;
-    profile.probe = `刚刚 · ${latency} ms · ${models} 个模型`;
+  try {
+    const probe = await api.llmProbe(id);
+    state.probeText[id] = `${probe.ok ? '✓' : '✗'} ${probe.detail}`;
+    if (result) result.textContent = state.probeText[id];
+    toast(probe.ok ? '探活：通' : '探活：不通', probe.ok ? '' : 'danger');
+  } catch (err) {
+    state.probeText[id] = `✗ ${err.message}`;
+    if (result) result.textContent = state.probeText[id];
+    toast(err.message, 'danger');
+  } finally {
     button.disabled = false;
-    if (result) {
-      result.textContent = profile.probe;
-      result.classList.remove('is-pending');
-    }
-    toast(`探活成功 · ${latency} ms`);
-  }, 1200);
+    if (result) result.classList.remove('is-pending');
+  }
 }
 
 function startBench(form) {
@@ -2197,6 +2450,9 @@ async function boot() {
   updateBusyUI();
 
   try {
+    // 模型档案要在画侧栏之前就位（侧栏那行写的是"现在是谁在说话"）。
+    // 它读的是 `/api/llm/*`，与会话数据互不依赖，失败也不该挡住会话。
+    await loadModels({ render: false });
     await loadWorkspace();
     if (!state.currentSession) {
       for (const folder of state.folders) {
@@ -2207,6 +2463,9 @@ async function boot() {
       }
     }
     renderSession();
+    renderSettings();
+    renderTopbar();
+    renderRail();
     if (state.currentSession) await loadDetail(state.currentSession);
     else ensureSelection();
   } catch (err) {
