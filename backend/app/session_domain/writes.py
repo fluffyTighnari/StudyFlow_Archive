@@ -478,6 +478,17 @@ def transition(
     edge = assert_transition(row.state, _state(target))
     assert_writable(row.state, SessionOperation.TRANSITION)
     _check_version(row.version, expected_version, f"会话 {session_id}")
+    if edge.target.value == "review":
+        plan = reads.get_plan(db, session_id)
+        # 没有计划时不拦：复盘的是“这次做了什么”，不是“计划完成了没有”。
+        if plan is not None:
+            steps = reads.plan_steps(db, plan.plan_id)
+            unfinished = [step.step_id for step in steps if step.status is not PlanStepStatus.DONE]
+            if unfinished:
+                raise MissingPrerequisite(
+                    "计划尚未全部完成，不能进入复盘。",
+                    detail={"session_id": session_id, "unfinished_steps": unfinished},
+                )
     row.state = edge.target
     now = _now()
     if edge.target.value == "active" and row.activated_at is None:
@@ -766,6 +777,24 @@ def _same(a: Any, b: Any) -> bool:
 # --------------------------------------------------------------------------- #
 
 
+def _normalize_obstacles(values: list | None) -> list[dict] | None:
+    """界面传一行一条的字符串，旧数据是 `{type, desc}`。落库统一成后者。
+
+    只做形状归一，不替用户补内容：空行丢掉，其余原样保留。
+    """
+    if values is None:
+        return None
+    normalized: list[dict] = []
+    for value in values:
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                normalized.append({"type": "障碍", "desc": text})
+        elif isinstance(value, dict):
+            normalized.append(value)
+    return normalized
+
+
 def update_motivation(
     db: DbSession,
     session_id: str,
@@ -774,18 +803,15 @@ def update_motivation(
     expected_version: int,
     type: MotivationType | None = None,
     strength: Level | None = None,
+    foundation: str | None = None,
+    value: str | None = None,
     drivers: list[str] | None = None,
-    obstacles: list[dict] | None = None,
+    obstacles: list | None = None,
     reason: str | None = None,
     basis: Basis = Basis.STATED,
     changed_by: ChangedBy = ChangedBy.USER,
 ) -> SessionMotivation:
-    """改动机。**动机是一次整体判断**，因此一次调用写一条修订，而不是逐字段。
-
-    与定义区的差别是有道理的：定义区是并列的事实字段（改 goal 不影响 why），
-    动机的三项互相解释（强度变了，通常是因为驱动因素变了）。
-    逐字段记录会把一次"重新看了一遍为什么学"拆成三条互不相干的碎片。
-    """
+    """改动机。**动机是一次整体判断**，因此一次调用写一条修订，而不是逐字段。"""
     row = reads.get_session(db, session_id)
     assert_writable(row.state, SessionOperation.UPDATE_MOTIVATION)
     _require_text(change, "change", why="动机改动要写清楚改了什么")
@@ -797,10 +823,14 @@ def update_motivation(
         motivation.type = type
     if strength is not None:
         motivation.strength = strength
+    if foundation is not None:
+        motivation.foundation = foundation
+    if value is not None:
+        motivation.value = value
     if drivers is not None:
         motivation.drivers = drivers
     if obstacles is not None:
-        motivation.obstacles = obstacles
+        motivation.obstacles = _normalize_obstacles(obstacles)
     motivation.updated_at = _now()
 
     db.add(
@@ -957,6 +987,12 @@ def create_plan(
             created_at=_now(),
         )
     )
+    # ★ 用户裁定：**写入计划即进入执行中**。
+    # 起草期只用于"还没有计划"的聊天；一旦计划落地，这个会话就不再是草稿。
+    if row.state is SessionState.DRAFT:
+        row.state = SessionState.ACTIVE
+        row.activated_at = _now()
+        row.version += 1
     db.flush()
     return plan
 

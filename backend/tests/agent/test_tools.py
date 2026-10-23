@@ -242,25 +242,38 @@ def _user_says(ctx, text: str) -> None:
     session_writes.add_chat_message(ctx.db, ctx.session_id, content=text, role="user")
 
 
-def test_agent_cannot_change_the_task_definition_on_its_own(sandbox) -> None:
-    """M8 §4.2：改目标这件事必须由目标的主人做。
+def test_agent_needs_a_reason_but_not_a_quoted_sentence(sandbox) -> None:
+    """P21：**不再要求复述原话**（用户裁定"防御性太强"）。
 
-    入口条件现在是「界面手势 **或** 可核对的引文」（政策变更：
-    只认手势会挡住最正常的动作 —— 用户在聊天框里说"把目标改成 X"）。
-    所以这里的拒绝语变了，但**拒绝本身没有变成"随便"**：
-    既没有手势、又引不出他的一句原话时，仍然拒绝。
+    新的门槛只有一条：**`reason` 必须在** —— 它让改动可追溯。
+    界面手势与用户原话仍是"更硬的证据"，但不再是必经之路。
     """
-    result = _run(
-        "update_task_definition", sandbox.ctx(), field="goal", new_value="改成别的", reason="我觉得"
+    no_reason = _run(
+        "update_task_definition",
+        sandbox.ctx(),
+        field="goal",
+        new_value="改成别的",
     )
-    assert result.status is T.ToolStatus.REJECTED
-    assert "user_quote" in result.message, "拒绝语要给成一条能照做的路"
+    assert no_reason.status is T.ToolStatus.REJECTED
+    assert "reason" in no_reason.message, "拒绝语要给成一条能照做的路"
     # 定义区没被动过
     assert session_reads.get_input(sandbox.db, sandbox.session_id).goal == (
         "两个月内能读懂技术文档"
     )
 
-    # 侧页点了【编辑】并保存 → 这时才允许
+    with_reason = _run(
+        "update_task_definition",
+        sandbox.ctx(),
+        field="success_criteria",
+        new_value="能独立读完一章并写出摘要",
+        reason="用户在对话里说了新的验收方式",
+    )
+    assert with_reason.status is T.ToolStatus.SUCCESS, with_reason.message
+    assert session_reads.get_input(sandbox.db, sandbox.session_id).success_criteria == (
+        "能独立读完一章并写出摘要"
+    )
+
+    # 侧页点了【编辑】并保存 → 照旧允许
     ok = _run(
         "update_task_definition",
         sandbox.ctx(f"{sandbox.gesture_definition}goal"),

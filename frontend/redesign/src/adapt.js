@@ -1,3 +1,5 @@
+import { richText } from './rich.js';
+
 /**
  * 后端的形状 → 界面认的形状。
  *
@@ -58,7 +60,7 @@ const STATE_TEXT = {
   draft: '未开始',
   active: '执行中',
   review: '复盘中',
-  completed: '已完成',
+  completed: '已归档',
   abandoned: '已放弃',
 };
 
@@ -149,6 +151,12 @@ const TOOL_LABEL = {
   ask_user: '向你提问',
   save_summary: '写下总结',
   web_search: '联网搜索',
+  retrieve_folder: '读领域索引',
+  retrieve_cognitive: '读全局认知',
+  retrieve_strategy: '读策略库',
+  retrieve_session: '读会话',
+  submit_global_update: '提议写全局认知',
+  read_attachment: '读上传资料',
 };
 
 /** 工具名 → 界面上的中文。查不到就**原样显示**，不猜一个更好听的名字。 */
@@ -234,16 +242,21 @@ function adaptMessages(chat) {
       messages.push({ id: row.msg_id, role: 'user', time, text: row.content, foot: true });
       continue;
     }
+    // 每条助手消息都带 `stop:*` 标签。保留它，刷新/切换会话后仍能显示
+    // "模型错误 / 步数用尽 / 被中断"，而不是把一次失败重新画成正常回答。
+    const stopTag = (row.tags || []).find((tag) => String(tag).startsWith('stop:'));
     messages.push({
       id: row.msg_id,
       role: 'assistant',
       time,
-      html: paragraphs(row.content),
+      html: richText(row.content),
       thinking: row.thinking || null,
       traces: traceRows(row.tool_trace),
       foot: true,
       basis: basisFromTrace(row.tool_trace),
       anchorStepId: row.anchor_step_id || null,
+      stopReason: stopTag ? String(stopTag).slice(5) : 'completed',
+      review: (row.tags || []).includes('archive_review'),
     });
   }
   return messages;
@@ -257,6 +270,8 @@ function adaptPlan(plan) {
     id: plan.plan_id,
     version: plan.version_no,
     currentVersion: plan.current_version,
+    //: 乐观锁版本（每次写 +1，不等于“第几版”）。写计划时要用它。
+    lockVersion: plan.version,
     goalDerived: plan.goal_derived || '',
     steps: (plan.steps || []).map((step) => ({
       id: step.step_id,
@@ -293,20 +308,22 @@ function bullets(value) {
 }
 
 function adaptMotivation(motivation) {
-  if (!motivation || !motivation.type) return null;
-  const [label, note] = MOTIVATION_TYPE[motivation.type] || [motivation.type, ''];
+  if (!motivation) return null;
+  const obstacles = Array.isArray(motivation.obstacles)
+    ? motivation.obstacles
+        .map((item) => {
+          if (typeof item === 'string') return item.trim();
+          if (!item || typeof item !== 'object') return '';
+          return String(item.desc || item.detail || item.note || item.title || '').trim();
+        })
+        .filter(Boolean)
+    : bullets(motivation.obstacles);
   return {
-    type: label,
-    typeNote: note,
-    strength: STRENGTH_BAR[motivation.strength] || 0,
+    foundation: (motivation.foundation || '').trim(),
+    value: (motivation.value || '').trim(),
+    obstacles,
     drivers: bullets(motivation.drivers),
-    obstacles: bullets(motivation.obstacles).map((line) => {
-      const cut = line.search(/[：:，,]/);
-      return cut > 0
-        ? { title: line.slice(0, cut), note: line.slice(cut + 1) }
-        : { title: line, note: '' };
-    }),
-    revision: motivation.updated_at ? `改于 ${shortTime(motivation.updated_at)}` : '还没有改过',
+    revision: motivation.updated_at ? `改于 ${shortTime(motivation.updated_at)}` : '—',
   };
 }
 
@@ -319,31 +336,59 @@ function adaptMotivation(motivation) {
  */
 export function adaptContext(meter) {
   if (!meter || !meter.measured) {
+    const limit = Number(meter?.limit || 0);
     return {
-      used: '0',
-      total: '没测到',
+      used: '—',
+      total: limit ? limit.toLocaleString('zh-CN') : '—',
       pct: 0,
+      ratio: 0,
+      pressure: 'unmeasured',
       measured: false,
+      hasReading: false,
+      limitSource: meter?.limit_source || 'none',
+      usedShort: '—',
       segments: [0, 0, 0, 0],
       sections: [],
-      note: meter && meter.live_messages
-        ? `已发出 ${meter.live_messages} 条消息，但没有拿到窗口上限。`
-        : '这个会话还没有产生上下文。第一句话之后，这里会显示它实际看见的条目。',
+      liveMessages: Number(meter?.live_messages || 0),
+      compactedMessages: Number(meter?.compacted_messages || 0),
+      summaries: Number(meter?.summaries || 0),
+      compactCount: Number(meter?.compact_count || 0),
+      compactable: !!meter?.compactable,
+      remaining: 0,
+      note: '',
     };
   }
   const used = Number(meter.used || 0);
   const limit = Number(meter.limit || 0);
+  //: 能算百分比吗（窗口上限来自模型 / 配置）。
   const measured = limit > 0;
+  //: **有没有读数** —— 与「有没有上限」是两件事。DeepSeek 这类接口不回窗口，
+  //: 但会回真实用量；那时显示 token 数、不显示百分比，而不是说"没测到"。
+  const hasReading = used > 0;
+  const ratio = measured ? used / limit : 0;
+  const pressure = measured ? (meter.pressure || 'ok') : 'unreported';
+  //: `window` = 模型自己上报的窗口；`budget` = 按配置 num_ctx 算的预算；
+  //: 两者都能量百分比，但**不能说成同一件事**。
+  const limitSource = meter.limit_source || (measured ? 'window' : 'none');
   return {
     used: used.toLocaleString('zh-CN'),
-    total: measured ? limit.toLocaleString('zh-CN') : '没测到',
-    pct: measured ? Math.round((used / limit) * 100) : 0,
+    usedShort: used >= 1000 ? `${(used / 1000).toFixed(1)}k` : String(used),
+    total: measured ? limit.toLocaleString('zh-CN') : '—',
+    pct: measured ? Math.round(ratio * 100) : 0,
+    ratio: measured ? ratio : 0,
+    pressure,
     measured,
+    hasReading,
+    limitSource,
     segments: [0, 0, 0, 0],
     sections: [],
-    note: measured
-      ? `这次回答实际发出 ${used.toLocaleString('zh-CN')} tokens。读数来自模型自己报的用量，不是估算。`
-      : `这次回答实际发出 ${used.toLocaleString('zh-CN')} tokens；窗口上限模型没有报，所以没有百分比。`,
+    liveMessages: Number(meter.live_messages || 0),
+    compactedMessages: Number(meter.compacted_messages || 0),
+    summaries: Number(meter.summaries || 0),
+    compactCount: Number(meter.compact_count || 0),
+    compactable: !!meter.compactable,
+    remaining: Number(meter.remaining || 0),
+    note: '',
   };
 }
 

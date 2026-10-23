@@ -86,7 +86,11 @@ def test_creating_a_folder_and_session_gives_a_complete_side_panel(
     payload = _state(client, session_id)
 
     assert payload["session"]["state"] == "draft"
-    assert payload["session"]["allowed_transitions"] == ["abandoned", "active"]
+    assert payload["session"]["allowed_transitions"] == [
+        "abandoned",
+        "active",
+        "completed",
+    ]
     assert payload["input"]["goal"] == "背完考研核心 1500 词"
     assert payload["motivation"]["type"] == "mixed"
     assert payload["snapshot"] is not None
@@ -135,11 +139,15 @@ def test_an_illegal_transition_reports_where_it_can_go_instead(client: TestClien
 
     response = client.post(
         f"/api/sessions/{session_id}/transitions",
-        json={"target": "completed", "expected_version": 1},
+        json={"target": "review", "expected_version": 1},
     )
     assert response.status_code == 409
     assert response.json()["code"] == "state_not_writable"
-    assert response.json()["detail"]["allowed_targets"] == ["abandoned", "active"]
+    assert response.json()["detail"]["allowed_targets"] == [
+        "abandoned",
+        "active",
+        "completed",
+    ]
 
 
 def test_an_archived_session_still_takes_chat_and_notes(client: TestClient) -> None:

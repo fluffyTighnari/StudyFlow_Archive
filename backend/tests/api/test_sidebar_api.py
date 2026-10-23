@@ -107,7 +107,7 @@ def test_the_meter_shape_matches_the_session_one(app, client: TestClient) -> Non
             compact_count=0,
             compactable=False,
         ).as_dict()
-    )
+    ) | {"limit_source"}
 
 
 # --------------------------------------------------------------------------- #

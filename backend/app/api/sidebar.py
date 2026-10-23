@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from app.agent.context import build_memory, build_meter, record_usage
+from app.agent.context import build_memory, build_meter, meter_payload, record_usage
 from app.agent.external import ExternalToolbox
 from app.agent.llm import LLMClient, LLMError
 from app.agent.sidebar import SidebarLoop, render_sidebar_context
@@ -156,7 +156,7 @@ def sidebar_state(
 
     return SidebarStateResponse(
         messages=_read_messages(db),
-        context=meter.as_dict(),
+        context=meter_payload(meter, client),
         tools=[spec.name for spec in tool_schemas(SIDEBAR_TOOL_SCOPES)],
         sections=[section.model_dump(mode="json") for section in ctx.sections],
     )
@@ -231,7 +231,7 @@ def sidebar_discuss(
         tool_trace=[entry.as_dict() for entry in result.traces],
         llm_meta=result.llm_meta,
         thinking=result.thinking,
-        context=after.as_dict(),
+        context=meter_payload(after, client),
         compacted=memory.new_compact_id,
         compact_error=memory.compact_error,
     )

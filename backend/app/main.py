@@ -36,7 +36,13 @@ from app.agent.external import build_toolbox
 from app.agent.llm import LLMClient
 from app.agent.llm_factory import make_client_from_profile, make_client_from_settings
 from app.config import Settings
-from app.db import Base, make_engine, make_session_factory, session_scope
+from app.db import (
+    Base,
+    ensure_forward_columns,
+    make_engine,
+    make_session_factory,
+    session_scope,
+)
 from app.llm_config import active_profile, read_secret
 from app.seeds.loader import load_all
 
@@ -84,6 +90,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         engine = make_engine(settings.database_url)
         # 目前用 create_all()；Alembic 迁移见 M0 §14 的延期说明。
         Base.metadata.create_all(engine)
+        # 追加可空列（动机的 foundation / value）。旧库不补列，新字段读出来
+        # 会是"表里没有这一列"的 OperationalError —— 用户只会看到库打不开。
+        ensure_forward_columns(engine)
         factory = make_session_factory(engine)
 
         if settings.seed_on_startup:

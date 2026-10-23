@@ -180,3 +180,26 @@ def get_provider(provider_id: str) -> Provider:
             f"可用：{'、'.join(PROVIDER_BY_ID)}。"
             "表里没有的请用 provider_id='custom' 并自己填 base_url。"
         ) from None
+
+
+#: 各家模型的上下文窗口（token）。**只在用户没有显式配置时作为预算使用。**
+#:
+#: 为什么需要它：OpenAI 兼容接口不报窗口，而旧默认 16384 对 DeepSeek 这类
+#: 64k 模型太短了 —— 聊两轮就触发压缩，用户会以为模型"记不住"。
+#: 这里给的是**保守的已知窗口**，不是猜的；用户仍可在档案里填自己的预算。
+CONTEXT_WINDOWS: dict[str, int] = {
+    "deepseek": 65536,
+    "openai": 128000,
+    "dashscope": 131072,
+    "moonshot": 131072,
+    "zhipu": 131072,
+    "siliconflow": 32768,
+    "openrouter": 128000,
+    "groq": 32768,
+    "custom": 65536,
+}
+
+
+def context_window_for(provider_id: str) -> int:
+    """这家服务的保守上下文窗口；未知服务给 32k。"""
+    return CONTEXT_WINDOWS.get(provider_id, 32768)

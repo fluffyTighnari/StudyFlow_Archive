@@ -88,15 +88,10 @@ def test_folder_gets_a_default_retrieval_dimension(session: Session) -> None:
 
 
 def test_draft_can_create_a_plan(session: Session) -> None:
-    """★ 政策变更：`CREATE_PLAN` 不再要求先激活。
+    """★ 政策变更：起草期可以直接排计划，**写入后自动进入执行中**。
 
-    旧断言是"draft 期连目标都还没确认，生成的计划没有可依据的定义区" ——
-    而代价是「要有计划先能激活，要能激活先有目标，要有目标先聊」这一圈：
-    新建的会话在**起草期**最想做的事恰恰是"先帮我排一版"。
-
-    现在它写出来的是一份带版本号的计划（`goal_derived` 空着也自洽），
-    缺目标这件事由**计划理由**记着（见 `test_clarify.py` 的猜测说明），
-    而不是靠拒绝。
+    起草期只用于“还没有计划”的聊天。计划落地是一个真实的工作开始，
+    因此不再需要用户再点一次“开始执行”。
     """
     folder = writes.create_folder(session, name="英语学习")
     row = writes.create_session(session, folder_id=folder.folder_id, title="背单词")
@@ -111,8 +106,9 @@ def test_draft_can_create_a_plan(session: Session) -> None:
     assert plan.version == 1
     assert reads.require_plan(session, row.session_id) is plan
     assert reads.plan_steps(session, plan.plan_id)
-    # 建计划**不推进状态**：起草期的计划仍然是一份草稿，不会把会话偷偷激活。
-    assert row.state is SessionState.DRAFT
+    # ★ 用户裁定：写入计划即进入执行中（不再是草稿）。
+    assert row.state is SessionState.ACTIVE
+    assert row.activated_at is not None
 
 
 def test_activation_no_longer_requires_a_goal(session: Session) -> None:

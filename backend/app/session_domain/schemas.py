@@ -264,6 +264,10 @@ class MotivationRead(_ReadModel):
     session_id: str
     type: MotivationType
     strength: Level
+    #: 前置基础：会的、缺的、卡住的。计划取舍的一手输入。
+    foundation: str | None = None
+    #: 价值：这件事真正的用处。
+    value: str | None = None
     drivers: list[str] | None = None
     obstacles: list[dict[str, Any]] | None = None
     updated_at: datetime
@@ -280,13 +284,16 @@ class MotivationRevisionRead(_ReadModel):
 
 class MotivationUpdate(_WriteModel):
     expected_version: int = Field(ge=1)
-    #: 必填：一次动机改动必须说清"改了什么"。这里不做"字段都传齐"的校验，
-    #: 因为动机常常只改一项（例如只是强度变了）。
+    #: 必填：一次动机改动必须说清"改了什么"。
     change: str = Field(min_length=1)
     type: MotivationType | None = None
     strength: Level | None = None
+    #: 这三个是现在真正驱动计划的字段。
+    foundation: str | None = None
+    value: str | None = None
+    #: 兼容两种写法：界面传一行一条的字符串，旧数据是结构化 dict。
+    obstacles: list[dict[str, Any] | str] | None = None
     drivers: list[str] | None = None
-    obstacles: list[dict[str, Any]] | None = None
     reason: str | None = None
     basis: Basis = Basis.STATED
 

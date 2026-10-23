@@ -91,6 +91,37 @@ def make_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
 
+def ensure_forward_columns(engine: Engine) -> None:
+    """SQLite 的**前向补列**：只加可空列，不改/不删。
+
+    项目没有 Alembic；`create_all()` 不会给既有表加列。动机从
+    “内外混合 + 强度”改成“前置基础 + 价值 + 障碍”时，旧库必须能继续打开，
+    否则用户看到的不是新字段，而是一张打不开的库。
+
+    只做 additive 的 TEXT 列（`session_motivation.foundation/value`、
+    `llm_profile.models`）；将来若需要改类型/约束，再写真正的迁移，
+    不把这里扩成万能改表器。
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    from sqlalchemy import inspect, text
+
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        if inspector.has_table("session_motivation"):
+            columns = {column["name"] for column in inspector.get_columns("session_motivation")}
+            if "foundation" not in columns:
+                conn.execute(text("ALTER TABLE session_motivation ADD COLUMN foundation TEXT"))
+            if "value" not in columns:
+                conn.execute(text('ALTER TABLE session_motivation ADD COLUMN "value" TEXT'))
+        if inspector.has_table("llm_profile"):
+            columns = {column["name"] for column in inspector.get_columns("llm_profile")}
+            if "models" not in columns:
+                # 旧档案只有 `model` 一个；读模型时 `_normalize_models` 会把它
+                # 当成唯一的勾选项，所以这里允许空串，不强行回填。
+                conn.execute(text("ALTER TABLE llm_profile ADD COLUMN models TEXT"))
+
+
 class DbSequenceStore:
     """`core.ids.SequenceStore` 协议的数据库实现。"""
 

@@ -316,6 +316,27 @@ def build_meter(
     return _meter(db, scope, scope_id, limit)
 
 
+def limit_source(client: Any) -> str:
+    """窗口上限是从哪来的。
+
+    - `window`：模型/客户端自己声明的窗口（Ollama 的 `num_ctx`）；
+    - `budget`：按**用户配置**的 `num_ctx` 算的预算（OpenAI 兼容接口不报窗口，
+      我们也不发 `max_tokens`，但这个数仍然是"打算用多少上下文"的约定）；
+    - `none`：没有上限，只能显示用量、不能显示百分比。
+
+    界面必须能区分它们：把"配置预算"说成"模型窗口"是在替模型做它没做的声明。
+    """
+    if getattr(client, "num_ctx_is_budget", False):
+        return "budget"
+    limit = int(getattr(client, "num_ctx", 0) or 0)
+    return "window" if limit > 0 else "none"
+
+
+def meter_payload(meter: ContextMeter, client: Any) -> dict[str, Any]:
+    """`ContextMeter.as_dict()` + 上限来源。**只读端点与流式 done 用同一份。**"""
+    return {**meter.as_dict(), "limit_source": limit_source(client)}
+
+
 def _split_index(live: list[ChatMessageRow], *, keep_chars: int) -> int:
     """决定"从第几条开始留原文"。
 

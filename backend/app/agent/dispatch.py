@@ -303,6 +303,14 @@ def validate_arguments(schema: dict[str, Any], arguments: Any) -> list[str]:
 
     def check(node: dict[str, Any], value: Any, path: str) -> None:
         expected = node.get("type")
+        # JSON Schema 允许 `["string", "null"]`。模型经常用 null 表示“没有”；
+        # 这里接受它，而不是因为一个 null 让整次调用失败。
+        if isinstance(expected, list):
+            if value is None and "null" in expected:
+                return
+            expected = next((kind for kind in expected if kind != "null"), None)
+            if expected is None:
+                return
         if expected == "object":
             if not isinstance(value, dict):
                 problems.append(f"`{path}` 要是对象，得到 {_name(value)}")

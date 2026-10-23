@@ -251,6 +251,11 @@ class SessionMotivation(Base):
         nullable=False,
         default=Level.MEDIUM,
     )
+    #: 前置基础：已经会的、缺的、以及卡在上一步的地方。
+    #: 它不是"动机类型"，而是计划能不能落地的一手输入。
+    foundation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 价值：这件事对用户真正的用处。计划取舍靠它，不靠"内外混合"。
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: 引原文的动机表述（M7 §4：`drivers` 要求引用原文，不是概括）。
     drivers: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     #: `[{type, desc, likelihood, evidence}]`

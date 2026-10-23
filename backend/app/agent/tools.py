@@ -218,6 +218,11 @@ def _string(description: str, **extra: Any) -> dict[str, Any]:
     return {"type": "string", "description": description, **extra}
 
 
+def _nullable_string(description: str, **extra: Any) -> dict[str, Any]:
+    """可选字符串：模型经常把“没有值”写成 null，而不是省略键。两种都接受。"""
+    return {"type": ["string", "null"], "description": description, **extra}
+
+
 def _object(
     properties: dict[str, Any], *, required: list[str] | None = None, **extra: Any
 ) -> dict[str, Any]:
@@ -239,16 +244,15 @@ def _array(items: dict[str, Any], description: str, **extra: Any) -> dict[str, A
 #: 而"这一步做完了没有"最终要落到一个可指认的东西上。
 _STEP_SCHEMA = _object(
     {
-        "step_id": _string(
-            "已有步骤的 id（如 ST-003）。**改动/保留既有步骤时必须原样带上** —— "
-            "带上了，这一步的完成状态才会被继承；漏掉了，等于把它当成新步骤，"
-            "用户会看到「做过的第 3 步又变回未开始」（M7 §5）。"
+        "step_id": _nullable_string(
+            "已有步骤的 id（如 ST-003）。**改动/保留既有步骤时带上**，"
+            "这样它的完成状态才会被继承；新增步骤不要填。"
         ),
         "action": _string("这一步做什么。一句话，动词开头。"),
-        "output": _string("这一步的产出物（M2-A3，必填）。没有产出的步骤无法验收。"),
-        "method_ref": _string("用了哪条策略（M2 B 库里的策略 id），可空。"),
+        "output": _nullable_string("这一步的产出物。可空；能写就写，写不了不拦。"),
+        "method_ref": _nullable_string("用了哪条策略（M2 B 库里的策略 id），可空。"),
     },
-    required=["action", "output"],
+    required=["action"],
 )
 
 _CHECKPOINT_SCHEMA = _object(
@@ -755,13 +759,23 @@ def _update_task_definition(ctx: ToolContext, args: dict[str, Any]) -> ToolResul
             f"可改的是：{'、'.join(DEFINITION_FIELDS)}。"
             "`intent_raw` / `intent_confidence` / `input_revisions` 是系统字段。",
         )
-    quote = _quoted_user_words(ctx, args.get("user_quote"))
-    if not ctx.has(f"{GESTURE_DEFINITION}{field_name}") and not quote:
+    raw_quote = args.get("user_quote")
+    quote = _quoted_user_words(ctx, raw_quote)
+    reason = str(args.get("reason") or "").strip()
+    # ★ 政策（用户裁定）：**不要求复述原话**。`reason` 是门槛；
+    # 但如果模型**主动给了一句引文**，它必须真的说过 ——
+    # 否则那是"替用户发言"，比不给引文更坏。
+    if raw_quote and not quote:
         return ToolResult(
             ToolStatus.REJECTED,
-            "这次没有证据表明是用户自己要在定义区改这一项：既没有界面手势，"
-            "`user_quote` 也引不出他这句里的原话。把改动讲给他听让他确认；"
-            "要你代改，就带上一段**他的原话**（必须能在这一轮那句话里逐字找到）。",
+            "你在 `user_quote` 里写的那句话找不到（我只查用户自己发过的话）。"
+            "不记得原话就别写引文；带 `reason` 说明为什么改就可以。",
+        )
+    if not ctx.has(f"{GESTURE_DEFINITION}{field_name}") and not quote and not reason:
+        return ToolResult(
+            ToolStatus.REJECTED,
+            "改任务定义要带 `reason`（为什么改）。界面手势或用户原话是另一种证据，"
+            "但**不是必需的** —— 把改动和理由讲清楚就够了。",
         )
     if field_name == "goal" and not str(args.get("reason") or "").strip():
         return ToolResult(ToolStatus.REJECTED, "改 goal 必须带 reason（M8 §4.2）。")
@@ -788,25 +802,15 @@ def _update_task_definition(ctx: ToolContext, args: dict[str, Any]) -> ToolResul
 
 def _update_motivation(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     changes = args.get("changes") or {}
-    change = str(args.get("reason") or "").strip()
-    if not change:
-        return ToolResult(
-            ToolStatus.REJECTED,
-            "动机修订必须写清楚「改了什么」（reason）—— 空的一次修订无法回看。",
-        )
-    # ★ `expected_version` 比的是**会话**版本：`session_motivation` 表没有
-    # `version` 列（`update_motivation` 内部取的是 `session.version`）。
-    # 原来这里读 `motivation.version` → AttributeError 冲出 dispatch →
-    # 整个请求 500 且事务回滚，连用户刚说的那句话一起没了。
+    reason = str(args.get("reason") or "").strip() or "根据这次讨论更新动机"
     session_row = session_reads.get_session(ctx.db, ctx.session_id)
     motivation = session_writes.update_motivation(
         ctx.db,
         ctx.session_id,
-        change=change,
+        change=reason,
         expected_version=session_row.version,
-        type=MotivationType(changes["type"]) if changes.get("type") else None,
-        strength=changes.get("strength"),
-        drivers=changes.get("drivers"),
+        foundation=changes.get("foundation"),
+        value=changes.get("value"),
         obstacles=changes.get("obstacles"),
         reason=args.get("reason"),
         basis=args.get("basis", "experienced"),
@@ -816,11 +820,10 @@ def _update_motivation(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         ToolStatus.SUCCESS,
         "已记录动机变化。",
         {
-            # 动机自己没有版本号，能报的是它跟着变的那个：会话版本
             "session_version": session_row.version + 1,
-            "type": motivation.type.value if motivation.type else None,
-            "strength": motivation.strength.value if motivation.strength else None,
-            "drivers": motivation.drivers,
+            "foundation": motivation.foundation,
+            "value": motivation.value,
+            "obstacles": motivation.obstacles,
         },
     )
 
@@ -1029,13 +1032,6 @@ def _create_task_plan(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     steps = _steps_from(args)
     if not steps:
         return ToolResult(ToolStatus.REJECTED, "计划至少要有一个步骤。")
-    missing = [i for i, step in enumerate(steps, start=1) if not step.output]
-    if missing:
-        return ToolResult(
-            ToolStatus.REJECTED,
-            f"第 {missing} 步没有产出（output）—— M2-A3：没有产出的步骤无法验收，"
-            "「做完了没有」会变成一个只能凭感觉回答的问题。",
-        )
     plan = session_writes.create_plan(
         ctx.db,
         ctx.session_id,
@@ -1048,7 +1044,7 @@ def _create_task_plan(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     )
     return ToolResult(
         ToolStatus.SUCCESS,
-        f"计划已创建（版本 {plan.version}，{len(steps)} 步）。",
+        f"计划已创建（版本 {plan.current_version}，{len(steps)} 步）。",
         {"plan_id": plan.plan_id, "version": plan.version},
     )
 
@@ -1264,29 +1260,39 @@ def _update_task_plan(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     （用户必须真的点了那一项），所以它有资格被记下来。
     一条 `basis` 只有在别处被强制时才算事实。
     """
-    if not str(args.get("reason") or "").strip():
-        return ToolResult(ToolStatus.REJECTED, "无理由不改计划（M7 §9 第 3 条）。")
-    has_evidence, why = _recorded_evidence(ctx)
-    asked, quote = _user_asked_for_a_change(ctx, args)
-    if not has_evidence and not asked:
-        return ToolResult(
-            ToolStatus.REJECTED,
-            "这次改计划没有任何可核对的开头：没有判为未通过的检查点、"
-            "stage 里没有悬着的想法、也没有用户这一次要求改的依据"
-            "（他既没点开计划项，`user_quote` 也引不出他这句里的原话）。"
-            "把建议讲给用户听；他只要说一句要改哪里，"
-            "把那句原话带进 `user_quote` 就能改。",
+    reason = str(args.get("reason") or "").strip() or "按这次讨论调整计划"
+    diff = args.get("diff")
+    diff = dict(diff) if isinstance(diff, dict) else {}
+    # 兼容模型把 steps / checkpoints / change 写在顶层而不是 diff 里。
+    # 这两条都是"同一件事的两种写法"，不该让一次参数形状差异整次失败。
+    for key in ("steps", "checkpoints", "change"):
+        if key not in diff and key in args:
+            diff[key] = args[key]
+    if not diff.get("steps"):
+        return ToolResult(ToolStatus.REJECTED, "这次调用没有给 steps；要改计划请把整份步骤表放在 diff.steps。")
+
+    plan = session_reads.get_plan(ctx.db, ctx.session_id)
+    if plan is None:
+        steps = _steps_from(diff)
+        if not steps:
+            return ToolResult(ToolStatus.REJECTED, "计划至少要有一个步骤。")
+        created = session_writes.create_plan(
+            ctx.db,
+            ctx.session_id,
+            steps=steps,
+            checkpoints=_checkpoints_from(diff),
+            goal_derived=args.get("goal"),
+            reason=reason,
+            expected_session_version=session_reads.get_session(ctx.db, ctx.session_id).version,
+            changed_by="agent",
         )
-    if asked and not why:
-        why = f"用户这一句要求改：「{quote}」" if quote else "用户点开了这一项要求改"
+        return ToolResult(
+            ToolStatus.SUCCESS,
+            f"计划已创建（版本 {created.current_version}，{len(steps)} 步）。",
+            {"plan_id": created.plan_id, "version": created.current_version},
+        )
 
-    rejected = _constraint_gate(ctx, args.get("constraint_checks"))
-    if rejected is not None:
-        return rejected
-
-    diff = args["diff"]
-    plan = session_reads.require_plan(ctx.db, ctx.session_id)
-    # 把**当前版本**传进去：校验 `step_id`、并算出这一版删掉了什么。
+    # 把当前版本传进去：校验 step_id、并算出这一版删掉了什么。
     current_steps = session_reads.plan_steps(ctx.db, plan.plan_id)
     current_checkpoints = session_reads.plan_checkpoints(ctx.db, plan.plan_id)
     steps = _steps_from(diff, current_steps)
@@ -1296,111 +1302,37 @@ def _update_task_plan(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         ctx.session_id,
         steps=steps,
         checkpoints=_checkpoints_from(diff, current_checkpoints),
-        change=diff.get("change") or args["reason"],
-        reason=args["reason"],
+        change=diff.get("change") or reason,
+        reason=reason,
         expected_version=plan.version,
         changed_by="agent",
     )
     return ToolResult(
         ToolStatus.SUCCESS,
-        f"计划已改到版本 {revised.version}（依据：{why}）。{report}",
-        {"plan_id": revised.plan_id, "version": revised.version, "evidence": why},
+        f"计划已改到版本 {revised.current_version}。{report}",
+        {"plan_id": revised.plan_id, "version": revised.current_version},
     )
 
 
 def _propose_plan_change(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
-    """「讨论计划项」的落点 —— P6 要打通的就是这一条。
+    """兼容旧名字：与 `update_task_plan` 相同，不再要求手势或证据。
 
-    ## 入口条件：**用户本人要求改**
-
-    只看 `_user_asked_for_a_change`：用户这次点开了那个计划项。
-    **落库的证据（失败检查点 / 未结案的 stage）不算** ——
-    那是 `update_task_plan` 的地盘，而这条路要额外交硬约束逐条覆盖，
-    两条路各自只认一种证据，见 `_recorded_evidence` 的说明。
-
-    `user_view` **不是**证据。它是模型转述用户的话，而没有任何东西验证过
-    这段转述 —— 拿它当"用户要求过"的凭据，等于让模型的一句话变成权限。
-    用户真正点开那个计划项这个动作，由界面转成 `GESTURE_PLAN_CHANGE` 带进来
-    （见 `app/api/discuss.py`）。
-
-    ## 三查里哪一查由代码做，为什么
-
-    M8 §4.4 说 `propose_plan_change` 要评估三查：① stage 一致性
-    ② HC1–HC4 ③ C 证据/历史。其中 ① 和 ③ 是**判断题**，只能由模型做；
-    ② 则有一半是**机械题**：当前有几条硬约束是数得出来的。
-
-    所以分工是：模型对每条硬约束给出 `constraint_checks[{pref_id, verdict, why}]`，
-    而**代码只强制覆盖率** —— 漏掉任何一条，整次调用 `rejected`。
-    为什么不让模型自由作答：让模型自己说"这条改动没有违反任何约束"，
-    恰好就是「理由 ≠ 事实」的形态；而"你有没有逐条回答"是机械可验的，
-    它拦住的正是最危险的那种失败 —— **沉默地漏掉一条约束**。
+    模型现在看到的新名字是 `update_task_plan`；这个入口保留给旧的脚本 / 测试 /
+    已写好的客户端。两个名字写的是同一份计划、同一个事务，不做任何额外门槛。
     """
-    target = args["target"]
-    checks = args.get("constraint_checks")
-
-    # **先过"用户要求改"这一关。**
-    #
-    # 这一行是补上去的，而它的缺席很值得记一笔：`user_view` 是**模型写的一段话**，
-    # 它读起来完全像"用户是这么说的"，但没有任何东西验证过它。
-    # 于是这个面向用户的工具反而比面向模型的 `update_task_plan` 更松 ——
-    # 后者至少要 `reason` 加一条落在库里的证据，前者只要模型自己说一句
-    # 「用户觉得太慢」就能重写整个计划。
-    #
-    # 这正是本项目反复栽的那一类：「系统用一个理由解释自己的行为，
-    # 而那个理由没人验证过」。区别在于这次的"理由"是模型产的。
-    asked, quote = _user_asked_for_a_change(ctx, args)
-    if not asked:
-        return ToolResult(
-            ToolStatus.REJECTED,
-            "没有证据表明用户这次要求改这个计划：他既没有点开那一项，"
-            "`user_quote` 也引不出他这句里的原话。**把建议讲给用户听**；"
-            "他说一句要改哪里，把那句原话带进 `user_quote` 就能改 —— "
-            "不需要他先去界面上点。",
-        )
-
-    rejected = _constraint_gate(ctx, checks)
-    if rejected is not None:
-        return rejected
-
-    diff = args["suggested_change"]
-    plan = session_reads.require_plan(ctx.db, ctx.session_id)
-    # 把当前版本传进去，为的是两件事：① 校验 `step_id` 存不存在（拼错要拦），
-    # ② 算出"这一版删掉了什么"并**报出来**（方案 B 之下删除是允许的，
-    #    但必须可见 —— 见 `_change_report`）。
-    current_steps = session_reads.plan_steps(ctx.db, plan.plan_id)
-    current_checkpoints = session_reads.plan_checkpoints(ctx.db, plan.plan_id)
-    steps = _steps_from(diff, current_steps)
-    report = _change_report(steps, current_steps)
-    revised = session_writes.revise_plan(
-        ctx.db,
-        ctx.session_id,
-        steps=steps,
-        checkpoints=_checkpoints_from(diff, current_checkpoints),
-        change=diff.get("change") or f"针对 {target} 的调整",
-        reason=args["user_view"],
-        # `basis=stated`：这次调整的依据是**用户自己在界面上点开的那个计划项**，
-        # 而入口条件刚刚强制验证过这一点 —— 所以这个 `stated` 不是模型的一句声明，
-        # 它是一个被代码保证的事实。
-        #
-        # 对比 `_update_task_plan`：那里**不接受**模型给 `basis`（下面有说明），
-        # 因为那条路上没有任何东西能验证模型凭什么说 `stated`。
-        # 一条 `basis` 只有在别处被强制时才有资格被记下来。
-        basis="stated",
-        expected_version=plan.version,
-        changed_by="agent",
-    )
-    return ToolResult(
-        ToolStatus.SUCCESS,
-        f"调整已应用（计划版本 {revised.version}）。{report}"
-        "三查中：硬约束逐条回答且无冲突；"
-        "stage 一致性与 C 证据由你的判断负责。"
-        f"改动依据：用户本人要求改（{quote or '点开了这个计划项'}）。",
+    diff = args.get("suggested_change") or args.get("diff") or {}
+    if not isinstance(diff, dict):
+        diff = {}
+    for key in ("steps", "checkpoints", "change"):
+        if key not in diff and key in args:
+            diff[key] = args[key]
+    if not diff.get("steps"):
+        return ToolResult(ToolStatus.REJECTED, "缺少必填参数 `steps`：把整份步骤表放在 suggested_change.steps 或 diff.steps。")
+    return _update_task_plan(
+        ctx,
         {
-            "plan_id": revised.plan_id,
-            "version": revised.version,
-            "target": target,
-            "evidence": quote or "用户本人要求改",
-            "constraint_checks": list(checks or ()),
+            "diff": diff,
+            "reason": args.get("reason") or args.get("user_view") or "按这次讨论调整计划",
         },
     )
 
@@ -1645,8 +1577,8 @@ _TOOLS: tuple[ToolSpec, ...] = (
         name="update_task_definition",
         scope=ToolScope.SESSION_WRITE,
         summary=(
-            "改任务定义区的一个字段。**只在用户自己要求或确认时才能用** —— "
-            "你主动改会被拒绝（M8 §4.2）：改目标这件事必须由目标的主人做。"
+            "改任务定义区的一个字段。用户自己要求或确认时使用；"
+            "`reason` 是唯一必需的门槛（为什么改），**不要求你复述他的原话**。"
             "改 goal 必须带 reason；若这次改动属于「目标对象或领域变了」，"
             "把 scope_change_suspected 置 true，界面会据此提示是否新建会话。"
         ),
@@ -1660,8 +1592,8 @@ _TOOLS: tuple[ToolSpec, ...] = (
                 "new_value": _string("新值。"),
                 "reason": _string("为什么改。改 goal 时必填。"),
                 "user_quote": _string(
-                    "用户这一句要求改的原话（必须能在他说过的那一句里逐字找到）。"
-                    "给了才会被当成「他自己要改」。"
+                    "可选的原文核对：如果你记得他要求改这一项时说的那句话，"
+                    "照抄进来；不记得就不要编。**不提供也能改**，只要有 reason。"
                 ),
                 "scope_change_suspected": {
                     "type": "boolean",
@@ -1676,50 +1608,34 @@ _TOOLS: tuple[ToolSpec, ...] = (
         name="update_motivation",
         scope=ToolScope.SESSION_WRITE,
         summary=(
-            "更新动机（为什么学、强度、驱动因素、障碍）。你可以主动调用。"
-            "**区分「动机陈述」与随口吐槽**：前者进这里，后者最多写成一条 chat_note。"
-            "drivers 要引用户的原话，不要替他总结成漂亮话。"
-            "**不要写当次状态（精力/压力/环境）—— 那是 state_snapshot，你只读不写。**"
+            "更新这个会话的动机：前置基础、目的、障碍。你可以主动调用。"
+            "这三项是排计划时的真实依据 —— 不要写「内外混合」之类的分类标签，"
+            "写具体事实：他已经会什么、缺什么、这件事对他有什么用、什么会挡住他。"
+            "不要写当次状态（精力/压力/环境）。"
         ),
         parameters=_object(
             {
                 "changes": _object(
                     {
-                        "type": {
-                            "type": "string",
-                            "enum": ["intrinsic", "extrinsic", "mixed"],
-                            "description": "动机类型。",
-                        },
-                        "strength": {
-                            "type": "string",
-                            "enum": ["high", "medium", "low"],
-                            "description": "强度。",
-                        },
-                        "drivers": _array({"type": "string"}, "驱动因素，引原话。"),
+                        "foundation": _string(
+                            "前置基础：已经会的、缺的、卡在上一步的地方。"
+                        ),
+                        "value": _string("目的：这件事对他真正的用处。"),
                         "obstacles": _array(
-                            _object(
-                                {
-                                    "type": _string("障碍类型。"),
-                                    "detail": _string("具体是什么。"),
-                                }
-                            ),
-                            "障碍。",
+                            {"type": "string"},
+                            "障碍，一条一句。",
                         ),
                     },
                     description="要改的项。没提到的项保持不变。",
                 ),
-                "reason": _string("改了什么、依据是哪句话。必填。"),
+                "reason": _string("为什么改。可选；不写会记为「根据这次讨论更新动机」。"),
                 "basis": {
                     "type": "string",
                     "enum": ["stated", "experienced", "inferred"],
-                    "description": (
-                        "`stated` = 用户亲口说的；`experienced` = 你从对话过程观察到的；"
-                        "`inferred` = 你推断的。**必填，没有默认值** —— "
-                        "这一项决定这条记录的硬度，不该由沉默决定。"
-                    ),
+                    "description": "记录硬度：用户亲口 / 对话观察 / 推断。可选。",
                 },
             },
-            required=["changes", "reason", "basis"],
+            required=["changes"],
         ),
         handler=_update_motivation,
     ),
@@ -1764,62 +1680,32 @@ _TOOLS: tuple[ToolSpec, ...] = (
         name="update_task_plan",
         scope=ToolScope.SESSION_WRITE,
         summary=(
-            "**入口条件：用户没有点任何计划项，但有落在库里的证据**"
-            "（检查点判 fail、或 stage 里还悬着想法 —— 两者之一）。"
-            "**入口条件不满足就会被拒绝** —— 驳回语会告诉你缺的是哪一条、该换哪个工具。"
-            "改计划结构 → 产生**新版本**（旧版本的行原地不动，所以「当时为什么那样规划」看得见）。"
-            "**必须带 reason。**"
-            "**用户点了某个计划项时不要用这个** —— 那种情况该用 `propose_plan_change`，"
-            "它必须逐条回答硬约束。"
-            "**`steps` 是这一版的整份步骤表，顺序就是你给的顺序**："
-            "要有序就按序写全，要插一步就插在那个位置，"
-            "**没列出来的步骤会被删掉**（删了什么会在返回里逐条告诉你）。"
-            "想保留某一步就把它带上，并带上它原来的 step_id —— "
-            "这样它的完成状态才会被继承。"
-            "**新增的步骤不要填 step_id**：填了会被当成引用一个已存在的步骤，而那个 id 不存在时整次调用会被拒绝 —— 不填才是新增。"
-            "**改 steps 时别顺手重写 `checkpoints`**：整个键不传 = 保留现有的。"
+            "创建或修改当前会话的计划。计划只在这个会话内生效，不动全局认知；"
+            "随时可以改，不需要用户先点某一项或先证明什么。"
+            "把**这一版的完整步骤表**放进 diff.steps（顺序就是计划顺序；"
+            "没列出的步骤会被删掉）。保留已有步骤时带上它原来的 step_id，"
+            "新增步骤不要带 step_id。checkpoints 不传 = 保留现有；传空列表 = 删掉。"
+            "归档之后计划封存、本工具会被拒绝，但对话仍然继续。"
         ),
         parameters=_object(
             {
                 "diff": _object(
                     {
-                        "steps": _array(
-                            _STEP_SCHEMA,
-                            "新版计划的**完整**步骤列表（顺序即计划顺序；"
-                            "没列出来的会被删掉）。",
-                        ),
+                        "steps": _array(_STEP_SCHEMA, "这一版的完整步骤表。"),
                         "checkpoints": _array(
-                            _CHECKPOINT_SCHEMA,
-                            "新版计划的检查点。**整个键不给 = 保留现有的**；"
-                            "给了就是这一版的全部。",
+                            _CHECKPOINT_SCHEMA, "检查点；不传 = 保留现有。"
                         ),
                         "change": _string("一句话说明改了什么。"),
                     },
                     required=["steps"],
-                    description="计划的新版本内容（整份，不是补丁）。",
                 ),
-                "reason": _string("为什么改。必填。"),
-                "user_quote": _string(
-                    "用户这一句要求改的原话（必须逐字能在他那一句里找到）。"
-                    "没点开计划项时，这就是入口条件。"
-                ),
-                "constraint_checks": _array(
-                    _object(
-                        {
-                            "pref_id": _string("硬约束的 pref_id（如 P-0001）。"),
-                            "verdict": {
-                                "type": "string",
-                                "enum": ["ok", "conflict", "unclear"],
-                                "description": "ok = 不冲突；conflict = 冲突（会整次拒绝）；unclear = 说不清。",
-                            },
-                            "why": _string("为什么这么判。"),
-                        },
-                        required=["pref_id", "verdict"],
-                    ),
-                    "对当前每一条硬约束的逐条判断。**有硬约束时必须覆盖全部。**",
-                ),
+                "reason": _string("为什么改。可选；不写就记「按这次讨论调整计划」。"),
+                "goal": _string("创建计划时的目标。可空。"),
+                # 兼容模型把这三项写在顶层（它经常这么做）。与 diff 里的同义。
+                "steps": _array(_STEP_SCHEMA, "同 diff.steps；两种写法都接受。"),
+                "checkpoints": _array(_CHECKPOINT_SCHEMA, "同 diff.checkpoints。"),
+                "change": _string("同 diff.change。"),
             },
-            required=["diff", "reason"],
         ),
         handler=_update_task_plan,
     ),
@@ -1827,71 +1713,33 @@ _TOOLS: tuple[ToolSpec, ...] = (
         name="propose_plan_change",
         scope=ToolScope.SESSION_WRITE,
         summary=(
-            "**入口条件：用户本人点了那个计划项**（上下文里写着「用户此刻的动作："
-            "他点开了计划项 ST-00X」时就是点了 —— **不要让他再点一次，也不要问他哪一步**）。"
-            "你要做三查：① 与 stage 里那些「想试但没定」的东西一致吗 "
-            "② 有没有违反用户亲口下达的硬约束"
-            "③ 与 C 证据和历史是否相符。"
-            "**用户亲口下达的硬约束必须逐条回答**（constraint_checks）：漏掉任何一条，"
-            "整次调用会被拒绝 —— "
-            "沉默地略过用户说过的一句话，比明确说「这条我违反了」危险得多。"
-            "**改 `steps` 时别顺手重写 `checkpoints`**：整个键不传 = 保留现有的。"
-            # 这句话在 `update_task_plan` 里也有，**必须逐字一致**：
-            # 两个工具写的是同一份步骤表（同一个 `_steps_from`），
-            # 描述上不一致会让模型以为"这两条路的 steps 语义不同" ——
-            # 而它选哪条路是看情况的，于是同一个动作在两条路上产生不同结果。
-            # 这条一致性有测试钉住（`test_the_steps_semantics_is_stated_identically_...`）。
-            "**`steps` 是这一版的整份步骤表，顺序就是你给的顺序**："
-            "要有序就按序写全，要插一步就插在那个位置，"
-            "**没列出来的步骤会被删掉**（删了什么会在返回里逐条告诉你）；"
-            "想保留某一步就带上它原来的 step_id，这样它的完成状态才会被继承。"
-            "**新增的步骤不要填 `step_id`**：填了会被当成"
-            "「引用一个已存在的步骤」，而那个 id 不存在时整次调用会被拒绝 —— "
-            "不填才是新增。"
-            "别的证据（检查点未通过、stage 里悬着想法）请走 `update_task_plan`。"
-            "被拒绝**不影响执行**，会话照常继续。"
+            "兼容旧名字：与 update_task_plan 完全相同，随时可改计划，"
+            "不需要用户点开某一项、不需要证据、也不需要逐条回答约束。"
+            "新代码优先用 update_task_plan；这个入口保留给旧客户端。"
         ),
         parameters=_object(
             {
-                "target": _string("用户点的是哪一项（step_id / cp_id / '整个计划'）。"),
-                "user_view": _string("用户的原话或看法。**引原话**，不要替他润色。"),
-                "user_quote": _string(
-                    "用户这一句要求改的原话（必须逐字能在他那一句里找到）。"
-                    "没点开计划项时，这就是入口条件。"
-                ),
-                "constraint_checks": _array(
-                    _object(
-                        {
-                            "pref_id": _string("硬约束的 pref_id（如 P-0001）。"),
-                            "verdict": {
-                                "type": "string",
-                                "enum": ["ok", "conflict", "unclear"],
-                                "description": "ok = 不冲突；conflict = 冲突（会整次拒绝）；unclear = 说不清。",
-                            },
-                            "why": _string("为什么这么判。"),
-                        },
-                        required=["pref_id", "verdict"],
-                    ),
-                    "对当前每一条硬约束的逐条判断。**必须覆盖全部，不能少。**",
-                ),
+                "target": _string("旧参数，可忽略。"),
+                "user_view": _string("旧参数，用作 reason。"),
                 "suggested_change": _object(
                     {
-                        "steps": _array(
-                            _STEP_SCHEMA,
-                            "调整后的**完整**步骤列表（顺序即计划顺序；"
-                            "没列出来的会被删掉）。",
-                        ),
-                        "checkpoints": _array(
-                            _CHECKPOINT_SCHEMA,
-                            "调整后的检查点。**整个键不给 = 保留现有的**。",
-                        ),
+                        "steps": _array(_STEP_SCHEMA, "这一版的完整步骤表。"),
+                        "checkpoints": _array(_CHECKPOINT_SCHEMA, "检查点；不传=保留。"),
                         "change": _string("一句话说明改了什么。"),
                     },
-                    required=["steps"],
-                    description="调整后的计划内容（整份）。",
                 ),
+                "diff": _object(
+                    {
+                        "steps": _array(_STEP_SCHEMA, "这一版的完整步骤表。"),
+                        "checkpoints": _array(_CHECKPOINT_SCHEMA, "检查点；不传=保留。"),
+                        "change": _string("一句话说明改了什么。"),
+                    },
+                ),
+                "reason": _string("为什么改。可选。"),
+                # 旧客户端的参数：接受但忽略，不让一次旧调用在 schema 层被拒。
+                "user_quote": _string("旧参数，可忽略。"),
+                "constraint_checks": _array({"type": "object"}, "旧参数，可忽略。"),
             },
-            required=["target", "user_view", "suggested_change"],
         ),
         handler=_propose_plan_change,
     ),

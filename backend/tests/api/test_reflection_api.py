@@ -57,9 +57,21 @@ def _active_session(client: TestClient) -> str:
     return session_id
 
 
+def _finish_steps(client: TestClient, session_id: str) -> None:
+    state = client.get(f"/api/sessions/{session_id}/state").json()
+    for step in state["plan"]["steps"]:
+        response = client.patch(
+            f"/api/sessions/{session_id}/plan/steps/{step['step_id']}",
+            json={"status": "done", "expected_version": state["versions"]["plan"]},
+        )
+        assert response.status_code == 200, response.text
+        state = client.get(f"/api/sessions/{session_id}/state").json()
+
+
 def _reviewed_session(client: TestClient) -> str:
     """一个已经复盘过的会话（`review` 态 + 一条总结）。"""
     session_id = _active_session(client)
+    _finish_steps(client, session_id)
     version = client.get(f"/api/sessions/{session_id}/state").json()["versions"]["session"]
     client.post(
         f"/api/sessions/{session_id}/transitions",

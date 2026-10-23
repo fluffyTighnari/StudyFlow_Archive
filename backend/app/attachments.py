@@ -70,16 +70,12 @@ ALLOWED_EXTENSIONS: dict[str, str] = {
 
 #: 明确认识但**不支持**的格式 → 给用户的一句话。
 #:
-#: 单独列出这几个，是因为它们最常见、也最容易被误传。对它们说
-#: "不支持这个类型"是没用的 —— 用户需要知道**下一步做什么**。
+#: 只说“不支持”；支持哪些格式由界面在选文件时给出，不在错误里重复。
 KNOWN_UNSUPPORTED: dict[str, str] = {
-    ".doc": (
-        "老的 `.doc` 是二进制格式（OLE2），解析不了 —— 请在 Word 里"
-        "「另存为」`.docx` 或 `.txt` 再传。"
-    ),
-    ".pdf": "PDF 现在不支持 —— 如果可以，导出成 `.txt` 或 `.md` 再传。",
-    ".rtf": "RTF 现在不支持 —— 用 Word 另存为 `.docx` 或 `.txt` 再传。",
-    ".odt": "ODT 现在不支持 —— 用 LibreOffice/Word 另存为 `.docx` 或 `.txt` 再传。",
+    ".doc": "不支持这种文件。",
+    ".pdf": "不支持这种文件。",
+    ".rtf": "不支持这种文件。",
+    ".odt": "不支持这种文件。",
 }
 
 #: 单文件上限 2 MB。
@@ -191,13 +187,7 @@ def _check_extension(filename: str) -> tuple[str, str]:
     ext = extension_of(filename)
     if ext in ALLOWED_EXTENSIONS:
         return ext, ALLOWED_EXTENSIONS[ext]
-    if ext in KNOWN_UNSUPPORTED:
-        raise AttachmentError(f"传不了「{filename}」：{KNOWN_UNSUPPORTED[ext]}")
-    allowed = "、".join(sorted(ALLOWED_EXTENSIONS))
-    raise AttachmentError(
-        f"传不了「{filename}」：现在只收文本类文件（{allowed}）。"
-        "如果你要传的是别的东西，先把它导出成 `.txt` 或 `.md`。"
-    )
+    raise AttachmentError("不支持这种文件。")
 
 
 # --------------------------------------------------------------------------- #
@@ -228,28 +218,16 @@ def _looks_binary(raw: bytes) -> bool:
 def _sniff(raw: bytes, filename: str, kind: str) -> None:
     """按**内容**再确认一次，不一致就明确拒绝。"""
     if not raw.strip():
-        raise AttachmentError(f"「{filename}」是个空文件 —— 没有内容可以读。")
+        raise AttachmentError("这个文件是空的。")
     if raw.startswith(_OLE2):
-        raise AttachmentError(
-            f"「{filename}」的内容是老的 Office 二进制格式（OLE2），不是文本 —— "
-            "扩展名可能被改过。请在 Word 里另存为 `.docx` 或 `.txt`。"
-        )
+        raise AttachmentError("不支持这种文件。")
     if raw.startswith(b"%PDF"):
-        raise AttachmentError(
-            f"「{filename}」的内容其实是 PDF（扩展名被改过）—— "
-            "请导出成 `.txt` 或 `.md` 再传。"
-        )
+        raise AttachmentError("不支持这种文件。")
     if kind == "docx":
         if not raw.startswith(b"PK"):
-            raise AttachmentError(
-                f"「{filename}」不是一个 `.docx` —— `.docx` 本质是一个 zip，"
-                "而这个文件的开头不是 zip。它可能是老的 `.doc` 被改了扩展名。"
-            )
+            raise AttachmentError("不支持这种文件。")
     elif _looks_binary(raw):
-        raise AttachmentError(
-            f"「{filename}」看起来是二进制文件，不是文本 —— "
-            "如果是 Word 文档，请用 `.docx` 扩展名传；否则先另存为 `.txt`。"
-        )
+        raise AttachmentError("不支持这种文件。")
 
 
 # --------------------------------------------------------------------------- #
@@ -375,20 +353,16 @@ def _parse_docx(raw: bytes, filename: str) -> tuple[str, str]:
         # `RuntimeError("File ... is encrypted, password required")` ——
         # 它不是 OSError，所以必须一起接住，否则它会变成一个 500，
         # 而用户看到的是"服务器错误"而不是"去掉密码再传"。
-        raise AttachmentError(
-            f"「{filename}」读不开：{exc}。如果是加密文档，请先去掉密码再传。"
-        ) from exc
+        raise AttachmentError("文件读不开。") from exc
 
     try:
         root = ElementTree.fromstring(xml_bytes)
     except ElementTree.ParseError as exc:
-        raise AttachmentError(
-            f"「{filename}」的正文 XML 解析不了（{exc}）—— 文件可能损坏了。"
-        ) from exc
+        raise AttachmentError("文件已损坏。") from exc
 
     body = root.find(f"{_W}body")
     if body is None:
-        raise AttachmentError(f"「{filename}」里没有正文（找不到 `w:body`）。")
+        raise AttachmentError("文件里没有正文。")
 
     blocks = _document_blocks(body)
     # 段落之间空一行：模型读起来有层次，而连续空行压成一个。
@@ -463,11 +437,7 @@ def remove_original(stored_path: str) -> bool:
 def parse(filename: str, raw: bytes) -> ParsedFile:
     """把一次上传变成 `ParsedFile`。**失败一律抛 `AttachmentError`。"""
     if len(raw) > MAX_BYTES:
-        raise AttachmentError(
-            f"「{filename}」有 {len(raw) / 1024 / 1024:.1f} MB，超过上限 "
-            f"{MAX_BYTES // 1024 // 1024} MB。这么大的文件模型的窗口装不下 —— "
-            "请拆成几份传，或者只传相关的那几段。"
-        )
+        raise AttachmentError(f"文件不能超过 {MAX_BYTES // 1024 // 1024} MB。")
 
     clean = normalize_filename(filename)
     ext, kind = _check_extension(clean)
@@ -481,10 +451,7 @@ def parse(filename: str, raw: bytes) -> ParsedFile:
         how = f"{how}；**原文件更长，只存了前 {MAX_CHARS} 字**"
 
     if not text.strip():
-        raise AttachmentError(
-            f"「{clean}」里没有可读的文字（可能全是图片或空段落）—— "
-            "没有内容的文件进不了上下文。"
-        )
+        raise AttachmentError("文件里没有可读的文字。")
 
     return ParsedFile(
         filename=clean,

@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import pathlib
 from dataclasses import dataclass
@@ -46,6 +47,36 @@ from app.db import Base, DbSequenceStore
 SCOPE_LLM_PROFILE = "llm_profile"
 
 
+def _normalize_models(raw: str | None, current: str) -> list[str]:
+    """`models` 列 → 去重后的字符串列表，且**一定包含** `current`。
+
+    三条规则都是为了让界面与调用方看到同一个答案：
+    - 解析失败/空 → `[current]`（旧档案）；
+    - 去掉空白项、去重、保序；
+    - `current` 不在里面就补到最前面 —— 否则界面勾选项里没有"正在用的那个"。
+    """
+    items: list[str] = []
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            items = [str(item).strip() for item in parsed if str(item).strip()]
+    current = (current or "").strip()
+    if current:
+        items = [current] + [item for item in items if item != current]
+    seen: set[str] = set()
+    return [item for item in items if not (item in seen or seen.add(item))]
+
+
+def _models_column(models: list[str] | None, model: str) -> str:
+    return json.dumps(_normalize_models(
+        json.dumps(models, ensure_ascii=False) if models is not None else None,
+        model,
+    ), ensure_ascii=False)
+
+
 class LlmProfile(Base):
     """一份可切换的模型调用配置。**不含密钥。**"""
 
@@ -58,6 +89,15 @@ class LlmProfile(Base):
     #: `openai` 或 `ollama` —— 决定用哪个客户端、以及怎么拉模型列表。
     kind: Mapped[str] = mapped_column(String(20), nullable=False)
     base_url: Mapped[str] = mapped_column(String(400), nullable=False)
+    #: **这一份档案里勾选过的模型**（JSON 数组文本）。
+    #:
+    #: `model` 仍然保留：它是"这份档案此刻用哪一个"，下游（`make_client_from_profile`）
+    #: 只读它，不需要知道档案里还有别的模型。`models` 只是候选清单，
+    #: 界面据此列出可勾选项；换模型 = 改 `model`，不新建档案。
+    #:
+    #: 用 Text 存 JSON 而不是另开一张表：这里的取值永远是"一个小字符串数组"，
+    #: 没有查询需求；开表会让每次读档案都多一次 join，而收益只是理论上的范式。
+    models: Mapped[str] = mapped_column(Text, nullable=False, default="")
     model: Mapped[str] = mapped_column(String(200), nullable=False)
     #: 思考开关，三态：空串 = 不发这个字段（等价于 `None`）。
     #:
@@ -78,6 +118,16 @@ class LlmProfile(Base):
     @property
     def has_key(self) -> bool:
         return secret_path(self.profile_id).is_file()
+
+    @property
+    def model_list(self) -> list[str]:
+        """档案里勾选的模型（**永远包含当前模型**）。
+
+        旧库里的 `models` 是空的/`NULL`（这次迁移之前建的档案）——
+        这时返回 `[model]`，而不是空列表：一份档案至少有一个能用的模型，
+        空列表会让界面画出一个"什么都没有"的档案，而它其实能说话。
+        """
+        return _normalize_models(self.models, self.model)
 
     @property
     def think_flag(self) -> bool | None:
@@ -172,6 +222,8 @@ class ProfileInput:
     num_ctx: int | None = None
     note: str = ""
     api_key: str | None = None
+    #: 勾选的模型清单；`None` = 不改动已存的（新档案则为 `[model]`）。
+    models: list[str] | None = None
 
 
 def _now() -> str:
@@ -228,13 +280,15 @@ def create_profile(session: Session, data: ProfileInput) -> LlmProfile:
     provider = get_provider(data.provider_id)
     profile_id = format_seq("LP", DbSequenceStore(session).next(SCOPE_LLM_PROFILE), 4)
     now = _now()
+    model = data.model.strip() or provider.default_model
     profile = LlmProfile(
         profile_id=profile_id,
         label=data.label.strip() or provider.label,
         provider_id=provider.provider_id,
         kind=provider.kind,
         base_url=resolved_base_url(provider, data.base_url),
-        model=data.model.strip() or provider.default_model,
+        model=model,
+        models=_models_column(data.models, model),
         think=_think_column(data.think),
         num_ctx=data.num_ctx or 0,
         note=data.note,
@@ -264,7 +318,19 @@ def update_profile(
     profile.provider_id = provider.provider_id
     profile.kind = provider.kind
     profile.base_url = resolved_base_url(provider, data.base_url)
-    profile.model = data.model.strip() or provider.default_model
+    next_model = data.model.strip() or provider.default_model
+    # 勾选清单：这次给了就用这次的，没给就沿用已存的；然后把 `next_model`
+    # 并进去（用户直接在「模型名」里敲了一个不在清单里的名字，那也是一个选择）。
+    kept = (
+        data.models
+        if data.models is not None
+        else _normalize_models(profile.models, profile.model)
+    )
+    profile.models = json.dumps(
+        _normalize_models(json.dumps(kept, ensure_ascii=False), next_model),
+        ensure_ascii=False,
+    )
+    profile.model = next_model
     profile.think = _think_column(data.think)
     profile.num_ctx = data.num_ctx or 0
     profile.note = data.note
@@ -295,8 +361,22 @@ def delete_profile(session: Session, profile_id: str) -> None:
             session.flush()
 
 
-def activate(session: Session, profile_id: str) -> LlmProfile:
+def activate(
+    session: Session, profile_id: str, model: str | None = None
+) -> LlmProfile:
+    """让一份档案生效；`model` 给了就**同时**换用这一份里的那个模型。
+
+    ★ 「切档案」与「切模型」是同一次动作。分成两次的话，界面要点两下
+    （先启用档案、再选模型），而中间那一下的状态是"启用了，但用的还是旧模型" ——
+    用户看到的是一次没生效的点击。这里一次落库，后台也只有一个事实。
+    """
     profile = require_profile(session, profile_id)
+    wanted = (model or "").strip()
+    if wanted:
+        if wanted not in profile.model_list:
+            raise ValueError("这个模型不在档案里。")
+        profile.model = wanted
+        profile.updated_at = _now()
     for other in list_profiles(session):
         other.is_active = other.profile_id == profile.profile_id
     session.flush()

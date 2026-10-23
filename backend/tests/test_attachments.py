@@ -100,7 +100,7 @@ def test_binary_disguised_as_txt_is_rejected() -> None:
     """
     with pytest.raises(AttachmentError) as excinfo:
         parse("照片.txt", b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4)
-    assert "二进制" in str(excinfo.value)
+    assert "不支持这种文件" in str(excinfo.value)
 
 
 # --------------------------------------------------------------------------- #
@@ -117,8 +117,7 @@ def test_old_doc_renamed_to_docx_is_caught_by_content() -> None:
     ole2 = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 512
     with pytest.raises(AttachmentError) as excinfo:
         parse("报告.docx", ole2)
-    assert "OLE2" in str(excinfo.value)
-    assert "另存为" in str(excinfo.value)
+    assert "不支持这种文件" in str(excinfo.value)
 
 
 def test_old_doc_extension_is_rejected_with_a_next_step() -> None:
@@ -126,27 +125,26 @@ def test_old_doc_extension_is_rejected_with_a_next_step() -> None:
     with pytest.raises(AttachmentError) as excinfo:
         parse("报告.doc", b"anything")
     message = str(excinfo.value)
-    assert "另存为" in message
-    assert ".docx" in message
+    assert "不支持这种文件" in message
 
 
 def test_pdf_renamed_to_txt_is_caught() -> None:
     with pytest.raises(AttachmentError) as excinfo:
         parse("论文.txt", b"%PDF-1.7\n" + b"x" * 100)
-    assert "PDF" in str(excinfo.value)
+    assert "不支持这种文件" in str(excinfo.value)
 
 
-def test_unknown_extension_lists_what_is_allowed() -> None:
+def test_unknown_extension_is_rejected_with_a_short_message() -> None:
+    """错误只说“不支持”；支持哪些格式由界面的选择提示给出。"""
     with pytest.raises(AttachmentError) as excinfo:
         parse("数据.xlsx", b"whatever")
-    message = str(excinfo.value)
-    assert ".txt" in message and ".md" in message and ".docx" in message
+    assert str(excinfo.value) == "不支持这种文件。"
 
 
 def test_empty_file_is_rejected() -> None:
     with pytest.raises(AttachmentError) as excinfo:
         parse("空的.md", b"   \n  ")
-    assert "空文件" in str(excinfo.value)
+    assert "这个文件是空的" in str(excinfo.value)
 
 
 # --------------------------------------------------------------------------- #
@@ -204,7 +202,7 @@ def test_docx_note_says_what_is_not_taken() -> None:
 def test_docx_that_is_not_a_zip_says_so() -> None:
     with pytest.raises(AttachmentError) as excinfo:
         parse("假的.docx", b"this is plain text, not a zip at all")
-    assert ".docx" in str(excinfo.value)
+    assert "不支持这种文件" in str(excinfo.value)
 
 
 def test_zip_without_document_part_says_so() -> None:
@@ -233,7 +231,7 @@ def test_oversized_file_is_rejected_with_both_numbers() -> None:
     with pytest.raises(AttachmentError) as excinfo:
         parse("巨大.txt", b"a" * (MAX_BYTES + 1))
     message = str(excinfo.value)
-    assert "MB" in message and "上限" in message
+    assert "MB" in message and "不能超过" in message
 
 
 def test_long_text_is_truncated_and_marked() -> None:

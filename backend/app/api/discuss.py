@@ -55,12 +55,12 @@ from collections.abc import AsyncIterable, Iterator
 from dataclasses import replace
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
-from app.agent.context import build_memory, build_meter, record_usage
+from app.agent.context import build_memory, build_meter, meter_payload, record_usage
 from app.agent.events import AgentEvent, EventType
 from app.agent.external import ExternalToolbox
 from app.agent.llm import ChatMessage, LLMClient
@@ -69,6 +69,8 @@ from app.agent.loop import AgentLoop, StopReason
 from app.agent.tools import GESTURE_PLAN_CHANGE
 from app.api.deps import get_session
 from app.db import session_scope
+from app.global_domain import reads as global_reads
+from app.global_domain.enums import ProposalStatus
 from app.session_domain import reads, writes
 from app.session_domain.enums import ChatRole, ContextScope
 
@@ -167,6 +169,38 @@ class DiscussResponse(_Request):
     #: 压缩失败的原因。**不吞掉**：失败会让上下文继续膨胀，
     #: 而下一次就撞上真正的装不下。
     compact_error: str | None = None
+
+
+class ArchiveReviewResponse(_Request):
+    """归档后自动复盘的结果。
+
+    `reply` 会作为一条带 `archive_review` 标签的助手消息落进聊天记录；
+    `proposals` 是这次复盘留下的**待确认提案**（可能为空）。
+    归档复盘**不写用户消息** —— 那段指令不是用户说的话，写进去会污染"他说过什么"。
+    """
+
+    reply: str
+    stop_reason: StopReason
+    steps: int
+    tool_trace: list[TraceItem] = Field(default_factory=list)
+    thinking: str = ""
+    context: dict[str, Any] = Field(default_factory=dict)
+    proposals: list[dict[str, Any]] = Field(default_factory=list)
+
+
+#: 归档复盘用的内部指令。它**不进聊天记录**（见端点的说明）。
+ARCHIVE_REVIEW_PROMPT = """\
+这次会话刚刚归档。请做一次归档复盘：
+
+- 回顾这次会话里他说过的目的、方法、障碍和结果；
+- 找出 0–3 条值得长期留下的东西（偏好、证据或假说），用 `submit_global_update` 提案；
+  **trigger_type 用 R3，basis 用 `experienced`**（除非你确定有他的原话，才用 stated + basis_quote）；
+- 只提议，不要假设已经写入；每条都要说清你提议什么、为什么；
+- 不要改计划（它已经封存），也不要写笔记。
+- 如果这次会话没有值得写进全局认知的东西，就直说没有。
+
+最后用一段话告诉他：你提议了什么、有哪些在等他确认。
+"""
 
 
 def get_llm_client(request: Request) -> LLMClient:
@@ -322,9 +356,109 @@ def discuss(
         tool_trace=[TraceItem(**entry.as_dict()) for entry in result.traces],
         llm_meta=result.llm_meta,
         thinking=result.thinking,
-        context=after.as_dict(),
+        context=meter_payload(after, client),
         compacted=memory.new_compact_id,
         compact_error=memory.compact_error,
+    )
+
+
+@router.post("/{session_id}/archive-review", response_model=ArchiveReviewResponse)
+def archive_review(
+    session_id: str,
+    db: Session = Depends(get_session),
+    client: LLMClient = Depends(get_llm_client),
+    max_steps: int = Depends(get_agent_max_steps),
+    external: ExternalToolbox | None = Depends(get_external_toolbox),
+) -> ArchiveReviewResponse:
+    """归档后自动复盘：**让模型尝试把这次会话沉淀进全局认知**。
+
+    为什么不做成前端自动发一条消息：那条消息会以"用户说过的话"落库，
+    而它会立刻被当成 `stated` 的证据（`basis_quote` 的核对来源）。归档复盘
+    不是用户说的，不能污染这条证据链。所以这里只把**模型的回复**落库，
+    内部指令只活在这一轮调用里。
+
+    为什么必须归档后才能调：它读的是"这个会话发生了什么"；
+    计划未封存时复盘，会把还没定下来的东西当成经验。
+    """
+    row = reads.get_session(db, session_id)
+    if row.state != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"归档复盘只能在 completed 状态调用（当前 {row.state}）。",
+        )
+
+    memory = build_memory(
+        db,
+        ContextScope.SESSION,
+        session_id,
+        client=client,
+        limit=getattr(client, "num_ctx", 0) or 0,
+    )
+    loop = AgentLoop(
+        db,
+        session_id,
+        client,
+        max_steps=max_steps,
+        external=external,
+    )
+    result = loop.run(ARCHIVE_REVIEW_PROMPT, history=memory.history)
+    if result.stop_reason is not StopReason.COMPLETED or not result.reply.strip():
+        # 不写一条空消息：`空消息不记` 是写入层的地基。
+        raise HTTPException(
+            status_code=502,
+            detail=f"归档复盘未完成（{result.stop_reason.value}），没有写入任何内容。",
+        )
+
+    writes.add_chat_message(
+        db,
+        session_id,
+        content=result.reply,
+        role=ChatRole.ASSISTANT,
+        tags=[f"stop:{result.stop_reason.value}", "archive_review"],
+        tool_trace=[entry.as_dict() for entry in result.traces] or None,
+        thinking=result.thinking or None,
+        prompt_tokens=result.llm_meta.get("prompt_eval_count"),
+        completion_tokens=result.llm_meta.get("eval_count"),
+        cache_hit_tokens=result.llm_meta.get("cache_hit_tokens"),
+        cache_miss_tokens=result.llm_meta.get("cache_miss_tokens"),
+    )
+    record_usage(db, ContextScope.SESSION, session_id, meta=result.llm_meta)
+    after = build_meter(
+        db, ContextScope.SESSION, session_id, limit=getattr(client, "num_ctx", 0) or 0
+    )
+
+    pending = [
+        {
+            "proposal_id": proposal.proposal_id,
+            "note": proposal.note,
+            "trigger_type": proposal.trigger_type.value,
+            "created_at": proposal.created_at,
+            "intents": [
+                {
+                    "intent_id": intent.intent_id,
+                    "action": intent.action.value,
+                    "target": intent.target,
+                    "value": intent.value,
+                    "basis": intent.basis.value,
+                    "reasoning": intent.reasoning,
+                }
+                for intent in global_reads.list_intents(db, proposal.proposal_id)
+            ],
+        }
+        for proposal in global_reads.list_proposals(
+            db, ProposalStatus.PENDING_CONFIRMATION
+        )
+        if proposal.session_ref == session_id
+    ]
+
+    return ArchiveReviewResponse(
+        reply=result.reply,
+        stop_reason=result.stop_reason,
+        steps=result.steps,
+        tool_trace=[TraceItem(**entry.as_dict()) for entry in result.traces],
+        thinking=result.thinking,
+        context=meter_payload(after, client),
+        proposals=pending,
     )
 
 
@@ -515,7 +649,7 @@ def stream_events(
                         event,
                         data={
                             **event.data,
-                            "context": meter.as_dict(),
+                            "context": meter_payload(meter, loop.client),
                             "thinking": loop.thinking,
                         },
                     )

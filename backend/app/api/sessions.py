@@ -35,6 +35,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.agent.context import build_meter, meter_payload
+from app.agent.llm import LLMClient
+from app.api.discuss import get_llm_client
 from app.api.envelope import ItemsResponse, ok
 from app.api.deps import get_session
 from app.core.errors import InvalidField, NotFound
@@ -42,7 +45,7 @@ from app.session_domain import basis as basis_module
 from app.session_domain import reflection as reflection_module
 from app.session_domain import reads, state, writes
 from app.session_domain.context import DiscussionContext, assemble_discussion_context
-from app.session_domain.enums import ChangedBy, ClarificationStatus
+from app.session_domain.enums import ChangedBy, ClarificationStatus, ContextScope
 from app.session_domain.schemas import (
     AnnotationCreate,
     AnnotationRead,
@@ -182,6 +185,26 @@ def get_session_state(
 ) -> state.SessionStateRead:
     """侧页的**唯一**数据入口：一次取全量（M0 §10 单一状态源）。"""
     return state.build_session_state(session, session_id)
+
+
+@router.get("/{session_id}/context", response_model=dict[str, Any])
+def get_context_meter(
+    session_id: str,
+    session: Session = Depends(get_session),
+    client: LLMClient = Depends(get_llm_client),
+) -> dict[str, Any]:
+    """这个会话此刻的上下文用量。
+
+    **为什么不塞进 `/state`**：窗口上限来自"此刻生效的模型"（`.env` 或
+    数据库里那份档案），而 `/state` 是会话域的数据、不该因为换模型而改变形状。
+    分开之后，"上下文"这一栏可以在切换模型后单独刷新，也能解释
+    `limit=0`（模型没报窗口）与 `used=0`（还没跑过一轮）这两件不同的事。
+    """
+    reads.get_session(session, session_id)
+    meter = build_meter(
+        session, ContextScope.SESSION, session_id, limit=getattr(client, "num_ctx", 0) or 0
+    )
+    return meter_payload(meter, client)
 
 
 @router.post("/{session_id}/transitions", response_model=SessionRead)
@@ -357,6 +380,8 @@ def update_motivation(
         expected_version=body.expected_version,
         type=body.type,
         strength=body.strength,
+        foundation=body.foundation,
+        value=body.value,
         drivers=body.drivers,
         obstacles=body.obstacles,
         reason=body.reason,

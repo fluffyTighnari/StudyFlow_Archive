@@ -1,0 +1,34 @@
+{
+  "items": [
+    {
+      "file": "assets/items/SMP-01/SMP-01-A.m4a",
+      "chars": 777,
+      "seconds": 227.7,
+      "kb": 2933,
+      "voice": "Microsoft Huihui Desktop",
+      "rate": -1,
+      "text": "assets/items/SMP-01/SMP-01-A.txt",
+      "duration_ok": true
+    },
+    {
+      "file": "assets/items/SMP-02/SMP-02-A.m4a",
+      "chars": 1042,
+      "seconds": 297.1,
+      "kb": 3727,
+      "voice": "Microsoft Huihui Desktop",
+      "rate": -1,
+      "text": "assets/items/SMP-02/SMP-02-A.txt",
+      "duration_ok": true
+    },
+    {
+      "file": "assets/items/SMP-03/SMP-03-A.m4a",
+      "chars": 913,
+      "seconds": 267.4,
+      "kb": 3311,
+      "voice": "Microsoft Huihui Desktop",
+      "rate": -1,
+      "text": "assets/items/SMP-03/SMP-03-A.txt",
+      "duration_ok": true
+    }
+  ]
+}

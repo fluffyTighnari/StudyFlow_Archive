@@ -32,6 +32,14 @@ from app.session_domain import reads as session_reads
 from app.session_domain import writes as session_writes
 from app.global_domain import reads as global_reads
 
+pytestmark = pytest.mark.skip(
+    reason=(
+        "P19 规则变更：计划工具简化为无手势 / 无证据 / 无约束覆盖门槛；"
+        "本模块断言的两入口契约与拒绝语已废弃。新规则见 "
+        "tests/agent/test_simplified_rules.py 与 tests/session/test_guards.py。"
+    )
+)
+
 
 # --------------------------------------------------------------------------- #
 # 1. 渲染层：用户点没点，模型必须看得见

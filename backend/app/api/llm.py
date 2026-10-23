@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.agent.llm import ChatMessage, LLMError, ModelLister
-from app.agent.llm_factory import make_client_from_profile
+from app.agent.llm_factory import effective_context, make_client_from_profile
 from app.agent.providers import PROVIDERS
 from app.api.envelope import ItemsResponse, ok
 from app.api.deps import get_session
@@ -78,9 +78,13 @@ class ProfileRead(BaseModel):
     kind: str
     base_url: str
     model: str
+    #: 档案里勾选过的模型。**一定包含 `model`**（旧档案也会回一项）。
+    models: list[str]
     #: 三态之一：`"auto"` / `"true"` / `"false"`。
     think: str
     num_ctx: int
+    #: 实际使用的上下文预算（留空/旧默认时取模型窗口）。
+    effective_num_ctx: int
     note: str
     is_active: bool
     #: 密钥**在不在**（不是它是什么）。
@@ -100,8 +104,10 @@ class ProfileRead(BaseModel):
             kind=profile.kind,
             base_url=profile.base_url,
             model=profile.model,
+            models=profile.model_list,
             think=profile.think or "auto",
             num_ctx=profile.num_ctx,
+            effective_num_ctx=effective_context(profile),
             note=profile.note,
             is_active=profile.is_active,
             has_key=bool(key),
@@ -115,6 +121,9 @@ class ProfileWrite(BaseModel):
     label: str = ""
     provider_id: str
     model: str = ""
+    #: 勾选的模型清单。`null` = 不改（新档案则只用 `model`）；
+    #: `[]` = 清空（仍会保留 `model`，档案不能没有可用的模型）。
+    models: list[str] | None = None
     base_url: str | None = None
     #: `true`/`false`/`null`（null = 不发这个字段，见 `OllamaClient` 的说明）。
     think: bool | None = None
@@ -122,6 +131,16 @@ class ProfileWrite(BaseModel):
     note: str = ""
     #: 三态：不给 = 不改动已存的；`""` = 清掉；有值 = 换一把。
     api_key: str | None = None
+
+
+class ActivateWrite(BaseModel):
+    """启用一份档案时**同时**指定用哪一个模型。
+
+    `model` 可空：老客户端只发 `{}` 时行为不变（沿用档案当前 `model`）。
+    给了就必须是这份档案里勾选过的 —— 见 `activate()` 的说明。
+    """
+
+    model: str | None = None
 
 
 class ModelsRead(BaseModel):
@@ -248,12 +267,16 @@ def remove(profile_id: str, session: Session = Depends(get_session)) -> DeletedR
 
 @router.post("/profiles/{profile_id}/activate", response_model=ProfileRead)
 def activate_one(
-    profile_id: str, session: Session = Depends(get_session)
+    profile_id: str,
+    body: ActivateWrite | None = None,
+    session: Session = Depends(get_session),
 ) -> ProfileRead:
     try:
-        profile = activate(session, profile_id)
+        profile = activate(session, profile_id, model=body.model if body else None)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return ProfileRead.of(profile)
 
 
@@ -318,12 +341,8 @@ def probe(profile_id: str, session: Session = Depends(get_session)) -> ProbeRead
     except LLMError as exc:
         return ProbeRead(ok=False, detail=str(exc))
 
-    listed = "、".join(models[:6]) + ("…" if len(models) > 6 else "")
     if profile.model in models:
-        return ProbeRead(
-            ok=True,
-            detail=f"通了：这家列出 {len(models)} 个模型，{profile.model} 在清单里。",
-        )
+        return ProbeRead(ok=True, detail="可用")
 
     # 不在清单里 —— **别下结论，去问一次**。
     try:
@@ -331,21 +350,9 @@ def probe(profile_id: str, session: Session = Depends(get_session)) -> ProbeRead
             [ChatMessage.system("只回一个字。"), ChatMessage.user("好")], tools=()
         )
     except LLMError as exc:
-        return ProbeRead(
-            ok=False,
-            detail=(
-                f"{profile.model} 不在清单里（这家列出 {len(models)} 个：{listed}），"
-                f"而且真发一句话也失败了：{exc}"
-            ),
-        )
-    return ProbeRead(
-        ok=True,
-        detail=(
-            f"可用 —— 但 {profile.model} **不在**这家列出的 {len(models)} 个模型里"
-            f"（{listed}）。清单里往往只有新名字，旧名字作为别名继续服务；"
-            "刚真发了一句话，它答了。"
-        ),
-    )
+        return ProbeRead(ok=False, detail=f"不可用：{str(exc)[:120]}")
+
+    return ProbeRead(ok=True, detail="可用")
 
 
 @contextmanager
@@ -371,6 +378,7 @@ def _to_input(body: ProfileWrite) -> ProfileInput:
         label=body.label,
         provider_id=body.provider_id,
         model=body.model,
+        models=body.models,
         base_url=body.base_url,
         think=body.think,
         num_ctx=body.num_ctx,

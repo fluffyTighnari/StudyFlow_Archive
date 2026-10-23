@@ -238,6 +238,9 @@ class Situation(BaseModel):
 
     motivation_type: str
     motivation_strength: str
+    #: 真正能进计划取舍的字段。
+    foundation: str | None = None
+    value: str | None = None
     drivers: list[str] = Field(default_factory=list)
     obstacles: list[dict] = Field(default_factory=list)
     energy: str | None = None
@@ -265,6 +268,10 @@ class DiscussionContext(BaseModel):
     #: （"先聊两句再说"，或者"让它当场排一版"）。空着不塞假步骤：
     #: 塞一个空步骤，模型会把它当成真的第 0 步。
     step: StepContext | None
+    #: 当前版本计划的**全部步骤**（含编号）。模型据此在回答里用 `[ST-001]`
+    #: 指某一步，界面把它变成可点击的引用；没有这一节，它只能看见锚点那一步，
+    #: 于是"指向计划里某一项"就只能靠猜编号。
+    plan_steps: list[StepContext] = Field(default_factory=list)
     constraints: list[PreferenceItem]
     soft_preferences: list[PreferenceItem]
     checkpoints: list[CheckpointItem]
@@ -572,6 +579,15 @@ def assemble_discussion_context(
     motivation = reads.get_motivation(db, session_id)
     snapshot = reads.get_snapshot(db, session_id)
 
+    sections.append(
+        SectionReport(
+            name="计划全貌（步骤编号）",
+            precedence=6,
+            item_count=len(steps),
+            dropped_count=0,
+        )
+    )
+
     return DiscussionContext(
         session_id=session_id,
         plan_version=plan.current_version if plan is not None else 0,
@@ -587,6 +603,17 @@ def assemble_discussion_context(
             if step is not None
             else None
         ),
+        plan_steps=[
+            StepContext(
+                step_id=row.step_id,
+                seq=row.seq,
+                action=row.action,
+                output=row.output,
+                method_ref=row.method_ref,
+                status=row.status,
+            )
+            for row in steps
+        ],
         constraints=[
             PreferenceItem(
                 pref_id=item.pref_id,
@@ -670,6 +697,8 @@ def assemble_discussion_context(
         situation=Situation(
             motivation_type=motivation.type.value,
             motivation_strength=motivation.strength.value,
+            foundation=motivation.foundation,
+            value=motivation.value,
             drivers=list(motivation.drivers or []),
             obstacles=list(motivation.obstacles or []),
             energy=None if snapshot is None or snapshot.energy is None else snapshot.energy.value,

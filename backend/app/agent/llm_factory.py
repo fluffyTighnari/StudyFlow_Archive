@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.agent.llm import FakeLLM, LLMClient, OllamaClient, OpenAICompatClient
-from app.agent.providers import get_provider
+from app.agent.providers import context_window_for, get_provider
 from app.config import Settings
 
 
@@ -42,7 +42,15 @@ def make_client_from_profile(profile: Any, *, api_key: str, timeout: float = 300
             think=profile.think_flag,
         )
     if kind == "openai":
-        return OpenAICompatClient(**common, api_key=api_key)
+        client = OpenAICompatClient(**common, api_key=api_key)
+        # `num_ctx` **不发给 OpenAI 兼容服务**（见 `_payload` 的说明），
+        # 但它是用户明确配置的**上下文预算**：计量与压缩要用它，
+        # 否则界面永远只能显示"窗口没报"，而压缩也不会发生。
+        # 给 `num_ctx_is_budget` 是为了让界面能如实区分
+        # "模型自己上报的窗口" 与 "按配置算的预算"。
+        client.num_ctx = _openai_budget(profile.provider_id, profile.num_ctx)
+        client.num_ctx_is_budget = True
+        return client
     raise ValueError(
         f"配置 {profile.profile_id} 的 kind={kind!r} 不认识。"
         "可选：openai（OpenAI 兼容协议）、ollama（本地 Ollama）。"
@@ -72,12 +80,15 @@ def make_client_from_settings(settings: Settings) -> LLMClient:
             think=settings.llm_think,
         )
     if provider_id == "openai":
-        return OpenAICompatClient(
+        client = OpenAICompatClient(
             model=settings.llm_model,
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key or _key_for("openai"),
             timeout=settings.llm_timeout,
         )
+        client.num_ctx = _openai_budget("openai", settings.llm_num_ctx)
+        client.num_ctx_is_budget = True
+        return client
 
     # 其余一律当成**目录里的一家公司**（`MOUXUE_LLM_PROVIDER=deepseek`）。
     # 不认识就抛 —— 不静默退回默认值：一个拼错的名字表现成"往错地址发请求"，
@@ -98,12 +109,15 @@ def make_client_from_settings(settings: Settings) -> LLMClient:
             num_ctx=settings.llm_num_ctx,
             think=settings.llm_think,
         )
-    return OpenAICompatClient(
+    client = OpenAICompatClient(
         model=model,
         base_url=base_url,
         api_key=settings.llm_api_key or _key_for(provider_id),
         timeout=settings.llm_timeout,
     )
+    client.num_ctx = _openai_budget(provider_id, settings.llm_num_ctx)
+    client.num_ctx_is_budget = True
+    return client
 
 
 def _key_for(provider_id: str) -> str:
@@ -139,3 +153,24 @@ def base_url_for(provider_id: str, settings: Settings) -> str:
     if settings.llm_base_url != Settings.llm_base_url:
         return settings.llm_base_url
     return provider.base_url
+
+
+def _openai_budget(provider_id: str, configured: int | None) -> int:
+    """OpenAI 兼容接口的上下文预算。
+
+    - 用户填了**非默认值** → 就用它；
+    - 留空、或仍是旧的默认 16384 → 用这家模型的保守窗口（DeepSeek 64k）。
+      `16384` 是 Ollama 时代的默认值，对商用模型太短，会把两轮对话压成摘要。
+    """
+    if configured and configured != Settings.llm_num_ctx:
+        return int(configured)
+    return context_window_for(provider_id)
+
+
+def effective_context(profile: Any) -> int:
+    """档案实际使用的上下文预算（界面显示与计量共用这一处）。"""
+    if getattr(profile, "kind", "") == "ollama":
+        return int(getattr(profile, "num_ctx", 0) or Settings.llm_num_ctx)
+    return _openai_budget(
+        getattr(profile, "provider_id", "custom"), getattr(profile, "num_ctx", 0)
+    )

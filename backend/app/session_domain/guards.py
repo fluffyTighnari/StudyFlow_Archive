@@ -73,9 +73,9 @@ WRITE_GUARDS: tuple[WriteGuard, ...] = (
     ),
     WriteGuard(
         SessionOperation.UPDATE_MOTIVATION,
-        frozenset({SessionState.DRAFT, SessionState.ACTIVE, SessionState.REVIEW}),
-        "动机驱动计划与推进节奏；计划已经定稿、会话已经归档之后再改动机，"
-        "不会影响任何已经发生的事，只会改写历史叙述",
+        _ALL_STATES,
+        "动机是理解任务的一层背景，不是对历史的判定。任何状态都可以改；"
+        "归档之后它不会改动已封存的计划，但可以帮下一次讨论理解「当初为什么」。",
     ),
     WriteGuard(
         SessionOperation.UPDATE_SNAPSHOT,
@@ -92,22 +92,21 @@ WRITE_GUARDS: tuple[WriteGuard, ...] = (
     ),
     WriteGuard(
         SessionOperation.REVISE_PLAN,
-        frozenset({SessionState.ACTIVE, SessionState.REVIEW}),
-        "计划在执行期与整理期都能改（整理期发现要改是正常诉求，"
-        "改出来的是一份新版本，自洽）。**无理由不改计划**（M7 §9 第 3 条）："
-        "`plan_revision.reason` 在库层是 NOT NULL",
+        frozenset({SessionState.DRAFT, SessionState.ACTIVE, SessionState.REVIEW}),
+        "计划在这个会话内部随时可改 —— 它不写全局认知，改坏了也只影响这一版。"
+        "归档之后封存：归档后的计划是「当时怎么做的」的凭据。",
     ),
     WriteGuard(
         SessionOperation.MARK_STEP,
-        frozenset({SessionState.ACTIVE, SessionState.REVIEW}),
-        "步骤进度在执行期与整理期都有意义（整理期补记「昨天做完了」是常见的事）；"
-        "归档之后它描述的是当时的事实，不该再被改写",
+        frozenset({SessionState.DRAFT, SessionState.ACTIVE, SessionState.REVIEW}),
+        "标步骤进度在起草、执行、整理期都允许。原来 draft 期不让标，"
+        "导致「计划已经定下来却连勾一下都报 draft 错」—— 那是一条纯摩擦的门。"
+        "归档之后不再改，计划封存。",
     ),
     WriteGuard(
         SessionOperation.RECORD_CHECKPOINT,
-        frozenset({SessionState.ACTIVE, SessionState.REVIEW}),
-        "检查点记录的是「这个关键步骤过没过」：执行期随时记，整理期补记也允许；"
-        "归档之后它就是当时的判定，不能再改",
+        frozenset({SessionState.DRAFT, SessionState.ACTIVE, SessionState.REVIEW}),
+        "检查点记录的是「这一步过没过」，起草期先记一次也合理；归档后封存。",
     ),
     WriteGuard(
         SessionOperation.ADD_STAGE_ITEM,
@@ -211,6 +210,13 @@ TRANSITIONS: tuple[Transition, ...] = (
         "draft ──激活──▶ active（M7 §8）。激活要求定义区至少有目标",
     ),
     Transition(
+        SessionState.DRAFT,
+        SessionState.COMPLETED,
+        "归档",
+        "draft ──▶ completed：允许直接把一个不再需要的会话归档；"
+        "归档后对话仍可继续，计划封存。",
+    ),
+    Transition(
         SessionState.ACTIVE,
         SessionState.REVIEW,
         "结束执行",
@@ -289,8 +295,7 @@ def assert_writable(state: SessionState, operation: SessionOperation) -> None:
         return
     allowed = " / ".join(sorted(s.value for s in guard.states))
     raise StateNotWritable(
-        f"会话处于 {state.value} 状态，不能执行 {operation.value}。"
-        f"允许的状态：{allowed}。原因：{guard.reason}",
+        f"当前状态 {state.value} 不能执行 {operation.value}（允许：{allowed}）。",
         detail={
             "state": state.value,
             "operation": operation.value,

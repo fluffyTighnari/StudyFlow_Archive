@@ -673,7 +673,14 @@ def test_the_openapi_document_can_still_be_generated() -> None:
         #         也让"改名 + 归档 + 挪动"能在**一个请求**里原子完成。
         #         ★ 这一组里 `PATCH` **改不了 `state`**：状态只能走 `/transitions`。
         #         那不是省事，是"归档 ≠ 放弃"这条口径的结构保证。
-    assert len(paths) == 76, f"路径数变了（现在是 {len(paths)}）：请同步文档里的数字"
+        # 76 → 77：`GET /api/sessions/{id}/context` —— 上下文计量独立成一条路径。
+        #         它不是 `/state` 的一部分：窗口上限来自**此刻生效的模型**，
+        #         换模型之后这一栏要能单独刷新；塞进 `/state` 会让会话数据
+        #         因为"用哪个模型"而改变形状。
+        # 77 → 78：`POST /api/sessions/{id}/archive-review` —— 归档后的自动复盘。
+        #         ★ 它**不写用户消息**：内部指令若落成"用户说过的话"，
+        #         会污染 `stated` 的证据链；只落模型回复。
+    assert len(paths) == 78, f"路径数变了（现在是 {len(paths)}）：请同步文档里的数字"
 
     stream = paths["/api/sessions/{session_id}/discuss/stream"]["post"]
     assert "200" in stream["responses"], "流式路由没有声明 200 响应"

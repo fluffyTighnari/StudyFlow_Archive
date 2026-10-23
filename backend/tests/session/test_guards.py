@@ -93,6 +93,8 @@ def test_only_chat_and_note_are_writable_in_every_state() -> None:
     assert always == {
         SessionOperation.ADD_CHAT,
         SessionOperation.ADD_NOTE,
+        # 动机是理解任务的背景，不是对已封存计划的改写；随时可改。
+        SessionOperation.UPDATE_MOTIVATION,
         # 状态转移本身不看状态（它看 TRANSITIONS 边表），因此也在这一列 ——
         # 它不是"内容写入"，不该和笔记混为一谈，所以下面单独再断言一次。
         SessionOperation.TRANSITION,
@@ -100,18 +102,16 @@ def test_only_chat_and_note_are_writable_in_every_state() -> None:
 
 
 def test_completed_refuses_content_writes_but_accepts_notes_and_chat() -> None:
-    """归档之后仍然关着的那部分政策**没有变**：内容写入一律拒绝。
+    """归档之后：计划/定义区封存，但聊天、笔记、动机仍然可写。
 
-    理由没变，而且它才是"拒绝"该有的样子：归档之后再改定义区/动机/计划，
-    「当时为什么这么总结」就再也核对不了了。
-    变的是 `ADD_CHAT` —— 说话不涨任何版本、也不被任何判定读取，
-    拦它挡掉的只是最正常的动作（"新会话第一句 hello"）。
+    动机不是对已封存计划的改写；它帮下一次讨论理解「当初为什么」。
     """
     assert is_writable(SessionState.COMPLETED, SessionOperation.ADD_NOTE)
     assert is_writable(SessionState.COMPLETED, SessionOperation.ADD_CHAT)
+    assert is_writable(SessionState.COMPLETED, SessionOperation.UPDATE_MOTIVATION)
     for operation in (
         SessionOperation.UPDATE_INPUT,
-        SessionOperation.UPDATE_MOTIVATION,
+        SessionOperation.UPDATE_SNAPSHOT,
         SessionOperation.UPDATE_SNAPSHOT,
         SessionOperation.CREATE_PLAN,
         SessionOperation.REVISE_PLAN,
@@ -178,8 +178,8 @@ def test_refusal_carries_state_operation_and_allowed_states() -> None:
     assert error.detail["state"] == "completed"
     assert error.detail["operation"] == "update_input"
     assert error.detail["allowed_states"] == ["active", "draft", "review"]
-    # 拒绝理由里要出现"为什么"，而不只是"不行"。
-    assert "原因：" in error.message
+    # 拒绝语只说“当前状态 + 操作 + 允许什么”，不再附一段原因。
+    assert "允许：" in error.message
     assert "update_input" in error.message
 
 
@@ -198,11 +198,10 @@ def test_transition_matrix_is_exactly_the_declared_edges() -> None:
             )
 
 
-def test_draft_cannot_jump_straight_to_completed() -> None:
-    """跳过执行与整理直接归档，等于没发生任何学习。"""
-    assert not can_transition(SessionState.DRAFT, SessionState.COMPLETED)
-    with pytest.raises(StateNotWritable):
-        assert_transition(SessionState.DRAFT, SessionState.COMPLETED)
+def test_draft_can_be_archived_directly() -> None:
+    """归档是用户自己的动作；规划期也可以直接归档，不再强制先激活。"""
+    assert can_transition(SessionState.DRAFT, SessionState.COMPLETED)
+    assert_transition(SessionState.DRAFT, SessionState.COMPLETED)
 
 
 def test_abandoned_is_terminal() -> None:

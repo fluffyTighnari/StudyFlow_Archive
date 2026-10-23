@@ -34,9 +34,11 @@ import pathlib
 import sys
 import threading
 import time
+from dataclasses import replace
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from app.agent.providers import PROVIDERS, get_provider  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.main import create_app  # noqa: E402
 
@@ -112,10 +114,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--llm",
-        choices=("ollama", "fake", "bridge", "openai"),
-        default="ollama",
-        help="fake = 确定性替身；bridge = 交给外部回答（子代理充当模型）；"
-        "openai = 商用 API（需要 MOUXUE_LLM_API_KEY）",
+        default=None,
+        help="服务商 id（deepseek / openai / moonshot / dashscope / zhipu / "
+        "siliconflow / openrouter / groq / ollama / lmstudio / vllm / custom），"
+        "或 fake / bridge。不传则读 .env 与环境变量；公司命名的密钥"
+        "（DEEPSEEK_API_KEY 等）也会被识别。",
     )
     parser.add_argument(
         "--bridge-dir",
@@ -125,9 +128,9 @@ def main() -> int:
     parser.add_argument(
         "--think",
         choices=("auto", "true", "false"),
-        default="false",
-        help="本地模型的思考开关。默认 false —— 实测 27B 在 think=false 时 5/5 次"
-        "都调工具，而不发这个字段是唯一跑飞 900s 超时的一格。"
+        default=None,
+        help="本地模型的思考开关。不传时：ollama 默认 false（实测 27B 在 false 时"
+        "5/5 次都调工具），其它服务商沿用 .env / 默认值。"
         "换成不认识 think 的模型（coder / phi3 / qwen2）时用 auto。",
     )
     parser.add_argument("--frame-delay", type=float, default=0.02,
@@ -168,39 +171,85 @@ def main() -> int:
         "外挂工具一律只读、名字带 `mcp__<名字>__` 前缀 —— 见 app/external/",
     )
     args = parser.parse_args()
+    known = {p.provider_id for p in PROVIDERS} | {"fake", "bridge"}
+    if args.llm and args.llm not in known:
+        parser.error(
+            f"不认识的 --llm={args.llm!r}。可选：{', '.join(sorted(known))}"
+        )
     if args.materials_dir is None and args.items_dir:
         args.materials_dir = str(
             pathlib.Path(args.items_dir).resolve().parent / "materials"
         )
 
-    settings = Settings(
-        database_url=f"sqlite+pysqlite:///{args.db}",
-        seed_on_startup=True,
-        # `bridge` 不是一家服务商（它需要一个目录参数），
-        # 所以先用 `fake` 起服务，启动之后再替换 —— 与替身同一条路。
-        # 顺带一句：`--llm openai` 之外，`--llm deepseek` / `moonshot` / `zhipu` 等都行
-        # （公司目录见 `app/agent/providers.py`，密钥从 `.env` 或环境变量读）。
-        llm_provider="fake" if args.llm in ("fake", "bridge") else args.llm,
-        **({"llm_model": args.model} if args.model else {}),
-        llm_think={"auto": None, "true": True, "false": False}[args.think],
-        **(
-            {
-                "items_dir": args.items_dir,
-                "materials_dir": args.materials_dir,
-            }
-            if args.items_dir
-            else {}
-        ),
-        # 外挂能力（默认全关）。`--mcp` 的 `;` 分隔在命令行上比 JSON 好写，
-        # 而 `load_servers` 那两种写法（JSON / `名字=命令`）都认 ——
-        # 这里只把分隔符换成换行，不引入第三种格式。
-        **(
-            {"web_search_provider": "local", "web_search_corpus": args.web_search_corpus}
-            if args.web_search_corpus
-            else {}
-        ),
-        **({"mcp_servers": args.mcp.replace(";", "\n")} if args.mcp else {}),
+    # **先读 .env，再按命令行覆盖。** 以前这里直接 `Settings(...)`，
+    # 等于把 `.env` 整个绕过：`.env` 里明明有 DEEPSEEK_API_KEY，
+    # 服务却仍按默认值去连本地 Ollama。用户看到的就是"模型根本没跑，
+    # 也没有错误提示"。
+    base = Settings.from_env()
+    overrides: dict[str, object] = {
+        "database_url": f"sqlite+pysqlite:///{args.db}",
+        "seed_on_startup": True,
+    }
+    if args.llm:
+        overrides["llm_provider"] = "fake" if args.llm in ("fake", "bridge") else args.llm
+    if args.model:
+        overrides["llm_model"] = args.model
+    if args.think is not None:
+        overrides["llm_think"] = {"auto": None, "true": True, "false": False}[args.think]
+    elif (overrides.get("llm_provider") or base.llm_provider) == "ollama":
+        # 保留本地 27B 的既有默认；其它服务商不替用户决定 think。
+        overrides["llm_think"] = False
+    if args.items_dir:
+        overrides["items_dir"] = args.items_dir
+        overrides["materials_dir"] = args.materials_dir
+    if args.web_search_corpus:
+        overrides["web_search_provider"] = "local"
+        overrides["web_search_corpus"] = args.web_search_corpus
+    if args.mcp:
+        overrides["mcp_servers"] = args.mcp.replace(";", "\n")
+    settings = replace(base, **overrides)
+
+    # 启动时把**实际会用的**配置说清楚（不打印密钥）。
+    # 没有这一行，"我配了但好像没生效"只能靠猜。
+    def effective_model() -> str:
+        if settings.llm_provider in ("openai", "ollama", "fake"):
+            return settings.llm_model
+        provider = get_provider(settings.llm_provider)
+        return (
+            provider.default_model
+            if settings.llm_model == Settings.llm_model
+            else settings.llm_model
+        )
+
+    def effective_base() -> str:
+        if settings.llm_provider in ("openai", "ollama", "fake"):
+            return settings.llm_base_url
+        provider = get_provider(settings.llm_provider)
+        return (
+            provider.base_url
+            if settings.llm_base_url == Settings.llm_base_url
+            else settings.llm_base_url
+        )
+
+    from app import config as app_config
+
+    loaded_keys = getattr(app_config, "_ENV_FILE_KEYS_LOADED", [])
+    print(
+        f"模型：{settings.llm_provider} / {effective_model()} @ {effective_base()}"
     )
+    print(
+        f"密钥：{'已提供' if settings.llm_api_key else '未提供'}"
+        f" · .env 新读到 {len(loaded_keys)} 个键（已在环境变量中的不重复计数）"
+    )
+    printed_provider = settings.llm_provider
+    if printed_provider not in ("fake", "bridge"):
+        meta = get_provider(printed_provider)
+        if meta.needs_key and not settings.llm_api_key:
+            print(
+                f"错误：provider={printed_provider} 需要密钥，但 .env / 环境变量里没有读到。"
+                f"请在 .env 里放 {meta.provider_id.upper()}_API_KEY（或 MOUXUE_LLM_API_KEY）。"
+            )
+            return 2
     app = create_app(settings)
 
     dist = pathlib.Path(args.dist).resolve()
@@ -216,12 +265,7 @@ def main() -> int:
     _serve_in_thread(app, host=args.host, port=args.port)
     print(f"API 已就绪：http://{args.host}:{args.port}")
 
-    if args.llm == "fake":
-        if not _install_scripted(
-            app, session_id=args.script_session, frame_delay=args.frame_delay
-        ):
-            return 2
-    elif args.llm == "bridge":
+    if args.llm == "bridge":
         from app.agent.bridge import SubagentBridgeClient
 
         bridge = SubagentBridgeClient(args.bridge_dir)
@@ -231,13 +275,16 @@ def main() -> int:
             f"{bridge.directory.resolve()}\\req-N.json，"
             "等另一端把 res-N.json 写回来。"
         )
-    elif args.llm == "openai":
-        if not settings.llm_api_key:
-            print("openai 模式需要 MOUXUE_LLM_API_KEY（密钥只从环境变量读）。")
+    elif settings.llm_provider == "fake":
+        if not _install_scripted(
+            app, session_id=args.script_session, frame_delay=args.frame_delay
+        ):
             return 2
-        print(f"用商用 API：{settings.llm_model} @ {settings.llm_base_url}")
     else:
-        print(f"用本地模型：{settings.llm_model} @ {settings.llm_base_url}")
+        print(
+            f"用模型：{effective_model()} @ {effective_base()}"
+            f"（{settings.llm_provider}）"
+        )
 
     # 主线程等在这里（uvicorn 在 daemon 线程里）。
     threading.Event().wait()

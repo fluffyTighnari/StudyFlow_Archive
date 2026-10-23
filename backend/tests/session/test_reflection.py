@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import MissingPrerequisite, StateNotWritable
 from app.session_domain import reads, reflection, writes
-from app.session_domain.enums import InputConfidence
+from app.session_domain.enums import InputConfidence, PlanStepStatus
 
 
 def _session_with_plan(db: Session, *, activate: bool = True):
@@ -65,9 +65,25 @@ def _session_with_plan(db: Session, *, activate: bool = True):
     return row
 
 
+def _finish_plan(db: Session, row) -> None:
+    """把计划所有步骤标完成 —— 新规则下复盘只对“做完了的”计划开放。"""
+    plan = reads.require_plan(db, row.session_id)
+    for step in reads.plan_steps(db, plan.plan_id):
+        current = reads.require_plan(db, row.session_id)
+        writes.mark_step(
+            db,
+            row.session_id,
+            step_id=step.step_id,
+            status=PlanStepStatus.DONE,
+            expected_version=current.version,
+        )
+    db.flush()
+
+
 def _reviewed(db: Session):
     """一个**已经复盘过**的会话（`review` 态 + 一条总结）。"""
     row = _session_with_plan(db)
+    _finish_plan(db, row)
     writes.transition(
         db, row.session_id, target="review", expected_version=row.version
     )
@@ -104,6 +120,7 @@ def test_a_session_without_a_summary_is_refused(session: Session) -> None:
     这张表管状态，那条管"有没有可对照的东西"。
     """
     row = _session_with_plan(session)
+    _finish_plan(session, row)
     writes.transition(session, row.session_id, target="review", expected_version=row.version)
     session.flush()
 
@@ -196,17 +213,7 @@ def test_the_guide_quotes_this_session(session: Session) -> None:
     固定四句话贴给任何会话都成立，因此也帮不上任何忙。
     """
     row = _session_with_plan(session)
-    step = reads.plan_steps(
-        session, reads.require_plan(session, row.session_id).plan_id
-    )[0]
-    writes.mark_step(
-        session,
-        row.session_id,
-        step_id=step.step_id,
-        status="done",
-        expected_version=reads.require_plan(session, row.session_id).version,
-    )
-    session.flush()
+    _finish_plan(session, row)
     writes.add_note(session, row.session_id, content="今天状态一般")
     writes.transition(session, row.session_id, target="review", expected_version=row.version)
     session.flush()
@@ -223,7 +230,7 @@ def test_the_guide_quotes_this_session(session: Session) -> None:
         "next_change",
     ]
     happened = " ".join(by_key["what_happened"].facts)
-    assert "2 步" in happened and "1 步" in happened, happened
+    assert "2 步" in happened and "完成" in happened, happened
     assert "通读第三章" in happened
     assert "今天状态一般" in " ".join(by_key["what_happened"].facts)
     # ② 对着**用户自己写的**完成判据问

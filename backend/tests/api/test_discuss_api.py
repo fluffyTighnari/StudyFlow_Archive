@@ -751,6 +751,9 @@ def test_the_response_declares_every_field_the_ui_needs(app, client) -> None:
         "summaries",
         "compact_count",
         "compactable",
+        # `limit_source` 区分"模型上报的窗口"与"按配置算的预算"。
+        # 两者都能量百分比，但界面不能把预算说成窗口。
+        "limit_source",
     }
     # 一次全新对话还没有读数 → `measured=False`，而不是"用量是 0"。
     # 这两件事相反：后者意味着"什么都没发"。

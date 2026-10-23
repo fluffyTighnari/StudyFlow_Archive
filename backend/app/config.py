@@ -51,6 +51,45 @@ def _think_flag(raw: str | None) -> bool | None:
     )
 
 
+#: 按公司命名的密钥/地址。`.env` 里只写 `DEEPSEEK_API_KEY` 也是合法配置 ——
+#: 但只在没有显式 `MOUXUE_LLM_PROVIDER` 时用来推断服务商；显式配置永远优先。
+_COMPANY_ENV: tuple[tuple[str, str, str], ...] = (
+    ("deepseek", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"),
+    ("openai", "OPENAI_API_KEY", "OPENAI_BASE_URL"),
+    ("moonshot", "MOONSHOT_API_KEY", ""),
+    ("dashscope", "DASHSCOPE_API_KEY", ""),
+    ("zhipu", "ZHIPUAI_API_KEY", ""),
+    ("siliconflow", "SILICONFLOW_API_KEY", ""),
+    ("openrouter", "OPENROUTER_API_KEY", ""),
+    ("groq", "GROQ_API_KEY", ""),
+)
+
+
+def _infer_company() -> tuple[str, str, str]:
+    """从公司命名的环境变量推断服务商（没有显式 provider 时）。
+
+    只按名字推断是安全的：`DEEPSEEK_API_KEY` 的存在本身就说明用户想用
+    DeepSeek；把他配好的东西读丢，表现出来是"我明明配了密钥，为什么说没有"。
+    """
+    for provider_id, key_name, base_name in _COMPANY_ENV:
+        key = os.environ.get(key_name, "").strip()
+        base = os.environ.get(base_name, "").strip() if base_name else ""
+        if key or base:
+            return provider_id, key, base
+    return "", "", ""
+
+
+def _company_env_for(provider_id: str) -> tuple[str, str]:
+    for provider, key_name, base_name in _COMPANY_ENV:
+        if provider != provider_id:
+            continue
+        return (
+            os.environ.get(key_name, "").strip(),
+            os.environ.get(base_name, "").strip() if base_name else "",
+        )
+    return "", ""
+
+
 @dataclass(frozen=True)
 class Settings:
     #: 种子数据是否在启动时加载。**默认开** —— 11 个 M1 变量与 16 条 M2 策略
@@ -152,6 +191,47 @@ class Settings:
             env_loaded = load_env()
         globals()["_ENV_FILE_KEYS_LOADED"] = sorted(env_loaded)
 
+        # provider / base / key 三件事一起决定：只按公司命名的 `.env`
+        # （DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL）也能直接跑，不必再改键名。
+        # 显式 `MOUXUE_LLM_PROVIDER` 永远优先；它写什么就用什么，即使推断会指向别家。
+        explicit_provider = os.environ.get("MOUXUE_LLM_PROVIDER", "").strip()
+        if explicit_provider:
+            inferred_provider, inferred_key, inferred_base = "", "", ""
+        else:
+            inferred_provider, inferred_key, inferred_base = _infer_company()
+        provider = explicit_provider or inferred_provider or cls.llm_provider
+        company_key, company_base = _company_env_for(provider)
+        api_key = (
+            os.environ.get("MOUXUE_LLM_API_KEY", "").strip()
+            or inferred_key
+            or company_key
+            or cls.llm_api_key
+        )
+        base_url = (
+            os.environ.get("MOUXUE_LLM_BASE_URL", "").strip()
+            or inferred_base
+            or company_base
+        )
+        # 解析到**服务商真正会用的默认值**，而不是把"Ollama 的默认地址/模型"
+        # 原样塞给 DeepSeek。`/api/llm/config` 与设置页显示的就是实际值；
+        # 否则界面会写 qwen3.6:27b，真正发出去的却是 deepseek-chat。
+        model = os.environ.get("MOUXUE_LLM_MODEL", "").strip()
+        if provider not in ("fake",):
+            try:
+                from app.agent.providers import get_provider
+
+                provider_meta = get_provider(provider)
+            except ValueError:
+                provider_meta = None
+            if not model:
+                model = provider_meta.default_model if provider_meta else cls.llm_model
+            if not base_url:
+                base_url = provider_meta.base_url if provider_meta else cls.llm_base_url
+        if not base_url:
+            base_url = cls.llm_base_url
+        if not model:
+            model = cls.llm_model
+
         origins = os.environ.get("MOUXUE_CORS_ORIGINS")
         return cls(
             database_url=default_database_url(),
@@ -162,10 +242,10 @@ class Settings:
                 if origins
                 else cls.cors_origins
             ),
-            llm_provider=os.environ.get("MOUXUE_LLM_PROVIDER", cls.llm_provider),
-            llm_model=os.environ.get("MOUXUE_LLM_MODEL", cls.llm_model),
-            llm_base_url=os.environ.get("MOUXUE_LLM_BASE_URL", cls.llm_base_url),
-            llm_api_key=os.environ.get("MOUXUE_LLM_API_KEY", cls.llm_api_key),
+            llm_provider=provider,
+            llm_model=model,
+            llm_base_url=base_url,
+            llm_api_key=api_key,
             llm_timeout=float(os.environ.get("MOUXUE_LLM_TIMEOUT", cls.llm_timeout)),
             llm_num_ctx=int(os.environ.get("MOUXUE_LLM_NUM_CTX", cls.llm_num_ctx)),
             llm_think=_think_flag(os.environ.get("MOUXUE_LLM_THINK")),

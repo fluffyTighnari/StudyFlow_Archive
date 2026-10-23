@@ -260,6 +260,27 @@ def test_client_accepts_arguments_serialized_as_a_json_string() -> None:
     assert result.tool_calls[0].arguments == {"stage": "练习"}
 
 
+def test_client_repairs_html_escaped_and_concatenated_arguments() -> None:
+    """真实故障：`{&quot;scope&quot;:&quot;all&quot;...}{}` 不该变成一步死循环。"""
+    transport = RecordingTransport(
+        [
+            _ollama_reply(
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "retrieve_folder",
+                            "arguments": '{&quot;scope&quot;: &quot;all&quot;, '
+                            '&quot;query&quot;: &quot;规划 决策&quot;}{}',
+                        }
+                    }
+                ]
+            )
+        ]
+    )
+    result = OllamaClient(model="m", transport=transport).chat([])
+    assert result.tool_calls[0].arguments == {"scope": "all", "query": "规划 决策"}
+
+
 def test_client_keeps_content_alongside_tool_calls() -> None:
     """真实模型常先说话再调工具。丢掉 content 会让聊天记录看起来像它没开口。"""
     transport = RecordingTransport(

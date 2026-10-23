@@ -33,7 +33,7 @@ from app.global_domain.models import (
 )
 from app.router import SubmitRequest, UpdateIntent
 from app.session_domain import reads, writes
-from app.session_domain.enums import StageItemType
+from app.session_domain.enums import PlanStepStatus, StageItemType
 from app.session_domain.models import StateSnapshot
 
 from tests.session.test_lifecycle import _live_session
@@ -240,6 +240,17 @@ def test_a_whole_session_lifecycle_leaves_no_trace_in_the_authoritative_domain(
     session.flush()
     writes.complete_milestone(session, row.session_id, milestone_id=milestone.milestone_id)
     writes.write_summary(session, row.session_id, content="节奏找到了")
+    session.flush()
+    plan = reads.require_plan(session, row.session_id)
+    for step in reads.plan_steps(session, plan.plan_id):
+        current = reads.require_plan(session, row.session_id)
+        writes.mark_step(
+            session,
+            row.session_id,
+            step_id=step.step_id,
+            status=PlanStepStatus.DONE,
+            expected_version=current.version,
+        )
     session.flush()
     writes.transition(
         session, row.session_id, target="review", expected_version=row.version

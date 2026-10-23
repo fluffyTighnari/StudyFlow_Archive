@@ -14,7 +14,7 @@
  */
 
 /** `serveui` 把前端目录当静态根，因此 API 与页面同源。 */
-const BASE = window.MOUXUE_API_BASE || '';
+const BASE = window.STUDYFLOW_API_BASE || window.MOUXUE_API_BASE || '';
 
 export class ApiError extends Error {
   constructor(message, status, body) {
@@ -31,17 +31,26 @@ export class ApiError extends Error {
  * FastAPI 的三种形状：`{detail: "..."}`、`{detail: [{loc, msg}]}`（校验失败）、
  * `{code, message}`（本项目自己的错误封套）。第三种优先 ——
  * 它带着给用户看的那句话，而前两种是给开发者看的。
+ *
+ * ★ 一律**只保留第一句**：错误提示不是说明文档，长解释会盖住"哪里错了"。
  */
 function errorMessage(body, status) {
+  const clean = (text) => {
+    const flat = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!flat) return '';
+    const sentence = flat.split(/(?<=[。！？.!?])\s*/)[0];
+    const first = sentence || flat;
+    return first.length > 120 ? `${first.slice(0, 120)}…` : first;
+  };
   if (body && typeof body === 'object') {
-    if (typeof body.message === 'string' && body.message) return body.message;
-    if (typeof body.detail === 'string' && body.detail) return body.detail;
+    if (typeof body.message === 'string' && body.message) return clean(body.message);
+    if (typeof body.detail === 'string' && body.detail) return clean(body.detail);
     if (Array.isArray(body.detail) && body.detail.length) {
       const first = body.detail[0] || {};
       const where = Array.isArray(first.loc) ? first.loc.slice(1).join('.') : '';
-      return where ? `${where}：${first.msg || '不合法'}` : first.msg || '请求不合法';
+      return clean(where ? `${where}：${first.msg || '不合法'}` : first.msg || '请求不合法');
     }
-    if (typeof body.error === 'string' && body.error) return body.error;
+    if (typeof body.error === 'string' && body.error) return clean(body.error);
   }
   return `请求失败（HTTP ${status}）`;
 }
@@ -72,6 +81,27 @@ const patch = (path, body) => call('PATCH', path, body);
 const put = (path, body) => call('PUT', path, body);
 const del = (path) => call('DELETE', path);
 
+/**
+ * 上传一个文件：**请求体就是文件字节**。
+ *
+ * 不能走 `call()` —— 那会把 `body` 做 `JSON.stringify`，发出去的是一个
+ * 引号包起来的空对象。这里让浏览器自己把 `File` 当成字节流发出去。
+ */
+async function rawUpload(path, file) {
+  const res = await fetch(BASE + path, { method: 'POST', body: file });
+  const text = await res.text();
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = text;
+    }
+  }
+  if (!res.ok) throw new ApiError(errorMessage(data, res.status), res.status, data);
+  return data;
+}
+
 const seg = (value) => encodeURIComponent(value);
 
 export const api = {
@@ -97,6 +127,13 @@ export const api = {
 
   // ── 一个会话的全部状态（对话 / 计划 / 动机 / 上下文）──────────────
   state: (id) => get(`/api/sessions/${seg(id)}/state`),
+  /** 上下文用量（窗口上限来自此刻生效的模型；与会话数据分开读）。 */
+  contextMeter: (id) => get(`/api/sessions/${seg(id)}/context`),
+  /** 归档后自动复盘：模型尝试把会话沉淀进全局认知，返回待确认提案。 */
+  archiveReview: (id) => post(`/api/sessions/${seg(id)}/archive-review`, {}),
+  /** 对一条提案逐条裁决（只传属于它的 intent_id）。 */
+  resolveProposal: (proposalId, decisions) =>
+    post(`/api/proposals/${seg(proposalId)}/resolve`, { decisions }),
 
   // ── 计划 ──────────────────────────────────────────────────────────
   markStep: (sessionId, stepId, status, expectedVersion) =>
@@ -135,11 +172,40 @@ export const api = {
   llmCreateProfile: (body) => post('/api/llm/profiles', body),
   llmUpdateProfile: (id, body) => patch(`/api/llm/profiles/${seg(id)}`, body),
   llmDeleteProfile: (id) => del(`/api/llm/profiles/${seg(id)}`),
-  llmActivateProfile: (id) => post(`/api/llm/profiles/${seg(id)}/activate`, {}),
+  llmActivateProfile: (id, model = null) =>
+    post(`/api/llm/profiles/${seg(id)}/activate`, model ? { model } : {}),
   /** **POST 不是 GET**：它会拿密钥去请求外部服务（见后端 docstring）。 */
   llmListModels: (id) => post(`/api/llm/profiles/${seg(id)}/models`, {}),
   /** 真的发一次请求。清单里没有 ≠ 不能用，但"探活"必须是真动作。 */
   llmProbe: (id) => post(`/api/llm/profiles/${seg(id)}/probe`, {}),
+
+  // ── 侧记：常驻通用模型（与会话无关，没有状态机）────────────────────
+  sidebarState: () => get('/api/sidebar/state'),
+  sidebarContext: () => get('/api/sidebar/context'),
+  sidebarDiscuss: (message) => post('/api/sidebar/discuss', { message }),
+  clearSidebar: () => del('/api/sidebar/messages'),
+
+  // ── 会话资料（附件）───────────────────────────────────────────────
+  //
+  // 上传是**原始请求体**：`body: file`，文件名走查询参数。不是 multipart，
+  // 后端没有 `python-multipart`（见 `app/api/attachments.py` 的说明）。
+  attachments: (sessionId) => get(`/api/sessions/${seg(sessionId)}/attachments`),
+  uploadAttachment: (sessionId, file) =>
+    rawUpload(
+      `/api/sessions/${seg(sessionId)}/attachments?filename=${encodeURIComponent(file.name)}`,
+      file,
+    ),
+  attachmentText: (sessionId, attachmentId) =>
+    get(`/api/sessions/${seg(sessionId)}/attachments/${seg(attachmentId)}`),
+  deleteAttachment: (sessionId, attachmentId) =>
+    del(`/api/sessions/${seg(sessionId)}/attachments/${seg(attachmentId)}`),
+
+  // ── 全局认知（只读概览；写入仍走提案/直写端点）──────────────────────
+  preferences: () => get('/api/preferences'),
+  m1Variables: () => get('/api/m1/variables'),
+  evidence: () => get('/api/evidence'),
+  hypotheses: () => get('/api/hypotheses'),
+  proposals: () => get('/api/proposals'),
 };
 
 /**

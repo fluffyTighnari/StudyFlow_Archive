@@ -27,6 +27,7 @@ httpx 目前只在 dev 依赖里（starlette 的 TestClient 要用），
 
 from __future__ import annotations
 
+import html
 import json
 import urllib.error
 import urllib.request
@@ -846,6 +847,63 @@ class OllamaClient:
 
 
 
+def _parse_tool_arguments(name: str, raw: str) -> dict[str, Any]:
+    """解析工具参数，**容忍模型实际吐出来的两种脏形状**。
+
+    真实观测（P24）：`retrieve_folder` 的参数到达时是
+    `{"scope":"all","query":"规划 决策"}{}` 的 HTML 转义版本：
+    `&quot;` 包着引号，末尾还多一个空对象。直接 `json.loads` 必然失败，
+    而模型会一遍遍重试同一个形状。
+
+    处理顺序：
+    1. 去掉 markdown 围栏；
+    2. 反转义 HTML 实体（最多两轮，兼容 `&amp;quot;`）；
+    3. 先按普通 JSON 解析；
+    4. 失败则用 `raw_decode` 逐个读出拼接的 JSON 对象并合并（后者覆盖前者）。
+       这不会掩盖真正的坏 JSON —— 读不出对象时仍然抛原来的错误。
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.removeprefix("```json").removeprefix("```").strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    # 模型偶尔把已经转义过一次的文本再转义一次。
+    for _ in range(2):
+        decoded = html.unescape(text)
+        if decoded == text:
+            break
+        text = decoded
+    if not text:
+        return {}
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        values: list[Any] = []
+        index = 0
+        try:
+            while index < len(text):
+                while index < len(text) and text[index].isspace():
+                    index += 1
+                if index >= len(text):
+                    break
+                value, index = decoder.raw_decode(text, index)
+                values.append(value)
+        except json.JSONDecodeError as exc:
+            raise LLMError(
+                f"工具 {name} 的参数不是合法 JSON：{raw[:200]}"
+            ) from exc
+        if not values or not all(isinstance(item, dict) for item in values):
+            raise LLMError(f"工具 {name} 的参数不是合法 JSON：{raw[:200]}")
+        merged: dict[str, Any] = {}
+        for item in values:
+            merged.update(item)
+        return merged
+    if not isinstance(value, dict):
+        raise LLMError(f"工具 {name} 的参数不是对象（{type(value).__name__}）")
+    return value
+
+
 def _tool_call_from(position: int, item: Any) -> ToolCall:
     """把一条工具调用解析成 `ToolCall`。**两个客户端共用这一份。**
 
@@ -867,14 +925,7 @@ def _tool_call_from(position: int, item: Any) -> ToolCall:
     if arguments is None:
         arguments = {}
     elif isinstance(arguments, str):
-        # OpenAI 兼容服务把参数序列化成字符串（**并且会跨帧分片**，
-        # 分片的拼接由调用方负责，这里只负责解析拼好的那一份）。
-        try:
-            arguments = json.loads(arguments or "{}")
-        except json.JSONDecodeError as exc:
-            raise LLMError(
-                f"工具 {name} 的参数不是合法 JSON：{arguments[:200]}"
-            ) from exc
+        arguments = _parse_tool_arguments(name, arguments)
     if not isinstance(arguments, dict):
         raise LLMError(f"工具 {name} 的参数不是对象（{type(arguments).__name__}）")
 
@@ -1159,7 +1210,12 @@ class OpenAICompatClient:
                     continue
                 function = item.get("function")
                 function = function if isinstance(function, dict) else {}
-                index = function.get("index")
+                # OpenAI 规范把 index 放在 tool_call 这一层（不是 function 里）。
+                # 只读 function.index 会让多工具的一帧全部落到 offset 0，
+                # 参数被拼成 `{...}{...}`。
+                index = item.get("index")
+                if not isinstance(index, int):
+                    index = function.get("index")
                 if not isinstance(index, int):
                     index = offset
                 slot = partial.setdefault(index, {"id": "", "name": "", "arguments": ""})

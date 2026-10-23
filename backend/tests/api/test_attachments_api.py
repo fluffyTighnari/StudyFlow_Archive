@@ -284,11 +284,11 @@ def test_list_endpoint_returns_no_text_field(client: TestClient) -> None:
 @pytest.mark.parametrize(
     ("filename", "raw", "expect_in_message"),
     [
-        ("报告.doc", b"x" * 10, "另存为"),
-        ("数据.xlsx", b"x" * 10, "只收文本类文件"),
-        ("照片.txt", b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4, "二进制"),
-        ("空.md", b"   ", "空文件"),
-        ("假的.docx", b"not a zip", ".docx"),
+        ("报告.doc", b"x" * 10, "不支持这种文件"),
+        ("数据.xlsx", b"x" * 10, "不支持这种文件"),
+        ("照片.txt", b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4, "不支持这种文件"),
+        ("空.md", b"   ", "这个文件是空的"),
+        ("假的.docx", b"not a zip", "不支持这种文件"),
     ],
 )
 def test_rejections_are_422_with_a_next_step(
@@ -311,7 +311,7 @@ def test_oversized_upload_is_rejected_by_the_parser(client: TestClient) -> None:
 
     response = _upload(client, "巨大.txt", b"a" * (MAX_BYTES + 1))
     assert response.status_code == 422
-    assert "上限" in response.json()["message"]
+    assert "不能超过" in response.json()["message"]
 
 
 def test_non_utf8_non_gbk_is_rejected_with_the_encoding_hint(client: TestClient) -> None:

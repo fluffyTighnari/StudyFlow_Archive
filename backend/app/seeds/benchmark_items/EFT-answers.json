@@ -1,0 +1,1276 @@
+{
+  "note": "EFT 答案表。**只在服务端**，不随前端下发（下发即等于把答案交给浏览器）。",
+  "canvas": {
+    "width": 1600,
+    "height": 1200
+  },
+  "tolerance_px": 8,
+  "items": [
+    {
+      "item_id": "EFT-00",
+      "note": "练习图：目标用灰线画出，让人先明白「藏」是什么意思；不计分",
+      "images": {
+        "complex": "assets/items/EFT/EFT-00/EFT-00-A.png",
+        "target": "assets/items/EFT/EFT-00/EFT-00-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-01",
+      "shape": "square",
+      "difficulty": "易",
+      "rotation_deg": 0,
+      "bbox": [
+        1004,
+        322,
+        177,
+        177
+      ],
+      "polyline": [
+        [
+          1004.2,
+          321.6
+        ],
+        [
+          1180.9,
+          321.6
+        ],
+        [
+          1180.9,
+          498.3
+        ],
+        [
+          1004.2,
+          498.3
+        ],
+        [
+          1004.2,
+          321.6
+        ]
+      ],
+      "cut_edges": 1,
+      "crossings": [
+        {
+          "edge": 1,
+          "at": [
+            1180.9,
+            437.6
+          ],
+          "line": [
+            [
+              1532.3,
+              640.5
+            ],
+            [
+              829.5,
+              234.7
+            ]
+          ],
+          "angle_deg": 210.0
+        }
+      ],
+      "strokes": 30,
+      "images": {
+        "complex": "assets/items/EFT/EFT-01/EFT-01-A.png",
+        "target": "assets/items/EFT/EFT-01/EFT-01-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-02",
+      "shape": "triangle",
+      "difficulty": "易",
+      "rotation_deg": 0,
+      "bbox": [
+        980,
+        621,
+        199,
+        172
+      ],
+      "polyline": [
+        [
+          1079.1,
+          621.0
+        ],
+        [
+          1178.7,
+          792.7
+        ],
+        [
+          979.5,
+          792.7
+        ],
+        [
+          1079.1,
+          621.0
+        ]
+      ],
+      "cut_edges": 1,
+      "crossings": [
+        {
+          "edge": 2,
+          "at": [
+            1048.7,
+            673.4
+          ],
+          "line": [
+            [
+              969.3,
+              374.5
+            ],
+            [
+              1128.2,
+              972.3
+            ]
+          ],
+          "angle_deg": 75.1
+        }
+      ],
+      "strokes": 30,
+      "images": {
+        "complex": "assets/items/EFT/EFT-02/EFT-02-A.png",
+        "target": "assets/items/EFT/EFT-02/EFT-02-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-03",
+      "shape": "trapezoid",
+      "difficulty": "易",
+      "rotation_deg": 0,
+      "bbox": [
+        561,
+        519,
+        284,
+        199
+      ],
+      "polyline": [
+        [
+          561.0,
+          718.2
+        ],
+        [
+          632.1,
+          519.0
+        ],
+        [
+          774.4,
+          519.0
+        ],
+        [
+          845.5,
+          718.2
+        ],
+        [
+          561.0,
+          718.2
+        ]
+      ],
+      "cut_edges": 1,
+      "crossings": [
+        {
+          "edge": 0,
+          "at": [
+            611.3,
+            577.2
+          ],
+          "line": [
+            [
+              345.4,
+              264.2
+            ],
+            [
+              877.3,
+              890.2
+            ]
+          ],
+          "angle_deg": 49.7
+        }
+      ],
+      "strokes": 30,
+      "images": {
+        "complex": "assets/items/EFT/EFT-03/EFT-03-A.png",
+        "target": "assets/items/EFT/EFT-03/EFT-03-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-04",
+      "shape": "chevron",
+      "difficulty": "中",
+      "rotation_deg": 90,
+      "bbox": [
+        549,
+        702,
+        252,
+        214
+      ],
+      "polyline": [
+        [
+          800.3,
+          808.5
+        ],
+        [
+          674.5,
+          915.4
+        ],
+        [
+          548.7,
+          808.5
+        ],
+        [
+          674.5,
+          701.6
+        ],
+        [
+          800.3,
+          808.5
+        ]
+      ],
+      "cut_edges": 2,
+      "crossings": [
+        {
+          "edge": 0,
+          "at": [
+            756.1,
+            846.0
+          ],
+          "line": [
+            [
+              732.6,
+              1135.9
+            ],
+            [
+              779.6,
+              556.1
+            ]
+          ],
+          "angle_deg": 274.6
+        },
+        {
+          "edge": 3,
+          "at": [
+            758.6,
+            773.1
+          ],
+          "line": [
+            [
+              1180.2,
+              622.7
+            ],
+            [
+              337.0,
+              923.5
+            ]
+          ],
+          "angle_deg": 160.4
+        }
+      ],
+      "strokes": 36,
+      "images": {
+        "complex": "assets/items/EFT/EFT-04/EFT-04-A.png",
+        "target": "assets/items/EFT/EFT-04/EFT-04-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-05",
+      "shape": "pentagon",
+      "difficulty": "中",
+      "rotation_deg": 270,
+      "bbox": [
+        972,
+        268,
+        213,
+        224
+      ],
+      "polyline": [
+        [
+          972.4,
+          380.2
+        ],
+        [
+          1053.7,
+          268.2
+        ],
+        [
+          1185.7,
+          310.7
+        ],
+        [
+          1185.7,
+          449.7
+        ],
+        [
+          1053.7,
+          492.1
+        ],
+        [
+          972.4,
+          380.2
+        ]
+      ],
+      "cut_edges": 2,
+      "crossings": [
+        {
+          "edge": 3,
+          "at": [
+            1087.6,
+            481.2
+          ],
+          "line": [
+            [
+              1191.9,
+              805.6
+            ],
+            [
+              983.3,
+              156.8
+            ]
+          ],
+          "angle_deg": 252.2
+        },
+        {
+          "edge": 0,
+          "at": [
+            1017.2,
+            318.5
+          ],
+          "line": [
+            [
+              768.6,
+              357.9
+            ],
+            [
+              1265.8,
+              279.1
+            ]
+          ],
+          "angle_deg": 351.0
+        }
+      ],
+      "strokes": 36,
+      "images": {
+        "complex": "assets/items/EFT/EFT-05/EFT-05-A.png",
+        "target": "assets/items/EFT/EFT-05/EFT-05-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-06",
+      "shape": "parallelogram",
+      "difficulty": "中",
+      "rotation_deg": 270,
+      "bbox": [
+        587,
+        576,
+        184,
+        236
+      ],
+      "polyline": [
+        [
+          770.7,
+          812.2
+        ],
+        [
+          586.7,
+          720.2
+        ],
+        [
+          586.7,
+          575.7
+        ],
+        [
+          770.7,
+          667.7
+        ],
+        [
+          770.7,
+          812.2
+        ]
+      ],
+      "cut_edges": 2,
+      "crossings": [
+        {
+          "edge": 3,
+          "at": [
+            770.7,
+            716.1
+          ],
+          "line": [
+            [
+              982.6,
+              838.4
+            ],
+            [
+              558.7,
+              593.7
+            ]
+          ],
+          "angle_deg": 210.0
+        },
+        {
+          "edge": 2,
+          "at": [
+            707.4,
+            636.0
+          ],
+          "line": [
+            [
+              947.3,
+              477.6
+            ],
+            [
+              467.4,
+              794.4
+            ]
+          ],
+          "angle_deg": 146.6
+        }
+      ],
+      "strokes": 36,
+      "images": {
+        "complex": "assets/items/EFT/EFT-06/EFT-06-A.png",
+        "target": "assets/items/EFT/EFT-06/EFT-06-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-07",
+      "shape": "lshape",
+      "difficulty": "中",
+      "rotation_deg": 0,
+      "bbox": [
+        882,
+        305,
+        190,
+        190
+      ],
+      "polyline": [
+        [
+          881.7,
+          304.6
+        ],
+        [
+          976.7,
+          304.6
+        ],
+        [
+          976.7,
+          423.3
+        ],
+        [
+          1071.6,
+          423.3
+        ],
+        [
+          1071.6,
+          494.5
+        ],
+        [
+          881.7,
+          494.5
+        ],
+        [
+          881.7,
+          304.6
+        ]
+      ],
+      "cut_edges": 2,
+      "crossings": [
+        {
+          "edge": 4,
+          "at": [
+            943.6,
+            494.5
+          ],
+          "line": [
+            [
+              640.1,
+              798.0
+            ],
+            [
+              1247.2,
+              191.0
+            ]
+          ],
+          "angle_deg": 315.0
+        },
+        {
+          "edge": 0,
+          "at": [
+            916.9,
+            304.6
+          ],
+          "line": [
+            [
+              793.2,
+              90.3
+            ],
+            [
+              1040.7,
+              519.0
+            ]
+          ],
+          "angle_deg": 60.0
+        }
+      ],
+      "strokes": 36,
+      "images": {
+        "complex": "assets/items/EFT/EFT-07/EFT-07-A.png",
+        "target": "assets/items/EFT/EFT-07/EFT-07-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-08",
+      "shape": "hexagon",
+      "difficulty": "中",
+      "rotation_deg": 270,
+      "bbox": [
+        784,
+        279,
+        239,
+        208
+      ],
+      "polyline": [
+        [
+          784.4,
+          383.0
+        ],
+        [
+          844.2,
+          279.0
+        ],
+        [
+          963.8,
+          279.0
+        ],
+        [
+          1023.6,
+          383.0
+        ],
+        [
+          963.8,
+          487.1
+        ],
+        [
+          844.2,
+          487.1
+        ],
+        [
+          784.4,
+          383.0
+        ]
+      ],
+      "cut_edges": 2,
+      "crossings": [
+        {
+          "edge": 0,
+          "at": [
+            802.6,
+            351.4
+          ],
+          "line": [
+            [
+              739.5,
+              117.9
+            ],
+            [
+              865.6,
+              584.9
+            ]
+          ],
+          "angle_deg": 74.9
+        },
+        {
+          "edge": 1,
+          "at": [
+            921.2,
+            279.0
+          ],
+          "line": [
+            [
+              1144.9,
+              -108.4
+            ],
+            [
+              697.6,
+              666.3
+            ]
+          ],
+          "angle_deg": 120.0
+        }
+      ],
+      "strokes": 36,
+      "images": {
+        "complex": "assets/items/EFT/EFT-08/EFT-08-A.png",
+        "target": "assets/items/EFT/EFT-08/EFT-08-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-09",
+      "shape": "zshape",
+      "difficulty": "中",
+      "rotation_deg": 90,
+      "bbox": [
+        416,
+        626,
+        191,
+        191
+      ],
+      "polyline": [
+        [
+          606.7,
+          626.1
+        ],
+        [
+          606.7,
+          781.4
+        ],
+        [
+          535.0,
+          781.4
+        ],
+        [
+          535.0,
+          817.2
+        ],
+        [
+          415.6,
+          661.9
+        ],
+        [
+          487.2,
+          626.1
+        ],
+        [
+          606.7,
+          626.1
+        ]
+      ],
+      "cut_edges": 2,
+      "crossings": [
+        {
+          "edge": 3,
+          "at": [
+            500.1,
+            771.8
+          ],
+          "line": [
+            [
+              458.6,
+              1090.3
+            ],
+            [
+              541.7,
+              453.4
+            ]
+          ],
+          "angle_deg": 277.4
+        },
+        {
+          "edge": 4,
+          "at": [
+            464.5,
+            637.5
+          ],
+          "line": [
+            [
+              485.7,
+              284.3
+            ],
+            [
+              443.3,
+              990.7
+            ]
+          ],
+          "angle_deg": 93.4
+        }
+      ],
+      "strokes": 36,
+      "images": {
+        "complex": "assets/items/EFT/EFT-09/EFT-09-A.png",
+        "target": "assets/items/EFT/EFT-09/EFT-09-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-10",
+      "shape": "arrow",
+      "difficulty": "中",
+      "rotation_deg": 0,
+      "bbox": [
+        982,
+        589,
+        204,
+        255
+      ],
+      "polyline": [
+        [
+          1084.3,
+          588.8
+        ],
+        [
+          1186.5,
+          703.7
+        ],
+        [
+          1122.7,
+          703.7
+        ],
+        [
+          1122.7,
+          844.2
+        ],
+        [
+          1046.0,
+          844.2
+        ],
+        [
+          1046.0,
+          703.7
+        ],
+        [
+          982.2,
+          703.7
+        ],
+        [
+          1084.3,
+          588.8
+        ]
+      ],
+      "cut_edges": 2,
+      "crossings": [
+        {
+          "edge": 1,
+          "at": [
+            1164.1,
+            703.7
+          ],
+          "line": [
+            [
+              1323.4,
+              979.5
+            ],
+            [
+              1004.8,
+              427.9
+            ]
+          ],
+          "angle_deg": 240.0
+        },
+        {
+          "edge": 3,
+          "at": [
+            1095.5,
+            844.2
+          ],
+          "line": [
+            [
+              953.8,
+              1089.6
+            ],
+            [
+              1237.2,
+              598.7
+            ]
+          ],
+          "angle_deg": 300.0
+        }
+      ],
+      "strokes": 36,
+      "images": {
+        "complex": "assets/items/EFT/EFT-10/EFT-10-A.png",
+        "target": "assets/items/EFT/EFT-10/EFT-10-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-11",
+      "shape": "triangle",
+      "difficulty": "难",
+      "rotation_deg": 180,
+      "bbox": [
+        787,
+        429,
+        225,
+        194
+      ],
+      "polyline": [
+        [
+          899.6,
+          622.6
+        ],
+        [
+          787.0,
+          428.5
+        ],
+        [
+          1012.1,
+          428.5
+        ],
+        [
+          899.6,
+          622.6
+        ]
+      ],
+      "cut_edges": 3,
+      "crossings": [
+        {
+          "edge": 0,
+          "at": [
+            831.1,
+            504.5
+          ],
+          "line": [
+            [
+              665.7,
+              792.3
+            ],
+            [
+              996.5,
+              216.7
+            ]
+          ],
+          "angle_deg": 299.9
+        },
+        {
+          "edge": 2,
+          "at": [
+            970.9,
+            499.5
+          ],
+          "line": [
+            [
+              1061.0,
+              838.3
+            ],
+            [
+              880.9,
+              160.8
+            ]
+          ],
+          "angle_deg": 255.1
+        },
+        {
+          "edge": 1,
+          "at": [
+            886.4,
+            428.5
+          ],
+          "line": [
+            [
+              886.4,
+              97.5
+            ],
+            [
+              886.4,
+              759.5
+            ]
+          ],
+          "angle_deg": 90.0
+        }
+      ],
+      "strokes": 40,
+      "images": {
+        "complex": "assets/items/EFT/EFT-11/EFT-11-A.png",
+        "target": "assets/items/EFT/EFT-11/EFT-11-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-12",
+      "shape": "square",
+      "difficulty": "难",
+      "rotation_deg": 180,
+      "bbox": [
+        745,
+        603,
+        188,
+        188
+      ],
+      "polyline": [
+        [
+          932.9,
+          790.3
+        ],
+        [
+          745.1,
+          790.3
+        ],
+        [
+          745.1,
+          602.5
+        ],
+        [
+          932.9,
+          602.5
+        ],
+        [
+          932.9,
+          790.3
+        ]
+      ],
+      "cut_edges": 3,
+      "crossings": [
+        {
+          "edge": 3,
+          "at": [
+            932.9,
+            718.2
+          ],
+          "line": [
+            [
+              1167.9,
+              718.2
+            ],
+            [
+              697.9,
+              718.2
+            ]
+          ],
+          "angle_deg": 180.0
+        },
+        {
+          "edge": 2,
+          "at": [
+            813.6,
+            602.5
+          ],
+          "line": [
+            [
+              985.3,
+              305.0
+            ],
+            [
+              641.8,
+              900.0
+            ]
+          ],
+          "angle_deg": 120.0
+        },
+        {
+          "edge": 0,
+          "at": [
+            821.1,
+            790.3
+          ],
+          "line": [
+            [
+              1028.8,
+              1150.1
+            ],
+            [
+              613.3,
+              430.4
+            ]
+          ],
+          "angle_deg": 240.0
+        }
+      ],
+      "strokes": 40,
+      "images": {
+        "complex": "assets/items/EFT/EFT-12/EFT-12-A.png",
+        "target": "assets/items/EFT/EFT-12/EFT-12-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-13",
+      "shape": "chevron",
+      "difficulty": "难",
+      "rotation_deg": 180,
+      "bbox": [
+        896,
+        659,
+        244,
+        288
+      ],
+      "polyline": [
+        [
+          1018.1,
+          947.1
+        ],
+        [
+          895.9,
+          803.2
+        ],
+        [
+          1018.1,
+          659.4
+        ],
+        [
+          1140.4,
+          803.2
+        ],
+        [
+          1018.1,
+          947.1
+        ]
+      ],
+      "cut_edges": 3,
+      "crossings": [
+        {
+          "edge": 3,
+          "at": [
+            1107.8,
+            841.5
+          ],
+          "line": [
+            [
+              1352.2,
+              821.7
+            ],
+            [
+              863.5,
+              861.3
+            ]
+          ],
+          "angle_deg": 175.4
+        },
+        {
+          "edge": 1,
+          "at": [
+            960.5,
+            727.2
+          ],
+          "line": [
+            [
+              849.4,
+              415.8
+            ],
+            [
+              1071.6,
+              1038.6
+            ]
+          ],
+          "angle_deg": 70.4
+        },
+        {
+          "edge": 0,
+          "at": [
+            956.7,
+            874.8
+          ],
+          "line": [
+            [
+              582.7,
+              844.5
+            ],
+            [
+              1330.7,
+              905.1
+            ]
+          ],
+          "angle_deg": 4.6
+        }
+      ],
+      "strokes": 40,
+      "images": {
+        "complex": "assets/items/EFT/EFT-13/EFT-13-A.png",
+        "target": "assets/items/EFT/EFT-13/EFT-13-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-14",
+      "shape": "hexagon",
+      "difficulty": "难",
+      "rotation_deg": 270,
+      "bbox": [
+        737,
+        286,
+        221,
+        192
+      ],
+      "polyline": [
+        [
+          737.0,
+          381.7
+        ],
+        [
+          792.2,
+          285.7
+        ],
+        [
+          902.5,
+          285.7
+        ],
+        [
+          957.6,
+          381.7
+        ],
+        [
+          902.5,
+          477.7
+        ],
+        [
+          792.2,
+          477.7
+        ],
+        [
+          737.0,
+          381.7
+        ]
+      ],
+      "cut_edges": 3,
+      "crossings": [
+        {
+          "edge": 5,
+          "at": [
+            754.8,
+            412.5
+          ],
+          "line": [
+            [
+              569.0,
+              732.8
+            ],
+            [
+              940.5,
+              92.3
+            ]
+          ],
+          "angle_deg": 300.1
+        },
+        {
+          "edge": 1,
+          "at": [
+            822.5,
+            285.7
+          ],
+          "line": [
+            [
+              1085.4,
+              22.9
+            ],
+            [
+              559.7,
+              548.6
+            ]
+          ],
+          "angle_deg": 135.0
+        },
+        {
+          "edge": 2,
+          "at": [
+            918.6,
+            313.7
+          ],
+          "line": [
+            [
+              1218.1,
+              141.6
+            ],
+            [
+              619.1,
+              485.9
+            ]
+          ],
+          "angle_deg": 150.1
+        }
+      ],
+      "strokes": 40,
+      "images": {
+        "complex": "assets/items/EFT/EFT-14/EFT-14-A.png",
+        "target": "assets/items/EFT/EFT-14/EFT-14-B.png"
+      }
+    },
+    {
+      "item_id": "EFT-15",
+      "shape": "arrow",
+      "difficulty": "难",
+      "rotation_deg": 90,
+      "bbox": [
+        706,
+        438,
+        245,
+        196
+      ],
+      "polyline": [
+        [
+          951.3,
+          535.9
+        ],
+        [
+          841.0,
+          633.9
+        ],
+        [
+          841.0,
+          572.7
+        ],
+        [
+          706.2,
+          572.7
+        ],
+        [
+          706.2,
+          499.2
+        ],
+        [
+          841.0,
+          499.2
+        ],
+        [
+          841.0,
+          437.9
+        ],
+        [
+          951.3,
+          535.9
+        ]
+      ],
+      "cut_edges": 3,
+      "crossings": [
+        {
+          "edge": 6,
+          "at": [
+            872.7,
+            466.1
+          ],
+          "line": [
+            [
+              1078.8,
+              234.2
+            ],
+            [
+              666.6,
+              698.0
+            ]
+          ],
+          "angle_deg": 131.6
+        },
+        {
+          "edge": 1,
+          "at": [
+            841.0,
+            598.3
+          ],
+          "line": [
+            [
+              548.3,
+              305.7
+            ],
+            [
+              1133.7,
+              891.0
+            ]
+          ],
+          "angle_deg": 45.0
+        },
+        {
+          "edge": 5,
+          "at": [
+            841.0,
+            453.7
+          ],
+          "line": [
+            [
+              540.9,
+              153.7
+            ],
+            [
+              1141.1,
+              753.8
+            ]
+          ],
+          "angle_deg": 45.0
+        }
+      ],
+      "strokes": 40,
+      "images": {
+        "complex": "assets/items/EFT/EFT-15/EFT-15-A.png",
+        "target": "assets/items/EFT/EFT-15/EFT-15-B.png"
+      }
+    }
+  ]
+}

@@ -261,6 +261,26 @@ def test_streaming_tool_arguments_are_stitched_across_frames() -> None:
     assert reply.tool_calls[0].call_id == "call_x"
 
 
+def test_two_tool_calls_in_separate_frames_do_not_merge() -> None:
+    """`index` 在 tool_call 这一层；只看 function.index 会把两个调用拼成一个。"""
+    sse = RecordingSse(
+        [
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "call_a", "function": {"name": "first", "arguments": '{"x": 1}'}}
+            ]}, "finish_reason": None}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 1, "id": "call_b", "function": {"name": "second", "arguments": '{"y": 2}'}}
+            ]}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+    )
+    reply = list(_client(sse=sse).stream([ChatMessage.user("x")]))[-1].reply
+    assert reply is not None
+    assert [call.name for call in reply.tool_calls] == ["first", "second"]
+    assert reply.tool_calls[0].arguments == {"x": 1}
+    assert reply.tool_calls[1].arguments == {"y": 2}
+
+
 def test_streaming_yields_text_deltas_and_ends_with_the_whole_reply() -> None:
     """文本边到边显示，收官帧给出**与非流式相同的回复**。"""
     sse = RecordingSse(

@@ -1,0 +1,13 @@
+﻿测题素材：EFT 32 张 + SMP 四版 3 组 + OSP 成对 5 对 + TTS 音频
+
+按甲 + TTS 生成第一批基线测题素材（前端未接）：
+
+- EFT 嵌入图形 15 组 + 练习，含 bbox/路径答案表（只在后端）
+- V-SMP 四版：图示 3 / 读写 3 / 听觉 3（3.80-4.95min）/ 动觉打印件 3
+- V-OSP 成对：结构图 5 + 线性版 5
+- 生成器与验收器：gen_eft / check_eft / gen_diagrams / diagram_kit /
+  gen_audio / gen_text_versions / check_assets
+
+验收：check_eft 167 项、check_assets 106 项全部通过，61 个文件 10.88MB。
+图看不到，所以把规则做成可执行检查（目标是否真画在图上、截断线是否真相交、
+墨迹占比、文字是否放得下/压字），当场抓到 SMP-01 一处压字并修复。
