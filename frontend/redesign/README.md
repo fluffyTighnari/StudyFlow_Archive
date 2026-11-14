@@ -1,7 +1,6 @@
 # 学习流档案 · StudyFlow Archive — 已接上真后端的界面
 
-这份界面本来是两份静态原型之一（`frontend/quiet/` 是另一份，**没有动过**）。
-现在它是**能真的用**的那一份：标记、样式、动画、文案都在原型基础上持续演进，
+这份界面是**能真的用**的那一份：标记、样式、动画、文案持续演进，
 数据全部来自真后端。
 
 ## 怎么起
@@ -29,6 +28,7 @@ $env:MOUXUE_SKIP_ENV_FILE="1"; $env:PYTHONIOENCODING="utf-8"
 | `src/adapt.js` | 后端 DTO → 界面要的结构 | 字段名对不上的地方集中在这一处，不在渲染代码里散着 |
 | `src/live.js` | 一轮讨论的生命周期 | 时序（stage → token → tool → done / 停止）最容易坏，单独一页说清 |
 | `src/selftest.js` | 无头验收的探针（`?probe=1` 才加载） | 验收要像人一样点一遍，不该混进产品代码 |
+| `tools/` | 真 Edge（CDP）验收脚本 | 只有验收才跑，不进页面；产物写在 `tools/_artifacts/` |
 
 没有构建步骤、没有 npm、没有框架：`<script type="module">` 直接用。
 这是有意的 —— 原型只有一份 HTML 能用浏览器打开，加了构建链就多一层会坏的东西。
@@ -67,13 +67,15 @@ $env:MOUXUE_SKIP_ENV_FILE="1"; $env:PYTHONIOENCODING="utf-8"
 
 ```powershell
 # 在仓库根下（服务已起在 8125）
-node var_ref/headless_probe.mjs      # 对话那一整条链
-node var_ref/check_model_page.mjs    # 模型页画的是不是接口里的东西
+node frontend/redesign/tools/headless_probe.mjs        # 对话那一整条链
+node frontend/redesign/tools/check_model_page.mjs      # 模型页画的是不是接口里的东西
+node frontend/redesign/tools/check_self_assessment.mjs # 自评两档：1/90、1/127、结果页 11 个变量
 ```
 
 第一个会开一个真的无头 Edge，点开一个计划项、发一句话、等回答、看轨迹、写一条侧记，
 再把一个会话走完"新建 → 改名 → 归档 → 恢复 → 删除"，把每一步的结果打到标准输出。
 第二个只读 DOM 与 `/api/llm/*` 对照：档案行数、当前印鉴、顶栏模型名、页面上有没有报错。
-退出码 0 = 通过。
+第三个点开两档自评、用键盘把简短版 90 条答完并提交，核对结果页与 `/api/self-assessment/latest`。
+退出码 0 = 通过；截图与报告落在 `frontend/redesign/tools/_artifacts/`。
 
 `?probe=1` 才会加载探针（动态 import），正常打开没有任何多余代码。

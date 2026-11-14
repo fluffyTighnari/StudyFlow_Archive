@@ -70,6 +70,8 @@ export function runDiscussion({ sessionId, text, stepId = null, gestures = [], v
           context: adaptContext(event.context),
           stopReason: event.stop_reason || 'completed',
           steps: event.steps || 0,
+          // 后端判定：回复说改了、但这一轮没有成功的写工具。
+          unsupportedChangeClaim: Boolean(event.unsupported_change_claim),
         });
         break;
 

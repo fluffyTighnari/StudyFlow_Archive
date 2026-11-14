@@ -120,6 +120,19 @@ def ensure_forward_columns(engine: Engine) -> None:
                 # 旧档案只有 `model` 一个；读模型时 `_normalize_models` 会把它
                 # 当成唯一的勾选项，所以这里允许空串，不强行回填。
                 conn.execute(text("ALTER TABLE llm_profile ADD COLUMN models TEXT"))
+        if inspector.has_table("self_assessment_run"):
+            columns = {
+                column["name"]
+                for column in inspector.get_columns("self_assessment_run")
+            }
+            # v1 的历史运行是 44 条整卷：两列留空就是"v1 / 未分档"，
+            # 不拿 `full` 去回填 —— 那会让旧的 44 条看起来像 127 条。
+            if "tier" not in columns:
+                conn.execute(text("ALTER TABLE self_assessment_run ADD COLUMN tier TEXT"))
+            if "scale_version" not in columns:
+                conn.execute(
+                    text("ALTER TABLE self_assessment_run ADD COLUMN scale_version TEXT")
+                )
 
 
 class DbSequenceStore:

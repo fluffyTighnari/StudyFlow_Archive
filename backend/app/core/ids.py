@@ -114,6 +114,12 @@ SCOPE_BENCHMARK_RUN = "benchmark_run"
 #: 基准作答：`BS-0001`
 SCOPE_BENCHMARK_RESPONSE = "benchmark_response"
 
+#: 自评单例：`SA-0001`。与基准运行分开计数 —— 见 `SelfAssessmentRun` 的说明。
+SCOPE_SELF_ASSESSMENT = "self_assessment_run"
+
+#: 基线测卷：`BP-0001`。固定卷按段作答，与按变量抽题的 `BR-` 分开计数。
+SCOPE_BASELINE_PAPER = "baseline_paper_run"
+
 #: 领域勾选档案的版本：`DP-0001`。**按版本递增，不按用户递增** ——
 #: 目前是单用户产品，而"第几版清单"比"谁的清单"更能说明一条勾选的来历。
 SCOPE_DOMAIN_PROFILE = "domain_profile"
@@ -254,6 +260,16 @@ def next_benchmark_run_id(store: SequenceStore) -> str:
 def next_benchmark_response_id(store: SequenceStore) -> str:
     """`BS-0001`。逐题一行。"""
     return format_seq("BS", store.next(SCOPE_BENCHMARK_RESPONSE), 4)
+
+
+def next_self_assessment_id(store: SequenceStore) -> str:
+    """`SA-0001`。一次自评单例的作答。"""
+    return format_seq("SA", store.next(SCOPE_SELF_ASSESSMENT), 4)
+
+
+def next_baseline_paper_id(store: SequenceStore) -> str:
+    """`BP-0001`。一次基线测卷的作答。"""
+    return format_seq("BP", store.next(SCOPE_BASELINE_PAPER), 4)
 
 
 def next_domain_profile_id(store: SequenceStore) -> str:

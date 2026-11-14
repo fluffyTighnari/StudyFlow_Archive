@@ -1,6 +1,9 @@
-"""生成自评单例：**卷面**与**计分键**。
+"""生成自评单例：**卷面**与**计分键**（v2）。
 
-从同一张条目表出两份文件，避免卷面与计分键各写一遍然后慢慢漂移（这是最容易发生的腐化）。
+从 `app.benchmark.self_assessment` 这一份定义出两份文件。这里**不再抄一份条目表** ——
+旧版本把 44 条抄进了本文件，于是改动量表后卷面与程序各说各话，
+而那种腐化不会报错（见模块 docstring 的说明）。现在条目、反向键、facet、
+两档归属都只有一处定义。
 
 三个刻意的设计：
 
@@ -10,112 +13,58 @@
    第五句还带着那个自我形象），交错 + 固定顺序 = 可复现，也不再按主题抱团。
 3. **四档权重顶到两端**（0 / 1/3 / 2/3 / 1）。不顶到两端，"从来没有"的人拿不到 0 分、
    天花板也不是 10，而这个损失**不会报错**。
+
+用法（在 `backend/` 下）：
+
+    .venv/Scripts/python.exe tools/gen_selfreport.py
 """
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-SHEET = ROOT / "_自评单例_v0.1.md"
-KEY = ROOT / "_自评计分键_v0.1.md"
+BACKEND = Path(__file__).resolve().parent.parent
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
+
+from app.benchmark import self_assessment as scale  # noqa: E402
+from app.seeds.m1_variables import VARIABLES as _SEED_VARIABLES  # noqa: E402
+
+ROOT = BACKEND.parent
+DOCS = ROOT / "design" / "docs"
+SHEET = DOCS / "_自评单例_v0.2.md"
+KEY = DOCS / "_自评计分键_v0.2.md"
 
 #: 变量 → (中文名, 说明)。说明写进计分键，不写进卷面。
-VARIABLES = {
-    "V-SE": ("信号提取", "从材料里抓到主线、关键事实、限定条件的能力"),
-    "V-HSR": ("求助阻力", "卡住时求助的阈值与方式"),
-    "V-DC": ("决策审慎", "做选择前比较与定判据的倾向"),
-    "V-IR": ("启动阻力", "从决定到动手之间的摩擦"),
-    "V-PAR": ("行动后反思", "事后是否留下可执行的改动"),
-    "V-ENV": ("环境敏感度", "外部干扰对专注的影响程度"),
-    "V-ATT": ("典型专注时长", "能维持高质量专注的长度"),
-    "V-CP": ("情境材料偏好", "偏好抽象定义还是具体案例（两端分开算）"),
-    "V-SMP": ("感官媒介偏好", "图 / 听 / 读写 / 动觉 四维（不取均值）"),
-    "V-OSP": ("组织策略偏好", "全局框架还是线性分步（两端分开算）"),
-    "V-ACT": ("活动策略库", "读 / 听看 / 讲与讨论 / 动手 四维（不取均值）"),
+VARIABLES: dict[str, tuple[str, str]] = {
+    item["variable_id"]: (item["display_name"], item["definition_what"])
+    for item in _SEED_VARIABLES
 }
 
-#: (变量, 序号, 条目文本, 维度或 None, 是否反向)
-ITEMS: list[tuple[str, int, str, str | None, bool]] = [
-    # V-SE 信号提取
-    ("V-SE", 1, "读一份信息密集的材料时，我先找这段到底在讲什么，再回头抠细节。", None, False),
-    ("V-SE", 2, "材料里出现数字和条件句（仅当…、除…之外）时，我会把它们单独记下来。", None, False),
-    ("V-SE", 3, "读完一份长材料，我能不看原文说出三四个关键事实。", None, False),
-    ("V-SE", 4, "细节一多，我读完就只剩一个模糊印象，具体说了什么想不起来。", None, True),
-    # V-HSR 求助阻力
-    ("V-HSR", 1, "卡住超过十几分钟，我会去问人或查资料，而不是继续自己磨。", None, False),
-    ("V-HSR", 2, "开口问之前，我会先把「我卡在哪一步」想清楚。", None, False),
-    ("V-HSR", 3, "身边有能问的人时，我确实会去问。", None, False),
-    ("V-HSR", 4, "遇到不会的东西，我倾向于自己死磕到会，尽量不麻烦别人。", None, True),
-    # V-DC 决策审慎
-    ("V-DC", 1, "做选择前，我会把候选的几个选项列出来对比。", None, False),
-    ("V-DC", 2, "比较之前，我会先想清楚按什么标准判断好坏。", None, False),
-    ("V-DC", 3, "定下来之后，我还会留意有没有更合适的选项出现。", None, False),
-    ("V-DC", 4, "我常常凭第一感觉就定了，事后才想还有没有别的办法。", None, True),
-    # V-IR 启动阻力
-    ("V-IR", 1, "决定要开始一件事之后，我通常几分钟内就动手了。", None, False),
-    ("V-IR", 2, "我会先把最小的第一步做掉（比如先打开文件写一行），再谈计划。", None, False),
-    ("V-IR", 3, "任务摆在面前时，我很少先去处理别的杂事。", None, False),
-    ("V-IR", 4, "任务安排好之后，我常常先去做点别的，过一阵才开始。", None, True),
-    # V-PAR 行动后反思
-    ("V-PAR", 1, "一件事做完，我会顺手记下哪里和预期不一样。", None, False),
-    ("V-PAR", 2, "我会说出下次具体改哪一步，而不只是「下次注意点」。", None, False),
-    ("V-PAR", 3, "隔一段时间，我会回头看我之前的复盘，看有没有真改。", None, False),
-    ("V-PAR", 4, "做完就过去了，我很少回头想过程里发生了什么。", None, True),
-    # V-ENV 环境敏感度
-    ("V-ENV", 1, "旁边有人说话时，我会停下来听他们在说什么。", None, False),
-    ("V-ENV", 2, "手机弹出通知，我会立刻去看。", None, False),
-    ("V-ENV", 3, "换个地方（书房到咖啡厅），我的效率会明显不一样。", None, False),
-    ("V-ENV", 4, "周围再怎么吵，我基本都能继续做手上的事。", None, True),
-    # V-ATT 典型专注时长
-    ("V-ATT", 1, "我能连续专注 25 分钟以上不做别的事。", None, False),
-    ("V-ATT", 2, "被打断之后，我能很快回到原来的位置。", None, False),
-    ("V-ATT", 3, "一件事做到 40 分钟以上，我的错误会明显变多。", None, True),
-    ("V-ATT", 4, "我做事时经常几分钟就切一次（看手机、换窗口）。", None, True),
-    # V-CP 情境材料偏好（两端分开）
-    ("V-CP", 1, "学新东西时，我更愿意先看一个具体案例，再看定义和原理。", "案例端", False),
-    ("V-CP", 2, "只有抽象定义和公式时，我常常读不下去。", "案例端", False),
-    ("V-CP", 3, "案例讲得再多，我还是想先拿到那条一般规律。", "抽象端", True),
-    ("V-CP", 4, "别人用举例子的方式解释时，我常常觉得不如直接给定义。", "抽象端", True),
-    # V-SMP 感官媒介偏好（四维，各一条；没有反向句，见计分键说明）
-    ("V-SMP", 1, "有图表或流程图的材料，我读起来比纯文字快。", "图", False),
-    ("V-SMP", 2, "有人讲一遍，比我自己读一遍记得牢。", "听", False),
-    ("V-SMP", 3, "我会边读边写或画，靠手写下来才记得住。", "读写", False),
-    ("V-SMP", 4, "亲手做一遍（拼、摆、按步骤操作）比看讲解有用。", "动觉", False),
-    # V-OSP 组织策略偏好（两端分开）
-    ("V-OSP", 1, "开始学陌生主题时，我先画一张全局图，或先列出它包含哪些部分。", "全局端", False),
-    ("V-OSP", 2, "我会先要一份分几步走的清单，照着顺序做。", "线性端", False),
-    ("V-OSP", 3, "没有全局框架就往下学，我会觉得心里没底。", "全局端", True),
-    ("V-OSP", 4, "一上来给框架图，我常常觉得空，不如直接告诉我第一步做什么。", "线性端", True),
-    # V-ACT 活动策略库（四维，各一条）
-    ("V-ACT", 1, "自己读材料、做笔记，是我学得最有效率的方式。", "读", False),
-    ("V-ACT", 2, "看视频或听人讲一遍，是我学得最有效率的方式。", "听看", False),
-    ("V-ACT", 3, "把学到的东西讲给别人听或跟人讨论，我才算真懂。", "讲与讨论", False),
-    ("V-ACT", 4, "亲手做一个东西出来，我才会。", "动手", False),
-]
-
-OPTIONS = [("A", "从不", 0.0), ("B", "偶尔", 1 / 3), ("C", "经常", 2 / 3), ("D", "几乎总是", 1.0)]
+#: 变量 → 该变量的条目（按卷面号）。
+BY_VARIABLE: dict[str, list[scale.Statement]] = {}
+for _statement in scale.STATEMENTS:
+    BY_VARIABLE.setdefault(_statement.variable_id, []).append(_statement)
 
 
-def interleaved_order() -> list[tuple[str, int]]:
-    """交错排序：每轮取各变量的同序条目，轮次起点错开。固定算法 = 可复现。"""
-    variables = list(VARIABLES)
-    order: list[tuple[str, int]] = []
-    for round_index in range(4):
-        rotated = variables[round_index:] + variables[:round_index]
-        for variable in rotated:
-            order.append((variable, round_index + 1))
-    return order
+def _short_count(variable_id: str) -> int:
+    return sum(1 for s in BY_VARIABLE[variable_id] if s.short)
+
+
+def _reverse_count(variable_id: str) -> int:
+    return sum(1 for s in BY_VARIABLE[variable_id] if s.reverse)
 
 
 def render_sheet() -> str:
-    order = interleaved_order()
-    index_of = {(var, idx): position + 1 for position, (var, idx) in enumerate(order)}
+    total = len(scale.STATEMENTS)
+    short_total = len(scale.statements_for("short"))
     lines: list[str] = [
-        "# 自评单例 v0.1（卷面）",
+        f"# 自评单例 {scale.SCALE_VERSION}（卷面 · 全面版 {total} 条）",
         "",
-        "> **这是一次性的全局单例**：44 条，做完就存下来，以后只在「你主动想重做」"
-        "或「核对出现矛盾」时再做，不用每次跑卷子都做。",
+        f"> **这是一次性的全局单例**：全面版 {total} 条、简短版 {short_total} 条，"
+        "做完就存下来，以后只在「你主动想重做」或「核对出现矛盾」时再做，"
+        "不用每次跑卷子都做。",
         "> 全卷只读这一遍，**不要回头看前面的答案**；想太久反而会挑一个「我应该是那样」的答案。",
         "",
         "## 怎么填",
@@ -124,68 +73,77 @@ def render_sheet() -> str:
         "",
         "| 选项 | 含义 |",
         "|---|---|",
-        "| **A** | 从不 / 几乎没有 |",
-        "| **B** | 偶尔 |",
-        "| **C** | 经常 |",
-        "| **D** | 几乎总是 |",
+    ]
+    for value, label, _weight in scale.OPTIONS:
+        lines.append(f"| **{value}** | {label} |")
+    lines += [
         "",
         "三条提醒：",
         "",
         "1. **没有正确答案**，也没有「好的答案」。某些题目听起来像缺点，照实选。",
         "2. 如果两档都像，选**更常发生**的那一档，不要折中。",
-        "3. 中途可以停，但**别一次只做几条** —— 断续做会让前后标准漂移。",
+        "3. 中途可以停（草稿存在本机），但**别一次只做几条** —— 断续做会让前后标准漂移。",
         "",
-        "预计 8–12 分钟。做完只需回一份清单，例如 `1C 2B 3D …`。",
+        f"全面版预计 20–30 分钟；简短版约 {round(short_total * 0.2)}–{round(short_total * 0.35)} 分钟。",
+        "做完只需回一份清单，例如 `1C 2B 3D …`。",
+        "",
+        "> 简短版是全面版的**子集**，题号与全面版完全一致 —— 答过全面版的人，"
+        "简短版里看到的是同一批句子，不是另一套。",
         "",
         "---",
         "",
     ]
-    for position, (variable, index) in enumerate(order, start=1):
-        text = next(item[2] for item in ITEMS if item[0] == variable and item[1] == index)
-        lines.append(f"**{position}.** {text}")
+    for statement in scale.STATEMENTS:
+        lines.append(f"**{statement.no}.** {statement.text}")
         lines.append("")
     lines += [
         "---",
         "",
-        "## 附加两题（不进上面 44 条，单独作答）",
+        f"## 附加两题（不进上面 {total} 条，单独作答）",
         "",
         "**X1（单选）** 你最能维持**高质量**专注的时长区间是？",
         "",
-        "`A 15 分钟以内`　`B 15–25 分钟`　`C 25–45 分钟`　`D 45–60 分钟`　`E 60 分钟以上`",
+        "　".join(
+            f"`{value} {label}`" for value, label in scale.ATTENTION_SPAN_OPTIONS
+        ),
         "",
         "> 为什么单列：专注时长的本体是**区间**，不是四条句子的平均值。"
-        "选 E 的人，用 10 分钟任务永远测不到上限（那会记为删失，不是满分）。",
+        "选最后一档的人，用 10 分钟任务永远测不到上限（那会记为删失，不是满分）。",
         "",
         "**X2（排序，可留空）** 下面四种学习方式，按你**实际用得最多**排序（写 1–4）：",
         "",
-        "`( ) 自己读材料、做笔记`　`( ) 看视频、听人讲`　`( ) 讲给别人听、讨论`　`( ) 动手做出来`",
+        "　".join(f"`( ) {label}`" for label in scale.ACTIVITY_RANK_OPTIONS),
         "",
         "> 允许留空：如果你觉得四种差不多，就留空 —— 那本身是有信息量的答案，"
         "比你随便排一个顺序更真实。",
         "",
-        f"（本卷共 44 条 + 附加 2 题；条目顺序固定，第 {len(order)} 条为末条。）",
+        f"（本卷共 {total} 条 + 附加 2 题；条目顺序固定，第 {total} 条为末条。）",
         "",
     ]
     return "\n".join(lines)
 
 
 def render_key() -> str:
-    order = interleaved_order()
+    total = len(scale.STATEMENTS)
+    short_total = len(scale.statements_for("short"))
     lines: list[str] = [
-        "# 自评单例 · 计分键 v0.1",
+        f"# 自评单例 · 计分键 {scale.SCALE_VERSION}",
         "",
         "> **看卷面时不要读这一份**。它记着哪些是反向句 —— 被作答者看到，反向句当场失效。",
+        "> 本文件由 `backend/tools/gen_selfreport.py` 从 "
+        "`app/benchmark/self_assessment.py` 生成；**改量表改那一处，不要改这里**。",
         "",
         "## 1. 条目 → 变量映射（按卷面顺序）",
         "",
-        "| 卷面号 | 变量 | 变量名 | 序号 | 维度 | 反向 |",
+        "| 卷面号 | 变量 | 变量名 | 维度（facet） | 反向 | 简短版 |",
         "|---|---|---|---|---|---|",
     ]
-    for position, (variable, index) in enumerate(order, start=1):
-        item = next(entry for entry in ITEMS if entry[0] == variable and entry[1] == index)
+    for statement in scale.STATEMENTS:
+        name = VARIABLES.get(statement.variable_id, (statement.variable_id, ""))[0]
         lines.append(
-            f"| {position} | {variable} | {VARIABLES[variable][0]} | {index} | "
-            f"{item[3] or '—'} | {'**R**' if item[4] else 'F'} |"
+            f"| {statement.no} | {statement.variable_id} | {name} | "
+            f"{statement.facet or '—'} | {'**R**' if statement.reverse else 'F'} | "
+            f"{'✓' if statement.short else ''} |"
         )
     lines += [
         "",
@@ -201,7 +159,7 @@ def render_key() -> str:
         "",
         "```",
         "单条得分 x_i = 10 × w_i            （反向句 w_i = 1 − w_raw）",
-        "变量分   = 10 × mean(x_i)          （i 取该变量的全部条目）",
+        "变量分   = 10 × mean(x_i)          （i 取该变量的全部条目；偏好/四维除外，见 §3）",
         "```",
         "",
         "**不顶到两端会怎样**：如果最低档给 0.1、最高档给 0.9，那么"
@@ -212,10 +170,10 @@ def render_key() -> str:
         "",
         "| 变量 | 算法 | 为什么不能取总均值 |",
         "|---|---|---|",
-        "| V-SE / V-HSR / V-DC / V-IR / V-PAR / V-ENV / V-ATT | 4 条均值 × 10 | 单一量表的四个条目 |",
-        "| **V-CP** | 案例端 = 2 条均值；抽象端 = 2 条（反向）均值；**两个数都留** | 偏好是两端各有一个高度，不是一条轴上的位置 |",
-        "| **V-OSP** | 全局端 = 条目 1 与 3（反向）均值；线性端 = 条目 2 与 4（反向）均值 | 同上；且按 M1 红线 3 不作稳定基线，只作参考 |",
-        "| **V-SMP / V-ACT** | 四维**各自**得分，取最高两维 | 四条不是同一量表的四个条目，而是四个维度各一条；取均值等于把一张四维图压成一个点 |",
+        "| V-SE / V-HSR / V-DC / V-IR / V-PAR / V-ENV / V-ATT | 全部条目均值 × 10；facet 分**只做诊断** | 单一量表的多个条目；facet 不参与变量分 |",
+        "| **V-CP** | 案例端、抽象端各自均值；**两个数都留**，变量分取更高的一端 | 偏好是两端各有一个高度，不是一条轴上的位置 |",
+        "| **V-OSP** | 全局端、线性端各自均值；**两个数都留**，变量分取更高的一端 | 同上；且按 M1 红线 3 不作稳定基线，只作参考 |",
+        "| **V-SMP / V-ACT** | 四维**各自**得分，取最高两维的均值 | 四维不是同一量表的四个条目；取均值等于把一张四维图压成一个点 |",
         "",
         "## 4. 两个「不要强行下结论」的情形",
         "",
@@ -226,12 +184,14 @@ def render_key() -> str:
         "",
         "## 5. 有效性检查（不做这一步，上面全部算白算）",
         "",
+        "阈值**随题量走**，不写死数字：全面版与简短版各自按自己的条数计算。",
+        "",
         "| 检查 | 触发条件 | 处理 |",
         "|---|---|---|",
-        "| **直线作答** | 44 条里 ≥40 条选同一档 | 标记 `straight_lining`，置信度降级为 `provisional`，**不当作极端值** |",
-        "| **反向不一致** | 某变量「正向均值」与「反向反转后均值」相差 >3 分 | 标记 `acquiescence`，该变量 `confidence=low` |",
-        "| **过快** | 全程 <5 分钟 | 标记 `too_fast`，置信度降级 |",
-        "| **过慢** | 全程 >40 分钟 | 不降级，但记下（可能在中途查资料/校准标准） |",
+        f"| **直线作答** | ≥ {total} × 90% 条选同一档 | 标记 `straight_lining`，置信度降为 `provisional`，**不当作极端值** |",
+        "| **反向不一致** | 某变量「正向均值」与「反向反转后均值」相差 >3 分 | 标记 `acquiescence:<变量>`，该变量 `confidence=low` |",
+        f"| **过快** | 全程 < {total} × 0.1 分钟（全面版） | 标记 `too_fast`，置信度降级 |",
+        f"| **过慢** | 全程 > {total} × 0.9 分钟（全面版） | 不降级，但记下（可能在中途查资料/校准标准） |",
         "",
         "> 反向句的判法：一个变量若正向均值 8、反向句（已取 1−w）均值 3，"
         "差的不是他的人格，是他答题时的一贯偏移。**这时不能取平均** —— 平均会把偏移洗掉，"
@@ -239,19 +199,43 @@ def render_key() -> str:
         "",
         "## 6. 反向句覆盖（诚实说明）",
         "",
-        "| 变量 | 反向句 | 说明 |",
-        "|---|---|---|",
-        "| V-SE / V-HSR / V-DC / V-IR / V-PAR / V-ENV | 1 条 | 3 正 + 1 反 |",
-        "| V-ATT | 2 条 | 2 正 + 2 反（专注时长本身容易自我美化，加一倍防线） |",
-        "| V-CP / V-OSP | 2 条 | 两端各有 1 正向 + 1 反向 |",
-        "| **V-SMP / V-ACT** | **0 条** | 结构上没有：四维各一条，加反向句等于给同一维度记两次分，会把该维度权重翻倍。这里改用「四维都高 → 无明显偏好」来防美化 |",
+        "| 变量 | 条目 | 反向 | 简短版 | 说明 |",
+        "|---|---|---|---|---|",
+    ]
+    for variable_id, items in BY_VARIABLE.items():
+        name = VARIABLES.get(variable_id, (variable_id, ""))[0]
+        reverse = _reverse_count(variable_id)
+        facet_count = len(scale.FACETS[variable_id])
+        if variable_id in ("V-SMP", "V-ACT"):
+            note = f"{facet_count} 个维度各有正反指标；不用「反向句」这一说法"
+        else:
+            note = f"{facet_count} 个 facet：{reverse} 条反向"
+        lines.append(
+            f"| {variable_id} | {len(items)} | {reverse} | {_short_count(variable_id)} | {name}；{note} |"
+        )
+    lines += [
         "",
-        "## 7. 更新规则（它是「全局单例」的原因）",
+        f"> **V-SMP / V-ACT 早期版本 0 条反向句**，v2 起每个维度都补了正反指标："
+        "四维各有一条句子的反向形式（如「光看演示不动手，我总觉得没学会」）。"
+        "四维仍然取最高两维，反向句只防美化，不重复计入同一维度。",
+        "",
+        "## 7. 两档",
+        "",
+        f"| 档位 | 条数 | 用途 | 置信度 |",
+        "|---|---|---|---|",
+        f"| `full` | {total} | 稳定基线 | 按有效性标记决定 |",
+        f"| `short` | {short_total} | 快速方向；覆盖全部 11 个变量 | 固定 `hypothesis` |",
+        "",
+        "两档题号**完全一致**：`short` 是 `full` 的子集，所以共用一份计分器，"
+        "历史作答（只存卷面号）也能对上。简短版每个 facet 至少 1 条、偏好变量每端 2 条，"
+        "足以给方向，不足以做稳定基线。",
+        "",
+        "## 8. 更新规则（它是「全局单例」的原因）",
         "",
         "- 第一次基线：做一次，写进 `stated` 通道，11 个变量各得一个读数；",
         "- 之后：**不随卷子重做**。只在两种情况下重做 ——",
         "  1. 你主动想重做（比如觉得某几条已经不符合现状）；",
-        "  2. 矛盾核对把某个变量的 `stated` 判为冲突（那时只重做该变量的 4 条，不重做全卷）。",
+        "  2. 矛盾核对把某个变量的 `stated` 判为冲突（那时只重做该变量，不重做全卷）。",
         "- 每次重做都留版本：`stated` 读数带 `observed_at`，旧值不删 —— "
         "把两次的差值当成信息，而不是覆盖掉。",
         "",
@@ -261,36 +245,90 @@ def render_key() -> str:
 
 def verify() -> None:
     problems: list[str] = []
-    if len(ITEMS) != 44:
-        problems.append(f"条目数应为 44，实际 {len(ITEMS)}")
-    if len(interleaved_order()) != 44:
-        problems.append("交错顺序长度不对")
-    if len(set(interleaved_order())) != 44:
-        problems.append("交错顺序有重复")
-    for variable in VARIABLES:
-        own = [item for item in ITEMS if item[0] == variable]
-        if len(own) != 4:
-            problems.append(f"{variable} 条目数 {len(own)} ≠ 4")
-        if variable not in ("V-SMP", "V-ACT") and not any(item[4] for item in own):
-            problems.append(f"{variable} 没有反向句")
-    for letter, label, weight in OPTIONS:
-        if weight not in (0.0, 1.0) and letter in ("A", "D"):
-            problems.append(f"{letter} 档权重没顶到端点：{weight}")
+    statements = scale.STATEMENTS
+    total = len(statements)
+    short = scale.statements_for("short")
+
+    numbers = [s.no for s in statements]
+    if numbers != list(range(1, total + 1)):
+        problems.append("卷面号不是从 1 开始的连续整数")
+    if len(set(numbers)) != total:
+        problems.append("卷面号有重复")
+
+    short_nos = {s.no for s in short}
+    full_nos = set(numbers)
+    if not short_nos < full_nos:
+        problems.append("简短版不是全面版的真子集")
+    if len(short_nos) != len(short):
+        problems.append("简短版有重复条目")
+
+    if set(BY_VARIABLE) != set(scale.FACETS):
+        problems.append(
+            f"变量集合与 FACETS 不一致：{sorted(set(BY_VARIABLE) ^ set(scale.FACETS))}"
+        )
+    for variable_id, items in BY_VARIABLE.items():
+        facets = {s.facet for s in items}
+        expected = set(scale.FACETS[variable_id])
+        if facets != expected:
+            problems.append(
+                f"{variable_id} 的 facet 与 FACETS 不一致："
+                f"缺 {sorted(expected - facets)}、多 {sorted(facets - expected)}"
+            )
+        for facet in expected:
+            if not any(s.facet == facet for s in items):
+                problems.append(f"{variable_id} 的 facet {facet} 没有条目")
+        if variable_id not in ("V-SMP", "V-ACT") and not any(
+            s.reverse for s in items
+        ):
+            problems.append(f"{variable_id} 没有反向句")
+        if not any(s.short for s in items):
+            problems.append(f"{variable_id} 在简短版里一条都没有")
+
+    for statement in statements:
+        if statement.variable_id not in scale.FACETS:
+            problems.append(f"第 {statement.no} 条指向未知变量 {statement.variable_id}")
+        if statement.text.strip() == "":
+            problems.append(f"第 {statement.no} 条没有题面")
+
+    if scale.OPTION_WEIGHTS.get("A") != 0.0 or scale.OPTION_WEIGHTS.get("D") != 1.0:
+        problems.append("A / D 档权重没有顶到端点")
+
+    for tier in scale.TIERS:
+        try:
+            got = scale.statements_for(tier)
+        except scale.SelfAssessmentError as exc:  # pragma: no cover
+            problems.append(f"{tier} 档取不出来：{exc}")
+            continue
+        if not got:
+            problems.append(f"{tier} 档是空的")
+    try:
+        scale.statements_for("tiny")
+    except scale.SelfAssessmentError:
+        pass
+    else:
+        problems.append("不认识的档位没有被拒绝")
+
     if problems:
         raise SystemExit("自评单例有问题：\n  " + "\n  ".join(problems))
 
 
 def main() -> None:
     verify()
+    DOCS.mkdir(parents=True, exist_ok=True)
     SHEET.write_text(render_sheet(), encoding="utf-8")
     KEY.write_text(render_key(), encoding="utf-8")
-    order = interleaved_order()
-    print(f"卷面 {SHEET.name}  {SHEET.stat().st_size / 1024:.1f}KB  {len(ITEMS)} 条")
-    print(f"计分键 {KEY.name}  {KEY.stat().st_size / 1024:.1f}KB")
-    print(f"条目分布：{len(VARIABLES)} 个变量 × 4 条；反向句 "
-          f"{sum(1 for item in ITEMS if item[4])} 条；档位权重 "
-          f"{[weight for _, _, weight in OPTIONS]}")
-    print("前 8 条顺序：" + " ".join(f"{i}.{var}" for i, (var, _) in enumerate(order[:8], start=1)))
+    total = len(scale.STATEMENTS)
+    short_total = len(scale.statements_for("short"))
+    print(f"卷面 {SHEET.name}  {SHEET.stat().st_size / 1024:.1f}KB  {total} 条")
+    print(f"计分键 {KEY.name}  {KEY.stat().st_size / 1024:.1f}KB  {short_total} 条（简短版）")
+    print("条目分布：" + "  ".join(
+        f"{variable_id} {len(items)}({_short_count(variable_id)})"
+        for variable_id, items in BY_VARIABLE.items()
+    ))
+    print(
+        f"反向句 {sum(1 for s in scale.STATEMENTS if s.reverse)} 条；档位权重 "
+        f"{[weight for _value, _label, weight in scale.OPTIONS]}"
+    )
 
 
 if __name__ == "__main__":

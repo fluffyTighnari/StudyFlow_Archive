@@ -498,6 +498,19 @@ def test_no_second_write_path_to_preferences_or_evidence() -> None:
         #   它只改分数与判官痕迹，`raw_answer` 一个字都不动：
         #   判分变了要能看出来**是判分变了**，不是他改了答案。
         ("POST", "/api/benchmark/runs/{run_id}/score"),
+        # 自评单例（P25）。它与基准运行同一个姿态：**运行记录不是断言**，
+        # 因此不进判定表；但它确实写全局（11 条 `stated` 基线），
+        # 所以必须经 Router —— 也就必须出现在这份清单里。
+        # ★ 它是**另一把尺子**：不给人材料、不计时判分、只产 `stated` 通道。
+        ("POST", "/api/self-assessment/submit"),
+        # 基线测卷（固定卷，P25.1）。与上面两族同姿态：**运行记录不是断言**，
+        # 因此不进判定表；但它确实写全局（`baseline_paper_run`），所以必须经
+        # Router —— 也就必须出现在这份清单里。
+        # 三条对应一次作答的生命周期：建运行 / 逐段存档 / 收卷。
+        # 存档与收卷都是**改写同一行**而不是追加：一份卷子只有一份作答。
+        ("POST", "/api/benchmark/baseline/runs"),
+        ("POST", "/api/benchmark/baseline/runs/{run_id}/answers"),
+        ("POST", "/api/benchmark/baseline/runs/{run_id}/finish"),
     }
 
     # **反向也钉一遍**：确认上面那条"排除"真的排掉了东西。
@@ -680,7 +693,13 @@ def test_the_openapi_document_can_still_be_generated() -> None:
         # 77 → 78：`POST /api/sessions/{id}/archive-review` —— 归档后的自动复盘。
         #         ★ 它**不写用户消息**：内部指令若落成"用户说过的话"，
         #         会污染 `stated` 的证据链；只落模型回复。
-    assert len(paths) == 78, f"路径数变了（现在是 {len(paths)}）：请同步文档里的数字"
+        # 78 → 83：自评单例（`/api/self-assessment/*`，5 条路径）。
+        #         它与基准测试分开：不给人材料、只产 `stated`，全屏作答。
+        # 83 → 89：基线测卷（`/api/benchmark/baseline/*`，6 条路径）——
+        #         卷面、运行列表、上次运行、单次运行、逐段存档、收卷。
+        #         它是**固定卷**：一次覆盖多段多变量，与按变量抽题的
+        #         `/api/benchmark/runs` 不是同一件事。
+    assert len(paths) == 89, f"路径数变了（现在是 {len(paths)}）：请同步文档里的数字"
 
     stream = paths["/api/sessions/{session_id}/discuss/stream"]["post"]
     assert "200" in stream["responses"], "流式路由没有声明 200 响应"
@@ -766,7 +785,7 @@ def test_every_list_endpoint_uses_the_envelope() -> None:
         + "\n  ".join(suspicious)
         + "\n（继承 `ItemsResponse[...]` 即可，它会带上 `x-mouxue-envelope` 标记）"
     )
-    assert len(enveloped) == 21, (
+    assert len(enveloped) == 23, (
         f"列表端点数变了（现在 {len(enveloped)} 个）：新增列表端点必须用 "
         f"`ItemsResponse[...]`，同时更新 tools/e2echeck.py 的 LIST_ENDPOINTS"
     )

@@ -1,19 +1,23 @@
-# 仓库根就是 personal_learning_flow/ 本身（此前根在上一级 D:\Workspace\Code\phy，
-# 那里混着别的项目，因此只能靠这份 ignore 保护本子树；现在不再需要那层迁就）。
+# 仓库根就是 personal_learning_flow/ 本身。
 
 # ── 密钥：绝不入库 ────────────────────────────────────────────────
-# 这个文件里有 API key。`.env.example` 是**可以**入库的模板（只有键名）。
+# `.env` 里有 API key。`.env.example` 是**可以**入库的模板（只有键名）。
 .env
 .env.*
 !.env.example
 
 # ── 运行时产物 ────────────────────────────────────────────────────
-# 本地库、SSE 录制、探针输出、文件桥的交换目录 —— 都是"跑一次就有"的东西。
+# 本地库、SSE 录制、文件桥的交换目录 —— 都是"跑一次就有"的东西。
 backend/var/
 *.db
 *.db-journal
 *.db-wal
 *.log
+
+# ── 设计文档：本地保留，不入库 ────────────────────────────────────
+# 设计稿、评审、实测记录、量表卷面与计分键都在这里；
+# 它们是**过程与决策记录**，不随代码发布，也不参与运行。
+design/
 
 # ── Python ────────────────────────────────────────────────────────
 backend/.venv/
@@ -23,6 +27,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 *.egg-info/
+# `pip install ./backend` 会在源码旁边留一份 build/lib/ 副本 —— 是产物，不是代码。
+build/
 
 # ── Node / 前端 ───────────────────────────────────────────────────
 node_modules/
@@ -43,6 +49,6 @@ desktop.ini
 .stfolder/
 .stignore
 
-# ── 验收时浏览器留下的东西（几百 MB，绝不能进库）────────────────────
-var_ref/_edgeprofile*/
-var_ref/_syntax/
+# ── 验收产物：浏览器配置（几百 MB）+ 截图/报告 ─────────────────────
+frontend/redesign/tools/_artifacts/
+frontend/redesign/tools/_edgeprofile*/

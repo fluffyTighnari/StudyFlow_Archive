@@ -732,6 +732,9 @@ def test_the_response_declares_every_field_the_ui_needs(app, client) -> None:
         "context",
         "compacted",
         "compact_error",
+        # 回复声称改了计划、这一轮却没有任何成功的写工具 —— 界面据此提示
+        # "这句话没有对应的改动"，所以它也是界面依赖的字段。
+        "unsupported_change_claim",
     }
     # 上下文计量必须**自解释**：界面要显示"用了多少 / 上限多少"，
     # 而不是拿一个裸数字自己猜分母。

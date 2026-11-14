@@ -147,6 +147,29 @@ function structuredBlock(lang, raw) {
   return '';
 }
 
+/**
+ * 把「一行多个选项」拆成多个。
+ *
+ * 支持的写法（模型实际会用到的）：
+ *   `A) xxx　B) xxx　C) xxx`      — 字母 + 右括号
+ *   `1. xxx　2. xxx`              — 数字 + 点
+ *   `① xxx　② xxx`               — 圈号
+ * 分隔用全角/半角空格、竖线、顿号都行。
+ *
+ * 找不到编号标记就原样返回一条：**不猜**。宁可给一个长按钮，
+ * 也不要把一句完整的话硬拆成两个半句。
+ */
+function splitAsks(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+  // 编号必须出现在"开头"或"空白之后"，避免把 `p.12` 里的点当成编号。
+  const marked = raw
+    .split(/(?:^|(?<=[\s　|｜、]))(?=[A-Da-d]\)\s|[0-9１-９]\.\s|[①②③④⑤])/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return marked.length > 1 ? marked : [raw];
+}
+
 class Blocks {
   constructor() {
     this.html = [];
@@ -221,7 +244,13 @@ export function richText(text) {
     if (/^\s*[?？]\s+/.test(line)) {
       blocks.flushPara();
       blocks.flushList();
-      blocks.asks.push(line.replace(/^\s*[?？]\s+/, ''));
+      // 一行里可能塞了好几个选项 —— 模型实测会写：
+      //   `? A) 就到版本 8　B) 再拆成一天一页　C) 全部撤回`
+      // 整行当一个按钮的话，界面上就是一个横贯整页的巨型按钮，
+      // 「多选一」这件事完全消失。所以先按带编号的标记拆开。
+      for (const ask of splitAsks(line.replace(/^\s*[?？]\s+/, ''))) {
+        blocks.asks.push(ask);
+      }
       continue;
     }
 

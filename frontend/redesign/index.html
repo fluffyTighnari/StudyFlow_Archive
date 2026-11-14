@@ -8,8 +8,10 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23b04430'/%3E%3Cpath d='M8 8h12l4 4v12H8z' fill='none' stroke='%23f8f5eb' stroke-width='1.8'/%3E%3Cpath d='M20 8v4h4M12 16h8M12 20h6' fill='none' stroke='%23f8f5eb' stroke-width='1.8'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400..800&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-<noscript><link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400..800&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-webfont@1.7.0/style.css" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-webfont@1.7.0/style.css"></noscript>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -87,7 +89,7 @@
 
     <form class="inline-form" id="rail-form" hidden>
       <label class="inline-label" id="rail-form-label">新领域</label>
-      <input id="rail-form-input" autocomplete="off" maxlength="80">
+      <input id="rail-form-input" autocomplete="off" maxlength="80" aria-labelledby="rail-form-label">
       <div class="inline-actions">
         <button type="submit" class="mini-btn solid" data-i18n="common.create">创建</button>
         <button type="button" class="mini-btn" data-action="cancel-inline" data-i18n="common.cancel">取消</button>
@@ -127,8 +129,7 @@
       </button>
       <button class="foot-link" data-view="benchmark">
         <svg><use href="#i-bench"/></svg>
-        <span data-i18n="rail.benchmark">基准</span>
-        <span class="foot-badge" id="bench-badge">·</span>
+        <span data-i18n="rail.benchmark">自评</span>
       </button>
       <button class="foot-link" data-view="settings">
         <svg><use href="#i-gear"/></svg>
@@ -196,9 +197,12 @@
           </div>
         </div>
 
-        <!-- 对话索引轨：贴着侧页边界，悬停展开「你说过的话」 -->
+        <!-- 对话索引轨：贴着侧页边界，悬停展开「你说过的话」。
+             触屏与键盘没有 hover —— 点轨道空白处显式开合（`onToggle`），
+             键盘焦点进去时由 `:focus-within` 展开。 -->
         <div class="thread-index" id="thread-index" hidden>
-          <canvas id="thread-index-canvas" role="img" aria-label="对话索引"></canvas>
+          <canvas id="thread-index-canvas" role="img" tabindex="0"
+            aria-label="对话索引"></canvas>
           <div class="thread-index-panel" id="thread-index-panel">
             <div class="ti-head"><span>对话索引</span><em>按你说过的话</em></div>
             <div class="ti-list" id="thread-index-list"></div>
@@ -207,6 +211,7 @@
 
         <!-- ──────────── MARGIN PANEL · 侧页 ──────────── -->
         <div class="resizer resizer-margin" data-resize="margin" role="separator" aria-label="拖动调整右侧页宽度"></div>
+        <div class="margin-scrim" id="margin-scrim" data-action="toggle-margin" hidden></div>
         <aside class="margin" id="margin" aria-label="侧页">
           <div class="margin-tabs" role="tablist">
             <button class="margin-tab" data-tab="motivation" role="tab">
@@ -244,7 +249,7 @@
           <span class="composer-busy" id="composer-busy" hidden>
             <span class="ink-loader"><i></i><i></i><i></i></span>
             <span id="composer-busy-text">正在推演</span>
-            <button class="stop-btn" data-action="stop" title="停止生成">
+            <button class="stop-btn" data-action="stop" title="停止生成" aria-label="停止生成">
               <svg><use href="#i-stop"/></svg>
             </button>
           </span>
@@ -265,7 +270,7 @@
             title="支持 .txt / .md / .docx，单文件 ≤ 2 MB">
             <svg><use href="#i-clip"/></svg>
           </button>
-          <input type="file" id="attach-input" multiple hidden
+          <input type="file" id="attach-input" multiple hidden aria-label="添加材料文件"
             accept=".txt,.md,.markdown,.docx">
           <textarea id="composer-input" rows="1" maxlength="4000"
             placeholder="写明基础、目的与障碍。"></textarea>
@@ -298,7 +303,6 @@
       <div class="page-scroll">
         <div class="cog-hero reveal">
           <div class="cog-hero-copy">
-            <span class="section-mark" data-i18n="cog.heroMark">认知 · 其一</span>
             <h1><span data-i18n="cog.title">你的认知</span><br><em data-i18n="cog.titleEm">概览</em></h1>
             <p data-i18n="cog.intro">偏好、基线、证据与假说构成你的全局认知；跨会话保留，可随时修订。</p>
             <div class="cog-hero-actions">
@@ -310,15 +314,6 @@
             <div class="cog-stats" id="cog-stats"></div>
             <p class="cog-hero-note" data-i18n="cog.note">归档时自动复盘，提案经确认后写入。</p>
           </div>
-          <div class="bench-hero-seal" aria-hidden="true">
-            <svg viewBox="0 0 200 200">
-              <circle cx="100" cy="100" r="86" class="seal-circle"/>
-              <circle cx="100" cy="100" r="72" class="seal-circle inner"/>
-              <path d="M100 32v136M32 100h136" class="seal-axis"/>
-              <text x="100" y="108" text-anchor="middle" class="seal-char">知</text>
-            </svg>
-            <span class="seal-caption">GLOBAL · 认知</span>
-          </div>
         </div>
 
         <div id="cognition-body">
@@ -327,13 +322,19 @@
       </div>
     </section>
 
-    <!-- ──────────── BENCHMARK VIEW ──────────── -->
+    <!-- ──────────── SELF-ASSESSMENT VIEW · 自评 ────────────
+         这里**只有自评**。基准测试（简短/完整两套卷、领域勾选、三通道读数）
+         已整体下线：那套仪器给材料、计时、判对错，测到的是"做这套题的能力"，
+         而产品要回答的是"你平时怎么学"——那是自评能回答、卷面回答不了的问题。
+
+         自评分两档：简短版（90 条）与全面版（127 条）。
+         两档共用同一套计分与同一条 stated 通道，所以可以随时补做全面版，
+         不会被算成另一套读数。 -->
     <section class="view view-benchmark" data-view="benchmark" id="view-benchmark">
       <header class="page-head">
         <button class="icon-btn rail-open" data-action="toggle-rail" aria-label="打开索引"><svg><use href="#i-panel"/></svg></button>
-        <div class="page-kicker"><span data-i18n="bench.kicker">测量 · 不是门槛</span><span class="kicker-line"></span><em data-i18n="bench.kickerNote">BENCHMARK · 认知校准</em></div>
+        <div class="page-kicker"><span data-i18n="sa.pageKicker">认识自己 · 不是考试</span><span class="kicker-line"></span><em data-i18n="sa.pageKickerNote">SELF-ASSESSMENT</em></div>
         <div class="page-head-actions">
-          <span class="quiet-note" data-i18n="bench.demoNote">演示数据未接入</span>
           <button class="text-link" data-action="go-chat" data-i18n="common.backToChat">返回对话</button>
         </div>
       </header>
@@ -341,151 +342,55 @@
       <div class="page-scroll">
         <div class="bench-hero reveal">
           <div class="bench-hero-copy">
-            <span class="section-mark" data-i18n="bench.mark1">基准 · 其一</span>
-            <h1><span data-i18n="bench.title">先量一次</span><br><em data-i18n="bench.titleEm">你站在哪里</em></h1>
-            <p data-i18n="bench.intro">基准用于校准，不是准入门槛。</p>
+            <h1><span data-i18n="sa.heroTitle">先说说你</span><br><em data-i18n="sa.heroTitleEm">平时怎么做</em></h1>
+            <p data-i18n="sa.heroIntro">没有对错，也不计时打分。你答得越具体，后面给你的计划就越贴合你自己的方式。</p>
             <div class="hero-meta">
-              <span data-i18n="bench.meta1"><i class="tick"></i>可中断保存</span>
-              <span data-i18n="bench.meta2"><i class="tick"></i>可继续或重开</span>
-              <span data-i18n="bench.meta3"><i class="tick"></i>两种卷不分优劣</span>
+              <span data-i18n="sa.meta1"><i class="tick"></i>随时可以停下</span>
+              <span data-i18n="sa.meta2"><i class="tick"></i>答过的不会丢</span>
+              <span data-i18n="sa.meta3"><i class="tick"></i>可以先做简短版</span>
             </div>
-          </div>
-          <div class="bench-hero-seal" aria-hidden="true">
-            <svg viewBox="0 0 200 200">
-              <circle cx="100" cy="100" r="86" class="seal-circle"/>
-              <circle cx="100" cy="100" r="72" class="seal-circle inner"/>
-              <path d="M100 32v136M32 100h136" class="seal-axis"/>
-              <text x="100" y="108" text-anchor="middle" class="seal-char">量</text>
-            </svg>
-            <span class="seal-caption">M1 · 自述轮优先</span>
           </div>
         </div>
 
-        <div class="bench-grid reveal">
-          <article class="form-card" data-form="quick">
-            <div class="form-card-top">
-              <span class="form-no">甲</span>
-              <span class="form-time">≈ 20 min</span>
-            </div>
-            <h2 data-i18n="bench.quick">简短版</h2>
-            <p>一次任务观测四项变量；置信度上限 <em>provisional</em>。</p>
-            <ul class="form-list">
-              <li>自述轮 · 20 道以内</li>
-              <li>复用行为任务 · 1 次</li>
-              <li>随时保存退出</li>
-            </ul>
-            <button class="ink-btn" data-action="start-run" data-form="quick">
-              <span data-i18n="bench.startQuick">从简短版开始</span><svg><use href="#i-arrow"/></svg>
+        <section class="sa-entry reveal" id="sa-entry">
+          <div class="sa-entry-main">
+            <span class="sa-entry-kicker" data-i18n="sa.entryKicker">自评 · 选一档开始</span>
+            <h2 data-i18n="sa.entryTitle">你平时是怎么学的？</h2>
+            <p data-i18n="sa.entryNote">两档问的是同一件事，只是问得粗一点或细一点：简短版 90 条，全面版 127 条。先做简短版也完全可以，之后想补全面版随时可补，不会被当成另一次测量。</p>
+            <div class="sa-entry-facts" id="sa-entry-facts"></div>
+          </div>
+          <div class="sa-entry-actions" id="sa-entry-actions">
+            <button class="ink-btn is-solid" data-action="open-self-assessment" data-tier="short" id="sa-start">
+              <span data-i18n="sa.startShort">做简短版 · 90 条</span><svg><use href="#i-arrow"/></svg>
             </button>
-          </article>
-
-          <article class="form-card is-primary" data-form="full">
-            <div class="form-card-top">
-              <span class="form-no">乙</span>
-              <span class="form-time">≈ 45 min</span>
-            </div>
-            <h2 data-i18n="bench.full">完整版</h2>
-            <p>独立任务与真实闭环；可完整测量 <em>measured</em> 通道。</p>
-            <ul class="form-list">
-              <li>自述轮 + 行为轮</li>
-              <li>独立任务 · 互不污染</li>
-              <li>产出可对账的读数</li>
-            </ul>
-            <button class="ink-btn is-solid" data-action="start-run" data-form="full">
-              <span data-i18n="bench.startFull">从完整版开始</span><svg><use href="#i-arrow"/></svg>
+            <button class="ink-btn" data-action="open-self-assessment" data-tier="full" id="sa-start-full">
+              <span data-i18n="sa.startFull">做全面版 · 127 条</span><svg><use href="#i-arrow"/></svg>
             </button>
-          </article>
-
-          <aside class="run-card" id="run-card">
-            <div class="run-head">
-              <span class="section-mark">上一次</span>
-              <span class="run-status">已中断</span>
-            </div>
-            <h3>自述轮 · 7 / 20</h3>
-            <p class="run-sub">2026-10-18 21:40 · 停在「阅读 vs 听力」这一题之前</p>
-            <div class="run-progress"><i style="--p:35%"></i></div>
-            <div class="run-actions">
-              <button class="mini-btn solid" data-action="resume-run">继续上次</button>
-              <button class="mini-btn" data-action="restart-run">重新开始</button>
-            </div>
-            <p class="run-note">重新开始会将旧运行标为 <em>abandoned</em>，仍可查。</p>
-          </aside>
-        </div>
-
-        <section class="bench-section reveal">
-          <header class="bench-section-head">
-            <div>
-              <span class="section-mark" data-i18n="bench.mark2">领域 · 两段</span>
-              <h2 data-i18n="bench.domains">熟悉与兴趣领域</h2>
-            </div>
-            <p data-i18n="bench.domainsNote">兴趣与熟悉互斥，其余可随时修改。</p>
-          </header>
-          <div class="domain-grid">
-            <div class="domain-col">
-              <div class="domain-col-head"><span data-i18n="bench.familiar">我熟悉的</span><em>FAMILIAR</em></div>
-              <div class="chips" id="familiar-chips">
-                <button class="chip is-on" data-domain="英语 · 考研词汇">英语 · 考研词汇<i></i></button>
-                <button class="chip is-on" data-domain="认知科学 · 记忆">认知科学 · 记忆<i></i></button>
-                <button class="chip" data-domain="写作 · 论证">写作 · 论证<i></i></button>
-                <button class="chip" data-domain="统计学">统计学<i></i></button>
-                <button class="chip" data-domain="编程 · 算法">编程 · 算法<i></i></button>
-                <button class="chip" data-domain="日语 · N2">日语 · N2<i></i></button>
-              </div>
-              <p class="domain-note" data-i18n="bench.domainNote">产生新版本；旧版本可查。</p>
-            </div>
-            <div class="domain-col">
-              <div class="domain-col-head"><span data-i18n="bench.interested">我不熟悉、但想碰的</span><em>INTERESTED</em></div>
-              <div class="chips" id="interested-chips">
-                <button class="chip" data-domain="日语 · N2">日语 · N2<i></i></button>
-                <button class="chip" data-domain="统计学">统计学<i></i></button>
-                <button class="chip is-on" data-domain="哲学 · 认识论">哲学 · 认识论<i></i></button>
-                <button class="chip" data-domain="音乐 · 和声学">音乐 · 和声学<i></i></button>
-              </div>
-              <div class="domain-skip">
-                <button class="text-link" data-action="skip-domains" data-i18n="bench.skip">跳过第二段</button>
-                <span data-i18n="bench.anytime">随时可补。</span>
-              </div>
-            </div>
+            <button class="text-link" data-action="view-self-assessment-result" id="sa-result-link" hidden data-i18n="sa.viewResult">看看上次的结果</button>
           </div>
         </section>
 
         <section class="bench-section reveal">
           <header class="bench-section-head">
             <div>
-              <span class="section-mark" data-i18n="bench.mark3">读数 · 三通道</span>
-              <h2 data-i18n="bench.channels">三通道独立</h2>
+              <span class="section-mark" data-i18n="sa.whatMark">这些答案去哪了</span>
+              <h2 data-i18n="sa.whatTitle">它不会给你一个分数</h2>
             </div>
-            <p data-i18n="bench.channelsNote">自述、经验、实测分别记录，不换算、不取平均。</p>
+            <p data-i18n="sa.whatNote">自评只回答"你认为自己怎么做"，所以它记录的是一条自述，不和任何实测混算。</p>
           </header>
-          <div class="reading-grid">
-            <article class="reading">
-              <header><span data-i18n="bench.stated">自述</span><em>STATED</em><i class="reading-dot is-filled"></i></header>
-              <div class="reading-body">
-                <div class="reading-score">—<small>/ 10</small></div>
-                <p data-i18n="bench.statedP">自述轮已答 7 / 20。</p>
-              </div>
-              <footer data-i18n="bench.statedFoot">20 题 · 已答 7</footer>
+          <div class="sa-notes">
+            <article class="sa-note-card">
+              <h3 data-i18n="sa.note1Title">它影响什么</h3>
+              <p data-i18n="sa.note1Body">影响我给你的建议用什么方式呈现——先讲例子还是先讲结构、给不给材料、要不要拆得更细。</p>
             </article>
-            <article class="reading">
-              <header><span data-i18n="bench.experienced">经验</span><em>EXPERIENCED</em><i class="reading-dot"></i></header>
-              <div class="reading-body">
-                <div class="reading-score">—<small>/ 10</small></div>
-                <p data-i18n="bench.experiencedP">0 条经验证据。</p>
-              </div>
-              <footer data-i18n="bench.experiencedFoot">0 条经验证据</footer>
+            <article class="sa-note-card">
+              <h3 data-i18n="sa.note2Title">它不影响什么</h3>
+              <p data-i18n="sa.note2Body">不会限制你能做什么，也不会被当成能力结论。想改随时改，改完以新的那条为准。</p>
             </article>
-            <article class="reading">
-              <header><span data-i18n="bench.measured">实测</span><em>MEASURED</em><i class="reading-dot"></i></header>
-              <div class="reading-body">
-                <div class="reading-score">—<small>/ 10</small></div>
-                <p data-i18n="bench.measuredP">未执行。</p>
-              </div>
-              <footer data-i18n="bench.measuredFoot">未执行行为轮</footer>
+            <article class="sa-note-card">
+              <h3 data-i18n="sa.note3Title">什么时候更新</h3>
+              <p data-i18n="sa.note3Body">不用刻意重做。每次会话归档时的复盘、以及你在侧记里的对话，都会带来新的认识。</p>
             </article>
-          </div>
-          <div class="empty-resolution">
-            <span class="empty-mark">留白</span>
-            <p data-i18n="bench.emptyResolution">完整测试数据尚未接入，版式先保留。</p>
           </div>
         </section>
       </div>
@@ -591,7 +496,7 @@
                 <h3 data-i18n="set.citeTitle">依据标注</h3>
                 <p data-i18n="set.citeDesc">在引用处留下墨点。</p>
               </div>
-              <button class="switch is-on" id="cite-switch" role="switch" aria-checked="true"><i></i></button>
+              <button class="switch is-on" id="cite-switch" role="switch" aria-checked="true" aria-label="依据标注"><i></i></button>
             </div>
           </section>
 
@@ -682,6 +587,9 @@
 
   </div>
 </div>
+
+<!-- ─────────────────────────  self assessment (full screen)  ───────────────────────── -->
+<div class="sa-root" id="self-assessment" hidden aria-modal="true" role="dialog" aria-label="自评"></div>
 
 <!-- ─────────────────────────  overlays  ───────────────────────── -->
 <div class="popover-layer" id="popover-layer"></div>

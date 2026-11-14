@@ -16,6 +16,23 @@ dev = [
     "pytest>=8.3",
     "httpx>=0.28",
 ]
+# `tools.seedui` 通过 TestClient 走真实 HTTP 端点造演示数据 —— 镜像的入口脚本
+# 要用它，所以这一个运行时路径需要 httpx。单独成组，避免把整张 dev 依赖塞进镜像。
+seed = [
+    "httpx>=0.28",
+]
+
+# 扁平布局里 `app/` 与 `tools/` 都是顶层包。不显式声明，`pip install -e .`
+# 会因"发现到多个顶层包"直接失败 —— 那会让 `scripts/dev.*` 与 Dockerfile
+# 里的安装步骤全部断掉，而错误信息说的是"包发现"，不指向真正的原因。
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# 用 `find` 而不是手写列表：`app.agent`、`app.api` 这些子包必须一起进去，
+# 只列顶层包会让镜像启动时才报 ImportError。
+include = ["app*", "tools*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

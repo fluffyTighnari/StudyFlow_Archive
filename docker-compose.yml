@@ -1,0 +1,41 @@
+# 容器里跑整个应用：后端 API + 静态前端（同源，一个端口）。
+#
+# 用法（仓库根）：
+#   docker compose up --build
+#   打开 http://127.0.0.1:8125/
+#
+# 真模型：把密钥放进 `.env`（DEEPSEEK_API_KEY=...），compose 会把它作为环境变量传进去。
+# 不传密钥时默认用 `fake` 替身（不联网、可复现），所以第一次能直接起。
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: personal-learning-flow:local
+    ports:
+      - "8125:8125"
+    environment:
+      # 让 Settings.from_env 读容器里的 .env / 环境变量。
+      MOUXUE_SKIP_ENV_FILE: "0"
+      MOUXUE_LLM_PROVIDER: "${MOUXUE_LLM_PROVIDER:-fake}"
+      MOUXUE_LLM_MODEL: "${MOUXUE_LLM_MODEL:-}"
+      MOUXUE_LLM_BASE_URL: "${MOUXUE_LLM_BASE_URL:-}"
+      MOUXUE_LLM_API_KEY: "${MOUXUE_LLM_API_KEY:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      DEEPSEEK_BASE_URL: "${DEEPSEEK_BASE_URL:-}"
+      PYTHONIOENCODING: "utf-8"
+    # 库路径由入口脚本的 --db 决定（MOUXUE_DATABASE_URL 会被它覆盖，写在这里只会误导）。
+    volumes:
+      # 库落在命名卷里，重建容器不丢。
+      - app-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8125/api/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  app-data:

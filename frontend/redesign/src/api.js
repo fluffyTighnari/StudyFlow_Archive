@@ -200,6 +200,13 @@ export const api = {
   deleteAttachment: (sessionId, attachmentId) =>
     del(`/api/sessions/${seg(sessionId)}/attachments/${seg(attachmentId)}`),
 
+  // ── 自评单例（与基准测试分开：不给材料、只产 stated）────────────────
+  selfAssessmentScale: (tier = 'full') =>
+    get(`/api/self-assessment/scale?tier=${encodeURIComponent(tier)}`),
+  submitSelfAssessment: (body) => post('/api/self-assessment/submit', body),
+  selfAssessmentLatest: () => get('/api/self-assessment/latest'),
+  selfAssessmentHistory: () => get('/api/self-assessment/history'),
+
   // ── 全局认知（只读概览；写入仍走提案/直写端点）──────────────────────
   preferences: () => get('/api/preferences'),
   m1Variables: () => get('/api/m1/variables'),

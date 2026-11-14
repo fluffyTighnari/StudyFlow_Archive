@@ -19,11 +19,12 @@
    ═══════════════════════════════════════════════════════════════════ */
 
 import { api } from './src/api.js';
-import { adaptContext, adaptDetail, adaptWorkspace, dotClass, escape, shortTime, toolLabel, traceRows } from './src/adapt.js';
+import { adaptContext, adaptDetail, adaptWorkspace, dotClass, escape, shortTime, traceRow, traceRows } from './src/adapt.js';
 import { richText } from './src/rich.js';
 import { drawContextRing } from './src/context-ring.js';
 import { ThreadIndex } from './src/thread-index.js';
 import { runDiscussion } from './src/live.js';
+import { mountSelfAssessment } from './src/self-assessment.js';
 
 const $  = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -48,16 +49,25 @@ const I18N = {
     'rail.newSession': '新会话',
     'rail.folders': '领域 · Folders',
     'rail.archive': '已归档',
-    'bench.title': '先量一次', 'bench.titleEm': '你站在哪里', 'bench.intro': '基准用于校准，不是准入门槛。',
-    'bench.meta1': '可中断保存', 'bench.meta2': '可继续或重开', 'bench.meta3': '两种卷不分优劣',
-    'bench.quick': '简短版', 'bench.full': '完整版',
-    'bench.domains': '熟悉与兴趣领域', 'bench.domainsNote': '兴趣与熟悉互斥，其余可随时修改。',
-    'bench.familiar': '我熟悉的', 'bench.interested': '我不熟悉、但想碰的', 'bench.domainNote': '产生新版本；旧版本可查。', 'bench.anytime': '随时可补。',
-    'bench.channels': '三通道独立', 'bench.channelsNote': '自述、经验、实测分别记录，不换算、不取平均。',
-    'bench.stated': '自述', 'bench.experienced': '经验', 'bench.measured': '实测',
-    'bench.statedP': '自述轮已答 7 / 20。', 'bench.experiencedP': '0 条经验证据。', 'bench.measuredP': '未执行。',
-    'bench.statedFoot': '20 题 · 已答 7', 'bench.experiencedFoot': '0 条经验证据', 'bench.measuredFoot': '未执行行为轮',
-    'bench.emptyResolution': '完整测试数据尚未接入，版式先保留。', 'bench.skip': '跳过第二段',
+    'sa.pageKicker': '认识自己 · 不是考试',
+    'sa.pageKickerNote': 'SELF-ASSESSMENT',
+    'sa.heroTitle': '先说说你',
+    'sa.heroTitleEm': '平时怎么做',
+    'sa.heroIntro': '没有对错，也不计时打分。你答得越具体，后面给你的计划就越贴合你自己的方式。',
+    'sa.meta1': '随时可以停下',
+    'sa.meta2': '答过的不会丢',
+    'sa.meta3': '可以先做简短版',
+    'sa.startShort': '做简短版 · 90 条',
+    'sa.startFull': '做全面版 · 127 条',
+    'sa.whatMark': '这些答案去哪了',
+    'sa.whatTitle': '它不会给你一个分数',
+    'sa.whatNote': '自评只回答"你认为自己怎么做"，所以它记录的是一条自述，不和任何实测混算。',
+    'sa.note1Title': '它影响什么',
+    'sa.note1Body': '影响我给你的建议用什么方式呈现——先讲例子还是先讲结构、给不给材料、要不要拆得更细。',
+    'sa.note2Title': '它不影响什么',
+    'sa.note2Body': '不会限制你能做什么，也不会被当成能力结论。想改随时改，改完以新的那条为准。',
+    'sa.note3Title': '什么时候更新',
+    'sa.note3Body': '不用刻意重做。每次会话归档时的复盘、以及你在侧记里的对话，都会带来新的认识。',
     'set.generalTitle': '语言与发送', 'set.generalIntro': '只影响界面与输入。',
     'set.langTitle': '界面语言', 'set.langDesc': '只改界面，不改内容。',
     'set.busyTitle': '繁忙时发送', 'set.busyDesc': '回答进行中又发了一句。',
@@ -74,6 +84,11 @@ const I18N = {
     'set.ink': '夜墨', 'set.inkDesc': '深墨 · 米白字 · 暗朱',
     'set.scaleTitle': '正文字号', 'set.scaleDesc': '只影响正文。', 'set.small': '小', 'set.normal': '标准', 'set.large': '大',
     'set.motionTitle': '推演动效', 'set.motionDesc': '控制推演动画。', 'set.full': '完整', 'set.restrained': '克制',
+    'sa.entryKicker': '自评 · 一次性',
+    'sa.entryTitle': '先回答「你平时怎么做」',
+    'sa.entryNote': '90 条或 127 条，按你愿意花的时间选。它不给人材料、也不判对错；产出的是自述通道的读数。',
+    'sa.start': '开始自评',
+    'sa.viewResult': '看上一次的结果',
     'cog.kicker': '全局认知',
     'cog.heroMark': '认知 · 其一',
     'cog.kickerNote': 'COGNITION · 跨会话',
@@ -105,13 +120,11 @@ const I18N = {
     'cog.unverified': '未验证',
     'rail.chat': '对话',
     'rail.cognition': '认知',
-    'rail.benchmark': '基准',
+    'rail.benchmark': '自评',
     'rail.settings': '设置',
     'rail.modelNote': '本地 Ollama · 上下文 32k',
     'rail.colophon': '持久化学习流 · 每句话可回溯',
-    'common.backToChat': '返回对话', 'set.kickerNote': 'SETTINGS · 模型与偏好', 'bench.kickerNote': 'BENCHMARK · 认知校准',
-    'cog.chat': '和侧记聊聊', 'set.mark1': '其一', 'set.mark2': '其二', 'set.mark3': '其三',
-    'bench.mark1': '基准 · 其一', 'bench.mark2': '领域 · 两段', 'bench.mark3': '读数 · 三通道',
+    'common.backToChat': '返回对话', 'set.kickerNote': 'SETTINGS · 模型与偏好', 'cog.chat': '和侧记聊聊', 'set.mark1': '其一', 'set.mark2': '其二', 'set.mark3': '其三',
     'common.create': '创建',
     'common.cancel': '取消',
     'common.save': '保存',
@@ -129,10 +142,6 @@ const I18N = {
     'composer.send': '落笔',
     'composer.hint': '写明基础、目的与障碍；不明确处会先询问。',
     'composer.busyPrefix': '繁忙时：',
-    'bench.kicker': '测量 · 不是门槛',
-    'bench.demoNote': '演示数据未接入',
-    'bench.startQuick': '从简短版开始',
-    'bench.startFull': '从完整版开始',
     'settings.kicker': '设置',
     'settings.general': '通用',
     'settings.generalNote': '语言 · 繁忙时行为',
@@ -161,16 +170,25 @@ const I18N = {
     'rail.newSession': 'New session',
     'rail.folders': 'Fields · Folders',
     'rail.archive': 'Archived',
-    'bench.title': 'Measure once', 'bench.titleEm': 'where you stand', 'bench.intro': 'A calibration, not a gate.',
-    'bench.meta1': 'Interruptible', 'bench.meta2': 'Resume or restart', 'bench.meta3': 'No form is better',
-    'bench.quick': 'Short form', 'bench.full': 'Full form',
-    'bench.domains': 'Familiarity & interests', 'bench.domainsNote': 'Interests exclude familiarity; everything else can change.',
-    'bench.familiar': 'Familiar', 'bench.interested': 'Interested', 'bench.domainNote': 'Creates a new version; old versions remain.', 'bench.anytime': 'Add later anytime.',
-    'bench.channels': 'Three independent channels', 'bench.channelsNote': 'Stated, experienced and measured are recorded separately; no conversion, no averaging.',
-    'bench.stated': 'Stated', 'bench.experienced': 'Experienced', 'bench.measured': 'Measured',
-    'bench.statedP': 'Stated round answered 7 / 20.', 'bench.experiencedP': '0 evidence items.', 'bench.measuredP': 'Not run.',
-    'bench.statedFoot': '20 items · 7 answered', 'bench.experiencedFoot': '0 evidence items', 'bench.measuredFoot': 'No behavioural round',
-    'bench.emptyResolution': 'Full benchmark data is not connected yet; layout preserved.', 'bench.skip': 'Skip section two',
+    'sa.pageKicker': 'Getting to know you · not a test',
+    'sa.pageKickerNote': 'SELF-ASSESSMENT',
+    'sa.heroTitle': 'Tell me how',
+    'sa.heroTitleEm': 'you actually study',
+    'sa.heroIntro': 'No right answers, no timer, no score. The more concretely you answer, the better the plan fits the way you already work.',
+    'sa.meta1': 'Stop any time',
+    'sa.meta2': 'Your answers are kept',
+    'sa.meta3': 'Start with the short one',
+    'sa.startShort': 'Short version · 90 items',
+    'sa.startFull': 'Full version · 127 items',
+    'sa.whatMark': 'Where answers go',
+    'sa.whatTitle': 'It will not give you a score',
+    'sa.whatNote': 'It only records how you say you work — kept apart from anything measured.',
+    'sa.note1Title': 'What it changes',
+    'sa.note1Body': 'How advice is presented to you: examples first or structure first, materials or none, how finely steps are broken down.',
+    'sa.note2Title': 'What it does not change',
+    'sa.note2Body': 'It will not limit what you can do, and it is not treated as a verdict on ability. Change it whenever; the newest answer wins.',
+    'sa.note3Title': 'When it updates',
+    'sa.note3Body': 'You do not need to redo it. Each archived session review and each side-note conversation brings something new.',
     'set.generalTitle': 'Language & sending', 'set.generalIntro': 'Interface and input only.',
     'set.langTitle': 'Language', 'set.langDesc': 'Interface only; content unchanged.',
     'set.busyTitle': 'Sending while busy', 'set.busyDesc': 'A message sent while a reply is running.',
@@ -187,6 +205,11 @@ const I18N = {
     'set.ink': 'Ink', 'set.inkDesc': 'Dark ink · cream · muted vermilion',
     'set.scaleTitle': 'Body size', 'set.scaleDesc': 'Body text only.', 'set.small': 'Small', 'set.normal': 'Normal', 'set.large': 'Large',
     'set.motionTitle': 'Motion', 'set.motionDesc': 'Controls reasoning animation.', 'set.full': 'Full', 'set.restrained': 'Restrained',
+    'sa.entryKicker': 'Self-assessment · once',
+    'sa.entryTitle': 'Start with how you actually work',
+    'sa.entryNote': '90 or 127 statements, depending on how much time you want to spend. No materials, no right answers; it produces stated-channel readings.',
+    'sa.start': 'Start self-assessment',
+    'sa.viewResult': 'Last result',
     'cog.kicker': 'Cognition',
     'cog.heroMark': 'Cognition · 01',
     'cog.kickerNote': 'COGNITION · ACROSS SESSIONS',
@@ -218,13 +241,11 @@ const I18N = {
     'cog.unverified': 'unverified',
     'rail.chat': 'Chat',
     'rail.cognition': 'Cognition',
-    'rail.benchmark': 'Benchmark',
+    'rail.benchmark': 'Self-check',
     'rail.settings': 'Settings',
     'rail.modelNote': 'Local Ollama · 32k context',
     'rail.colophon': 'A persistent learning flow · every line traceable',
-    'common.backToChat': 'Back to chat', 'set.kickerNote': 'SETTINGS · model & preferences', 'bench.kickerNote': 'BENCHMARK · calibration',
-    'cog.chat': 'Discuss in margin notes', 'set.mark1': '01', 'set.mark2': '02', 'set.mark3': '03',
-    'bench.mark1': 'Benchmark · I', 'bench.mark2': 'Domains · two sections', 'bench.mark3': 'Readings · three channels',
+    'common.backToChat': 'Back to chat', 'set.kickerNote': 'SETTINGS · model & preferences', 'cog.chat': 'Discuss in margin notes', 'set.mark1': '01', 'set.mark2': '02', 'set.mark3': '03',
     'common.create': 'Create',
     'common.cancel': 'Cancel',
     'common.save': 'Save',
@@ -242,10 +263,6 @@ const I18N = {
     'composer.send': 'Write',
     'composer.hint': 'State your foundation, purpose, and obstacles; I will ask if anything is unclear.',
     'composer.busyPrefix': 'While busy: ',
-    'bench.kicker': 'Measurement · not a gate',
-    'bench.demoNote': 'Demo data not connected',
-    'bench.startQuick': 'Begin with the short form',
-    'bench.startFull': 'Begin with the full form',
     'settings.kicker': 'Settings',
     'settings.general': 'General',
     'settings.generalNote': 'Language · busy behaviour',
@@ -287,6 +304,7 @@ function makeDetail() {
   return {
     session: null,
     loaded: false,
+    failed: '',
     messages: [],
     plan: null,
     motivation: null,
@@ -428,6 +446,10 @@ const state = {
   cognition: { loaded: false, loading: false, data: null, error: '' },
   //: 归档复盘弹出的待确认提案。
   proposalQueue: [],
+  //: 自评（一次性单例）的入口状态。
+  selfAssessment: { latest: null, loading: false, scales: {} },
+  //: 侧页这次收起是不是因为视口变窄（而不是用户自己关的）。
+  marginForced: false,
 };
 
 
@@ -454,9 +476,17 @@ const confirmDialog = $('#confirm-dialog');
 const threadIndexEl = $('#thread-index');
 const threadIndexList = $('#thread-index-list');
 const threadIndex = new ThreadIndex($('#thread-index-canvas'), {
-  onSelect: (item) => jumpToMessage(item.id),
+  onSelect: (item) => {
+    jumpToMessage(item.id);
+    // 选完就收起：面板是"找一句话"的工具，不是常驻抽屉。
+    threadIndexEl?.classList.remove('is-open');
+  },
   onHover: (index) => {
     $$('.ti-item', threadIndexList).forEach((el, i) => el.classList.toggle('is-hover', i === index));
+  },
+  onToggle: () => {
+    // 触屏与键盘没有 hover：点一下 canvas 空白处就把面板显式打开/收起。
+    threadIndexEl?.classList.toggle('is-open');
   },
 });
 
@@ -547,9 +577,9 @@ const EN_UI = {
   '按你说过的话': 'By your messages',
   '侧记': 'Margin notes',
   '侧记不绑定会话。可讨论方法，或提议修改全局认知；写入需确认。': 'Margin notes are session-independent. Discuss methods or propose global changes; writes need confirmation.',
-  '选择一个会话。': 'Select a session.',
-  '尚无会话': 'No sessions',
-  '先新建领域。': 'Create a field first.',
+  '从左边挑一个会话，或者新建一个。': 'Pick a session on the left, or start a new one.',
+  '还没有会话': 'No sessions yet',
+  '先在左侧建一个领域，再往里加会话。': 'Create a field on the left, then add sessions to it.',
   '还没有经验证据。': 'No evidence yet.',
   '没有待确认的提案。': 'No pending proposals.',
   '本次': 'This run',
@@ -592,13 +622,13 @@ const EN_UI = {
   '未配置档案': 'No profile configured',
   '已设置': 'Set',
   '未设置': 'Not set',
-  '尚无对话': 'No messages yet',
+  '这一页还是空的': 'This page is still blank',
   '写明基础、目的与障碍；计划会先以草案呈现。': 'State foundation, purpose and obstacles. Plans appear as drafts first.',
-  '尚无记录': 'No records',
-  '该领域暂无会话。': 'No sessions in this field.',
+  '还没有记录': 'Nothing recorded yet',
+  '这个领域里还没有会话。先从一句你想弄清的事开始吧。': 'No sessions in this field yet. Start with something you want to figure out.',
   '在这个领域新建会话': 'New session in this field',
   '新建会话': 'New session',
-  '暂无档案。': 'No profiles yet.',
+  '还没有模型档案。现在用的是 .env 里配的那个。': 'No model profiles yet — using the one from .env.',
   '不绑定会话 · 提议需确认': 'Session-independent · proposals need confirmation',
   '独立记忆 · 只提议': 'Separate memory · proposals only',
   '侧记不绑定会话。可讨论方法，或提议修改全局认知；写入需确认。': 'Margin notes are session-independent. Discuss methods or propose global changes; writes need confirmation.',
@@ -700,6 +730,88 @@ function syncMarginToggle() {
   const isClosed = workspace.classList.contains('is-margin-closed');
   toggle.classList.toggle('is-on', !isClosed);
   toggle.setAttribute('aria-pressed', String(!isClosed));
+  syncComposerAxis();
+}
+
+/**
+ * 把"侧页当前占多宽"交给输入区。
+ *
+ * `.composer` 横跨整个 `.stage`，而正文所在的 `.thread-wrap` 只在 workspace
+ * 的第一列 —— 侧页那一列不在里面。输入区要让出这段宽度，才能和正文同轴
+ * （1440 + 侧页展开时，不让出会差 116px）。
+ *
+ * 只有两种取值：侧页可见 = 它占的列宽；收起或覆盖模式 = 0
+ * （覆盖模式下侧页浮在内容之上，不占列宽）。
+ */
+function syncComposerAxis() {
+  const stage = $('#stage');
+  if (!stage) return;
+  const overlay = workspace.classList.contains('is-margin-overlay');
+  const closed = workspace.classList.contains('is-margin-closed');
+  if (overlay || closed) {
+    stage.style.setProperty('--margin-current', '0px');
+    return;
+  }
+  const width = parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue('--margin-w'),
+  ) || 348;
+  const capped = Math.min(width, window.innerWidth * 0.42);
+  stage.style.setProperty('--margin-current', `${Math.round(capped)}px`);
+}
+
+
+
+/* ── 断点 ────────────────────────────────────────────────────────────
+ * 以前"窄屏收起侧页"是在 `boot()` 与 `selectSession()` 里各写一次的
+ * `innerWidth <= 1180` —— 那是个**一次性副作用**：从 1024 拉宽到 1440 时
+ * 没有任何代码再把侧页放回来（实测 `stillClosedAt1440: true`）。
+ *
+ * 现在只有一个判据 `applyBreakpoint()`，由 resize（rAF 合并）与启动共同调用。
+ * 关键区分：**用户手动的开/关**与**视口强制的收起**是两件事。
+ * - `state.marginForced` 记录"这次收起是视口干的，不是用户";
+ * - 视口回到宽屏时，只有 `marginForced` 才恢复 —— 用户自己关掉的不会被擅自打开。
+ */
+const NARROW_MARGIN = 1280;
+const NARROW_RAIL = 900;
+
+function isNarrowMargin() { return window.innerWidth <= NARROW_MARGIN; }
+
+function applyBreakpoint() {
+  const narrow = isNarrowMargin();
+  workspace.classList.toggle('is-margin-overlay', narrow);
+
+  if (narrow) {
+    if (!workspace.classList.contains('is-margin-closed')) {
+      // 视口刚刚变窄：收起，并记下"这是被收起的"
+      workspace.classList.add('is-margin-closed');
+      state.marginForced = true;
+    }
+  } else if (state.marginForced) {
+    // 回到宽屏：只恢复"被视口收起的"那一类
+    workspace.classList.remove('is-margin-closed');
+    state.marginForced = false;
+  }
+
+  syncMarginScrim();
+  syncMarginToggle();
+}
+
+/** 抽屉打开时铺一层薄纱；点它即收起（覆盖模式下没有别的遮蔽物）。 */
+function syncMarginScrim() {
+  const scrim = $('#margin-scrim');
+  if (!scrim) return;
+  const overlayOpen = workspace.classList.contains('is-margin-overlay')
+    && !workspace.classList.contains('is-margin-closed');
+  scrim.hidden = !overlayOpen;
+}
+
+let breakpointFrame = 0;
+function scheduleBreakpoint() {
+  if (breakpointFrame) return;
+  breakpointFrame = requestAnimationFrame(() => {
+    breakpointFrame = 0;
+    applyBreakpoint();
+  });
 }
 
 /**
@@ -1062,7 +1174,7 @@ function folderMarkup(folder) {
 function renderRail() {
   const visibleFolders = state.folders;
   folderList.innerHTML = visibleFolders.map((f) => folderMarkup(f)).join('')
-    || '<div class="archive-empty">还没有领域 · 点「新领域」开始</div>';
+    || '<div class="archive-empty">还没有领域。点上面「新领域」建第一个。</div>';
   $('#folder-count').textContent = pad(state.folders.length);
 
   const archived = [];
@@ -1093,7 +1205,6 @@ function renderRail() {
     ? `${prof.model} · ${prof.provider} · ${L('上下文', 'context')} ${prof.ctx}`
     : (state.llmConfig?.settings ? '设置 → 模型：加一份档案就能换' : '读不到模型配置');
 
-  $('#bench-badge').textContent = state.bench.status === 'running' ? L('进行中', 'Active') : (state.bench.status === 'interrupted' ? L('未完成', 'Incomplete') : '·');
   translateUi();
 }
 
@@ -1103,8 +1214,8 @@ function renderTopbar() {
   // 没有会话但选中了领域时，面包屑仍然显示那个领域 —— 否则会出现
   // “刚点了领域，上面却写着未选择领域”。
   const folder = session ? findFolder(session.folderId) : findFolder(state.currentFolder);
-  $('#crumb .crumb-folder').textContent = folder ? folder.name : '未选择领域';
-  $('#crumb .crumb-session').textContent = session ? session.title : '尚未选择会话';
+  $('#crumb .crumb-folder').textContent = folder ? folder.name : '还没选领域';
+  $('#crumb .crumb-session').textContent = session ? session.title : '还没选会话';
   const pill = $('#session-state');
   const stateKey = session ? session.state : 'draft';
   pill.className = 'state-pill is-' + stateKey;
@@ -1119,12 +1230,31 @@ function renderTopbar() {
   document.title = session ? `${session.title} · ${brandTitle}` : brandTitle;
 }
 
-function renderThread() {
+function renderThread({ animate = true } = {}) {
   const detail = activeDetail();
   const session = currentSession();
   if (!session || !detail) {
     thread.innerHTML = '';
     threadEnd.hidden = true;
+    return;
+  }
+  // 数据还没到 ≠ 没有数据。`makeDetail()` 先塞一份空的给点击用，
+  // 那份的 `loaded` 是 false —— 直接画空态会让"正在读"看起来像"确实没聊过"。
+  if (!detail.loaded) {
+    thread.innerHTML = threadSkeletonMarkup();
+    threadEnd.hidden = true;
+    threadIndexEl.hidden = true;
+    return;
+  }
+  if (detail.failed) {
+    thread.innerHTML = emptyStateMarkup({
+      icon: 'close',
+      title: '这个会话读不到',
+      body: detail.failed,
+      note: '界面不摆假数据：读不到就是读不到。',
+    });
+    threadEnd.hidden = true;
+    threadIndexEl.hidden = true;
     return;
   }
   if (detail.messages.length === 0) {
@@ -1136,6 +1266,10 @@ function renderThread() {
   threadEnd.hidden = false;
   const messages = detail.messages.map((m, i) => messageMarkup(m, i)).join('');
   thread.innerHTML = `${dateDivider(detail)}${messages}`;
+  // 重绘的**原因**决定要不要重播"墨落"动画：
+  // 切会话/首次进入该有；换语言、换主题只该换字，不该把整屏再演一遍。
+  if (!animate) thread.classList.add('is-settled');
+  else thread.classList.remove('is-settled');
   bindInkDots();
   renderThreadIndex();
   markInteractionStates(thread, '.msg-assistant', '.msg-user');
@@ -1198,6 +1332,16 @@ function scheduleThreadIndexViewport() {
   });
 }
 
+/** 窗口尺寸变了，每条消息的**相对位置**也跟着变：索引轨要按新高度重建。 */
+let indexRebuildFrame = 0;
+function scheduleThreadIndexRebuild() {
+  if (indexRebuildFrame) return;
+  indexRebuildFrame = requestAnimationFrame(() => {
+    indexRebuildFrame = 0;
+    renderThreadIndex();
+  });
+}
+
 function jumpToMessage(msgId) {
   const node = thread.querySelector(`.msg[data-msg-id="${CSS.escape(String(msgId))}"]`);
   if (!node) return;
@@ -1222,11 +1366,59 @@ function dateDivider(detail) {
   return `<div class="date-divider"><span>${d.getFullYear()} · ${pad(d.getMonth() + 1)} · ${pad(d.getDate())}</span><span>${week}</span></div>`;
 }
 
+/**
+ * 会话正在读：画**稿纸骨架**，不画空态。
+ *
+ * 三件事必须同时成立，否则它在说谎：
+ * 1. 形状像一段回答（抬头 + 几行正文），不是通用灰块；
+ * 2. 有 `aria-busy` + 一句给读屏听的"正在读取"；
+ * 3. 不出现任何示例提问 —— 那是"确实还没聊过"才该有的东西。
+ */
+/**
+ * 主对话区的空态 —— 一个形状，六种来由。
+ *
+ * 原先六个调用点各写一遍（读不到 / 没聊过 / 画不出来 / 领域空 / 无会话 / 连不上），
+ * 结构相同但措辞与动作散在各处，改一处样式要改六遍。
+ * 现在统一成：**印章 + 一句结论 + 一句解释 + 一个可选的去处**。
+ *
+ * `tone` 只影响印章的图标语义（错误用叉、空用档案、目录用文件夹），
+ * 不改变结构 —— 空态与错误态不该长得像两种组件。
+ */
+function emptyStateMarkup({ icon: iconName = 'archive-mark', title, body = '', note = '', action = null }) {
+  const actionHtml = action
+    ? `<div class="prompt-hints"><button ${action.action || ''}>${escapeHtml(action.label)}</button></div>`
+    : '';
+  const noteHtml = note ? `<p class="muted">${escapeHtml(note)}</p>` : '';
+  return `<div class="empty-thread">
+    <span class="empty-seal">${icon(iconName)}</span>
+    <h2>${escapeHtml(title)}</h2>
+    ${body ? `<p>${escapeHtml(body)}</p>` : ''}
+    ${noteHtml}
+    ${actionHtml}
+  </div>`;
+}
+
+function threadSkeletonMarkup() {
+  const line = (w) => `<i class="sk-line" style="--w:${w}%"></i>`;
+  return `<div class="thread-skeleton" aria-busy="true">
+    <span class="sr-only">正在读取这个会话…</span>
+    ${[0, 1].map(() => `<div class="sk-msg">
+      <div class="sk-gutter"><span class="sk-seal"></span><span class="sk-time"></span></div>
+      <div class="sk-body">
+        <span class="sk-role"></span>
+        ${line(96)}${line(88)}${line(72)}
+      </div>
+    </div>`).join('')}
+    <div class="sk-status"><span class="ink-loader"><i></i><i></i><i></i></span><span>正在读取会话</span></div>
+  </div>`;
+}
+
 function emptyThreadMarkup(session) {
   return `<div class="empty-thread">
     <span class="empty-seal">${icon('archive-mark')}</span>
-    <h2>尚无对话</h2>
-    <p>写明基础、目的与障碍；计划会先以草案呈现。</p>
+    <h2>这一页还是空的</h2>
+    <p>说一句你现在卡在哪儿就行——基础、想达到什么、哪一步不顺。
+      我会先给一个草案，你看着改。</p>
     <div class="prompt-hints">
       <button data-prompt="我想在两周内读懂一篇英文论文的摘要。">我想在两周内读懂一篇英文论文的摘要。</button>
       <button data-prompt="我不知道该怎么安排今天的复习。">我不知道该怎么安排今天的复习。</button>
@@ -1325,7 +1517,7 @@ function renderMargin() {
   tabs.forEach((tab) => tab.classList.toggle('is-active', tab.dataset.tab === state.marginTab));
 
   if (!detail) {
-    marginBody.innerHTML = '<div class="mpanel"><p class="mpanel-sub">选择一个会话。</p></div>';
+    marginBody.innerHTML = '<div class="mpanel"><p class="mpanel-sub">从左边挑一个会话，这里就会显示它的动机、计划与上下文。</p></div>';
     renderContextRings();
     return;
   }
@@ -1501,8 +1693,11 @@ function renderSession() {
     renderThread();
   } catch (err) {
     console.error(err);
-    thread.innerHTML = `<div class="empty-thread"><span class="empty-seal">${icon('close')}</span>
-      <h2>对话区没画出来</h2><p>${escapeHtml(err.message || String(err))}</p></div>`;
+    thread.innerHTML = emptyStateMarkup({
+      icon: 'close',
+      title: '对话区没画出来',
+      body: err.message || String(err),
+    });
     threadEnd.hidden = true;
   }
   try {
@@ -1613,6 +1808,41 @@ function addTrace(article, label, note, stateClass = 'is-done') {
   scrollThread();
 }
 
+/**
+ * 动画散场：把 `<span class="chunk">` 拆回纯文本。
+ *
+ * 只在动画播完之后调用。视觉不变（字符顺序、空白、富文本标签都在），
+ * 但节点数从 O(字数) 回到 O(段落数)。
+ */
+function settleInk(root, delayMs = 1600) {
+  if (!root) return;
+  const spans = $$('.chunk', root);
+  if (!spans.length) return;
+  const strip = () => {
+    // **按父节点分组**：正文可能跨多个 <p>，把不同段落的字拼成一段会破坏排版。
+    const byParent = new Map();
+    for (const span of spans) {
+      if (!span.isConnected) continue;
+      const parent = span.parentNode;
+      if (!parent) continue;
+      if (!byParent.has(parent)) byParent.set(parent, []);
+      byParent.get(parent).push(span);
+    }
+    for (const [parent, group] of byParent) {
+      // 相邻的 span 合成一个文本节点，**原地**替换（先插后删，避免用到已脱离的节点）。
+      let buffer = '';
+      for (const span of group) buffer += span.textContent;
+      const anchor = group[0];
+      if (anchor && anchor.parentNode === parent) {
+        parent.insertBefore(document.createTextNode(buffer), anchor);
+      }
+      for (const span of group) span.remove();
+    }
+  };
+  if (delayMs <= 0) { strip(); return; }
+  setTimeout(strip, delayMs);
+}
+
 function inkify(html) {
   let count = 0;
   const tokens = html.split(/(<[^>]+>)/g);
@@ -1625,6 +1855,42 @@ function inkify(html) {
       return `<span class="chunk">${ch}</span>`;
     }).join('');
   }).join('');
+}
+
+/**
+ * 往正文里追加一段流式文本 —— **只给最后几个字挂动画**。
+ *
+ * 原先是每个字符建一个 `<span class="chunk">`：一篇 1500 字的回答就是 1500 个节点，
+ * 而且每个都要跑一次淡入。实测单次追加只要 1ms，但节点数是 O(字数) 的，
+ * 长回答 + 滚动 + 索引重建叠在一起会掉帧。
+ *
+ * 现在：新到的字照旧逐个包 span（淡入只发生在"正在落的那几个字"上），
+ * 早于窗口的 span 被折叠成一段纯文本节点 —— 视觉完全一致，节点数是 O(1)。
+ * 折叠必须**保留原有顺序与空白**，所以是把 span 的 textContent 拼起来再插回原位。
+ */
+const INK_LIVE_SPANS = 24;
+function appendInk(prose, chunk, liveSpans) {
+  const frag = document.createDocumentFragment();
+  for (const ch of Array.from(chunk)) {
+    const span = document.createElement('span');
+    span.className = 'chunk';
+    span.textContent = ch;
+    frag.appendChild(span);
+    liveSpans.push(span);
+  }
+  prose.appendChild(frag);
+
+  if (liveSpans.length > INK_LIVE_SPANS * 2) {
+    // 把最老的一批折叠成纯文本：插在第一个"仍保留"的 span 之前。
+    const keepFrom = liveSpans.length - INK_LIVE_SPANS;
+    const fold = liveSpans.splice(0, keepFrom);
+    const anchor = liveSpans[0];
+    const text = fold.map((el) => el.textContent).join('');
+    if (text && anchor && anchor.parentNode) {
+      anchor.parentNode.insertBefore(document.createTextNode(text), anchor);
+      for (const el of fold) el.remove();
+    }
+  }
 }
 
 function startStatusCycle(run, statusEl, words) {
@@ -1686,6 +1952,8 @@ async function startLiveRun({ userText, stepId = null }) {
   const prose = article.querySelector('.msg-prose');
   const meta = article.querySelector('.msg-meta');
   let streamed = 0;
+  // 还挂着动画的 span（旧的会被折叠成纯文本，见 appendInk）。
+  const liveSpans = [];
 
   const view = {
     status(word, note) {
@@ -1697,13 +1965,7 @@ async function startLiveRun({ userText, stepId = null }) {
     },
     append(chunk) {
       if (!chunk) return;
-      // 逐字拆成 span：原型里的"墨迹"动画就是这个类名 + 递延
-      for (const ch of Array.from(chunk)) {
-        const span = document.createElement('span');
-        span.className = 'chunk';
-        span.textContent = ch;
-        prose.appendChild(span);
-      }
+      appendInk(prose, chunk, liveSpans);
       streamed += chunk.length;
       if (streamed > 80) scrollThread();
     },
@@ -1755,17 +2017,27 @@ async function finalizeLive({ run, article, prose, meta, detail, sessionId, payl
   prose.innerHTML = inkify(html);
   $$('.chunk', prose).forEach((el, i) => { el.style.animationDelay = `${Math.min(i, 400) * 4}ms`; });
   prose.classList.remove('streaming');
+  // 墨迹动画只演一遍。散场后把逐字符的 span 撤回纯文本 ——
+  // 一篇 900 字的回答原本会永久留下 800+ 个节点，而这些节点除了当初那一次
+  // 淡入之外不再有任何作用（滚动、索引重建、切语言都要陪着扫一遍）。
+  settleInk(prose);
   article.classList.remove('is-live');
 
-  const traces = payload.toolTrace.map((entry) => {
-    const ok = ['success', 'empty'].includes(entry.status);
-    return {
-      label: traceLabel(entry.tool),
-      note: ok
-        ? String(entry.message || '完成').replace(/\*\*/g, '').slice(0, 44)
-        : `${entry.status === 'error' ? '出错' : '被拦下'} · ${String(entry.message || '').replace(/\*\*/g, '').slice(0, 40)}`,
-    };
-  });
+  // 复用 adapt 的 traceRow：状态→类名的映射只有那一处，
+  // 在这里再写一遍就会出现"流式时一种颜色、重绘后另一种"。
+  const traces = payload.toolTrace.map((entry) => traceRow(entry));
+
+  // ★ 把轨迹连同**四种状态**写回这一条消息。
+  // 以前只 push 进 `detail.messages`，不动 DOM —— 于是当轮看不到轨迹，
+  // 只有刷新或切走再回来（从 detail 重绘）才出现。用户会说"工具调用没显示"。
+  // 状态色必须跟着回来：被守卫拦下（rejected）不能画成成功。
+  const traceBox = article.querySelector('.msg-trace');
+  if (traceBox) {
+    traceBox.innerHTML = traces.map((tr) => `
+      <div class="trace-item ${tr.state || 'is-done'}">
+        <strong>${escape(tr.label)}</strong><span>${escape(tr.note || '')}</span>
+      </div>`).join('');
+  }
   if (meta) {
     const stop = payload.stopReason || 'completed';
     const stopLabel = ({
@@ -1779,6 +2051,21 @@ async function finalizeLive({ run, article, prose, meta, detail, sessionId, payl
       || (payload.toolTrace.length ? `回答 · 工具 ${payload.toolTrace.length}` : '回答');
     meta.classList.toggle('is-error', stop === 'llm_error' || stop === 'internal_error');
     meta.classList.toggle('is-warn', stop === 'max_steps');
+    // 「说改了」但没有对应的写操作。不改写模型原话 —— 只把它标出来，
+    // 让用户知道这句话背后没有一次真的写入（判据在后端，前端只负责显示）。
+    if (payload.unsupportedChangeClaim) {
+      meta.classList.add('is-warn');
+      meta.textContent = payload.toolTrace.length
+        ? `回答 · 工具 ${payload.toolTrace.length}（未改计划）`
+        : '回答（这一轮没有改动计划）';
+    }
+  }
+
+  if (payload.unsupportedChangeClaim) {
+    const warn = document.createElement('div');
+    warn.className = 'msg-warning';
+    warn.textContent = '这句话说改动发生了，但这一轮没有任何写操作 —— 计划没有真的改变。可以让它重做一次，或直接确认当前计划。';
+    article.querySelector('.msg-body').insertBefore(warn, article.querySelector('.msg-body').firstChild);
   }
 
   const foot = document.createElement('div');
@@ -1977,7 +2264,7 @@ const STATE_ACTIONS = {
 function openStateMenu(anchor) {
   const session = currentSession();
   if (!session) {
-    toast('未选择会话');
+    toast('先从左边挑一个会话吧。');
     return;
   }
   const targets = STATE_ACTIONS[session.state] || [];
@@ -2306,13 +2593,19 @@ function selectSession(id) {
   // 先用缓存画一次：点击必须立刻有反应，网络不能挡在点击和画面之间
   renderSession();
   requestAnimationFrame(() => jumpThreadBottom());
-  if (window.innerWidth <= 1180) workspace.classList.add('is-margin-closed');
+  applyBreakpoint();
   syncMarginToggle();
   renderAttachmentStrip();
   void loadAttachments(id);
   void loadDetail(id)
     .then(() => requestAnimationFrame(() => jumpThreadBottom()))
-    .catch((err) => toast(err.message, 'danger'));
+    .catch((err) => {
+      // 读失败不能停在骨架屏上 —— 那会让"读不到"看起来像"一直在读"。
+      const stale = state.details[id];
+      if (stale) { stale.loaded = true; stale.failed = err.message || String(err); }
+      if (state.currentSession === id) renderThread();
+      toast(err.message, 'danger');
+    });
 }
 
 /** 点到一个没有会话的领域：中间给出提示与一个明确的「新建会话」。 */
@@ -2329,7 +2622,7 @@ function showFolderEmpty(folder) {
   threadEnd.hidden = true;
   marginBody.innerHTML = `<div class="mpanel">
     <div class="mpanel-head"><h3>还没有会话</h3><span class="ver">${escapeHtml(folder.name)}</span></div>
-    <p class="mpanel-sub">选中一个会话后，这里会显示它的动机、计划与上下文。</p>
+    <p class="mpanel-sub">从左边挑一个会话，这里就会显示它的动机、计划与上下文。</p>
     <div class="mpanel-actions"><button class="mini-btn" data-action="new-session-in-folder" data-id="${folder.id}">新建会话</button></div>
   </div>`;
   renderThreadIndex();
@@ -2346,7 +2639,7 @@ function ensureSelection() {  if (currentSession()) { renderSession(); return; }
   }
   state.currentSession = null;
   renderSession();
-  thread.innerHTML = `<div class="empty-thread"><span class="empty-seal">${icon('folder')}</span><h2>尚无会话</h2><p>先新建领域。</p></div>`;
+  thread.innerHTML = emptyStateMarkup({ icon: 'folder', title: '还没有会话', body: '先在左侧建一个领域，再往里加会话。' });
   threadEnd.hidden = true;
   marginBody.innerHTML = '<div class="mpanel"><p class="mpanel-sub">尚无会话。</p></div>';
 }
@@ -2842,7 +3135,7 @@ function renderAttachmentStrip() {
 async function uploadFiles(files) {
   const sessionId = state.currentSession;
   if (!sessionId) {
-    toast('未选择会话', 'danger');
+    toast('先从左边挑一个会话，或者新建一个。', 'danger');
     return;
   }
   const list = Array.from(files || []);
@@ -3077,59 +3370,187 @@ function markInteractionStates(container, assistantSelector, userSelector) {
   });
 }
 
-/* ── benchmark rendering ──────────────────────────────────────────── */
+/* ── 自评单例（全屏）────────────────────────────────────────────── */
+async function loadSelfAssessment({ render = true } = {}) {
+  try {
+    const latest = await api.selfAssessmentLatest();
+    state.selfAssessment.latest = latest || null;
+  } catch (err) {
+    state.selfAssessment.latest = null;
+  }
+  state.selfAssessment.loading = false;
+  if (render) renderSelfAssessmentEntry();
+}
+
+/** 基准页顶部的自评入口：有结果就显示上一次的日期与条数。 */
+function tierLabel(tier) {
+  if (tier === 'short') return '简短版 · 90 条';
+  if (tier === 'full') return '全面版 · 127 条';
+  return '旧版 · 44 条';
+}
+
+function renderSelfAssessmentEntry() {
+  const facts = $('#sa-entry-facts');
+  const link = $('#sa-result-link');
+  if (!facts) return;
+  const latest = state.selfAssessment.latest;
+  if (!latest) {
+    facts.innerHTML = '<span class="sa-fact">尚未做过</span>';
+    if (link) link.hidden = true;
+    return;
+  }
+  const when = latest.finished_at ? shortTime(latest.finished_at) : '—';
+  const flags = latest.flags || [];
+  facts.innerHTML = [
+    `<span class="sa-fact">最近一次 <b>${escapeHtml(when)}</b></span>`,
+    `<span class="sa-fact">${escapeHtml(tierLabel(latest.tier))}</span>`,
+    `<span class="sa-fact">${(latest.readings || []).length} 个变量</span>`,
+    `<span class="sa-fact${flags.length ? ' is-warn' : ''}">${escapeHtml(flagSummary(flags))}</span>`,
+  ].join('');
+  if (link) link.hidden = false;
+}
+
+/* ── 全屏层 · 焦点纪律 ───────────────────────────────────────────────
+ * `role="dialog" aria-modal="true"` 只是**声明**。声明之后浏览器不会替你做任何事：
+ * 实测（2026-11-08）打开自评后 `activeElement` 仍是 BODY，连按三次 Tab
+ * 焦点落到了侧栏的「新领域」—— 一个"模态"被自己的侧栏穿了过去。
+ *
+ * 这里补三件事，缺一不可：
+ * 1. `inert` 把背景真正封住（焦点、点击、读屏都进不去）；
+ * 2. 打开时把焦点送到层内（否则第一下 Tab 从文档开头数起）；
+ * 3. 关闭时把焦点还给**打开它的那个按钮**（否则键盘用户被扔回页首）。
+ */
+let modalReturnFocus = null;
+
+function openModalLayer(root, { focusSelector } = {}) {
+  modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  for (const el of [$('#app'), $('#side-note')]) {
+    if (el) el.inert = true;
+  }
+  root.inert = false;
+  root.hidden = false;
+  // 先让 DOM 生效再移焦：隐藏节点里的元素 `.focus()` 是空操作。
+  requestAnimationFrame(() => {
+    const target = (focusSelector && root.querySelector(focusSelector))
+      || root.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    target?.focus();
+  });
+}
+
+function closeModalLayer(root) {
+  root.hidden = true;
+  for (const el of [$('#app'), $('#side-note')]) {
+    if (el) el.inert = false;
+  }
+  const back = modalReturnFocus;
+  modalReturnFocus = null;
+  if (back && document.contains(back)) back.focus();
+}
+
+/** Tab 在层内循环：没有这一步，`inert` 之外仍可能把焦点送到浏览器地址栏后丢上下文。 */
+function trapTabIn(root, event) {
+  if (event.key !== 'Tab') return;
+  const focusables = Array.from(
+    root.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'),
+  ).filter((el) => !el.disabled && el.getClientRects().length > 0);
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+async function openSelfAssessment(tier = 'full') {
+  const root = $('#self-assessment');
+  if (!root) return;
+  if (!state.selfAssessment.scales[tier]) {
+    try {
+      state.selfAssessment.scales[tier] = await api.selfAssessmentScale(tier);
+    } catch (err) {
+      toast(err.message, 'danger');
+      return;
+    }
+  }
+  mountSelfAssessment({
+    root,
+    scale: state.selfAssessment.scales[tier],
+    onSubmit: (payload) => api.submitSelfAssessment(payload),
+    onError: (err) => toast(err.message, 'danger'),
+    onClose: () => {
+      document.body.classList.remove('is-assessing');
+      closeModalLayer(root);
+      void loadSelfAssessment();
+      state.cognition.loaded = false;
+      refreshCognitionIfVisible();
+    },
+  });
+  document.body.classList.add('is-assessing');
+  openModalLayer(root, { focusSelector: '[data-sa="close"]' });
+}
+
+/** 有效性标记 → 一句话。逐条列一遍会把入口撑成一段日志。 */
+function flagSummary(flags) {
+  if (!flags.length) return '无有效性标记';
+  const straight = flags.includes('straight_lining');
+  const reverse = flags.filter((f) => f.startsWith('acquiescence:')).length;
+  const parts = [];
+  if (straight) parts.push('直线作答');
+  if (reverse) parts.push(`反向不一致 ${reverse} 项`);
+  if (flags.includes('too_fast')) parts.push('过快');
+  if (flags.includes('too_slow')) parts.push('过慢');
+  return parts.length ? `置信下调：${parts.join(' · ')}` : flags.join('、');
+}
+
+function showSelfAssessmentResult() {
+  const latest = state.selfAssessment.latest;
+  if (!latest) {
+    toast('你还没做过自评，先做一次就能看到结果了。');
+    return;
+  }
+  const rows = (latest.readings || [])
+    .map((row) => {
+      const facets = Object.entries(row.facets || {});
+      const tail = facets.length
+        ? `\n    ${facets.map(([name, value]) => `${name} ${value}`).join(' · ')}`
+        : '';
+      return `${row.variable_name}（${row.variable_id}）${row.score}${tail}`;
+    })
+    .join('\n');
+  openPopover($('#sa-result-link'), `
+    <div class="popover-label">自评 · ${escapeHtml(latest.run_id)} · ${escapeHtml(tierLabel(latest.tier))}</div>
+    <pre class="sa-result-pop">${escapeHtml(rows || '（没有读数）')}</pre>
+    ${(latest.flags || []).length
+      ? `<p class="pop-note">${escapeHtml(flagSummary(latest.flags))}</p>`
+      : ''}
+  `, 'popover-wide');
+}
+
+function refreshCognitionIfVisible() {
+  if (state.view === 'cognition') { state.cognition.loaded = false; void loadCognition(); }
+}
+
+/* ── 自评页 ────────────────────────────────────────────────────────── */
+/**
+ * 这一页**只有自评**。基准测试（两套卷、领域勾选、三通道读数）已整体下线 ——
+ * 给材料、计时、判对错的卷面，测到的是"做这套题的能力"；
+ * 而这里要回答的是"你平时怎么学"，那是自评能回答的。
+ *
+ * 三通道读数的渲染也一并移除：没有 measured 这一列之后，
+ * 在这个页面上再摆三个空格子只会让人以为"还有东西没填"。
+ * 自述读数本身在「认知」页的变量表里看得到。
+ */
 function renderBench() {
-  renderDomains();
-  renderRunCard();
+  renderSelfAssessmentEntry();
   renderRail();
   translateUi();
-}
-
-function renderDomains() {
-  $$('#familiar-chips .chip').forEach((chip) => {
-    chip.classList.toggle('is-on', state.familiar.has(chip.dataset.domain));
-  });
-  $$('#interested-chips .chip').forEach((chip) => {
-    chip.classList.toggle('is-on', state.interested.has(chip.dataset.domain));
-  });
-}
-
-function renderRunCard() {
-  const card = $('#run-card');
-  if (!card) return;
-  if (state.bench.status === 'running') {
-    const formLabel = state.bench.form === 'quick' ? L('简短版', 'Short form') : L('完整版', 'Full form');
-    const answered = state.bench.answered;
-    card.innerHTML = `
-      <div class="run-head"><span class="section-mark">${L('本次', 'This run')}</span><span class="run-status">${L('进行中', 'Active')}</span></div>
-      <h3>${formLabel} · ${L('自述轮', 'stated round')} ${answered} / 20</h3>
-      <p class="run-sub">${L('记录用时与切换，不计分。', 'Records time and switches; no scoring.')}</p>
-      <div class="run-progress"><i style="--p:${Math.max(4, Math.round(answered / 20 * 100))}%"></i></div>
-      <div class="run-actions">
-        <button class="mini-btn solid" data-action="pause-run">${L('保存并退出', 'Save & exit')}</button>
-        <button class="mini-btn" data-action="restart-run">${L('重新开始', 'Restart')}</button>
-      </div>
-      <p class="run-note">${L('保存后标记为', 'Saved as')} <em>interrupted</em>${L('，可继续。', '; resumable.')}</p>`;
-  } else if (state.bench.status === 'interrupted') {
-    card.innerHTML = `
-      <div class="run-head"><span class="section-mark">${L('上一次', 'Last run')}</span><span class="run-status">${L('已中断', 'Interrupted')}</span></div>
-      <h3>${L('自述轮', 'stated round')} · 7 / 20</h3>
-      <p class="run-sub">${L('2026-10-18 21:40 · 停在「阅读 vs 听力」这一题之前', '2026-10-18 21:40 · stopped before “reading vs listening”')}</p>
-      <div class="run-progress"><i style="--p:35%"></i></div>
-      <div class="run-actions">
-        <button class="mini-btn solid" data-action="resume-run">${L('继续上次', 'Resume')}</button>
-        <button class="mini-btn" data-action="restart-run">${L('重新开始', 'Restart')}</button>
-      </div>
-      <p class="run-note">${L('旧运行标记为', 'Old run marked')} <em>abandoned</em>${L('，仍可查。', '; still visible.')}</p>`;
-  } else {
-    card.innerHTML = `
-      <div class="run-head"><span class="section-mark">${L('状态', 'Status')}</span><span class="run-status">${L('未开始', 'Draft')}</span></div>
-      <h3>${L('还没有运行', 'No run yet')}</h3>
-      <p class="run-sub">${L('选择卷别后开始；不影响对话。', 'Choose a form to start; chat is unaffected.')}</p>
-      <div class="run-actions">
-        <button class="mini-btn solid" data-action="start-run" data-form="quick">${L('简短版', 'Short form')}</button>
-        <button class="mini-btn" data-action="start-run" data-form="full">${L('完整版', 'Full form')}</button>
-      </div>`;
+  if (!state.selfAssessment.loading && !state.selfAssessment.latest) {
+    state.selfAssessment.loading = true;
+    void loadSelfAssessment({ render: true });
   }
 }
 
@@ -3157,7 +3578,8 @@ function applyLanguage() {
   if (snInput) snInput.placeholder = L('描述方法或障碍。', 'Describe a method or obstacle.');
   renderRail();
   renderTopbar();
-  renderThread();
+  // 换语言只换字：不重播整屏的入场动画。
+  renderThread({ animate: false });
   renderMargin();
   if (state.view === 'settings') renderSettings();
   if (state.view === 'cognition') renderCognition();
@@ -3191,6 +3613,9 @@ function handleAction(el, event) {
     }
     case 'toggle-margin': {
       workspace.classList.toggle('is-margin-closed');
+      // 用户亲手按了开关：这次的开关状态归用户，不再受视口回退影响。
+      state.marginForced = false;
+      syncMarginScrim();
       syncMarginToggle();
       break;
     }
@@ -3408,6 +3833,12 @@ function handleAction(el, event) {
     case 'delete-attachment':
       void deleteAttachment(id);
       break;
+    case 'open-self-assessment':
+      openSelfAssessment(el.dataset.tier === 'short' ? 'short' : 'full');
+      break;
+    case 'view-self-assessment-result':
+      showSelfAssessmentResult();
+      break;
     case 'refresh-cognition':
       state.cognition.loaded = false;
       void loadCognition();
@@ -3447,41 +3878,6 @@ function handleAction(el, event) {
       break;
     case 'dismiss-mou-plan':
       dismissMouPlan(el);
-      break;
-    case 'start-run':
-      startBench(el.dataset.form || 'full');
-      break;
-    case 'resume-run':
-      state.bench.status = 'running';
-      state.bench.answered = 7;
-      state.bench.form = 'quick';
-      renderRunCard();
-      renderRail();
-      toast('已继续');
-      break;
-    case 'restart-run':
-      askConfirm({
-        title: '重新开始这次基准？',
-        body: '旧运行标记为已放弃，新运行从第 1 题开始。',
-        ok: '重新开始',
-        onOk: () => {
-          state.bench.status = 'running';
-          state.bench.answered = 0;
-          state.bench.form = el.dataset.form || 'full';
-          renderRunCard();
-          renderRail();
-          toast('已开始');
-        },
-      });
-      break;
-    case 'pause-run':
-      state.bench.status = 'interrupted';
-      renderRunCard();
-      renderRail();
-      toast('已保存');
-      break;
-    case 'skip-domains':
-      toast('已跳过');
       break;
     case 'probe':
       probeProfile(id, el);
@@ -3675,13 +4071,6 @@ async function probeProfile(id, button) {
     button.disabled = false;
     if (result) result.classList.remove('is-pending');
   }
-}
-
-function startBench(form) {
-  state.bench = { form, status: 'running', answered: 0 };
-  renderRunCard();
-  renderRail();
-  toast('已开始');
 }
 
 /**
@@ -4017,10 +4406,6 @@ document.addEventListener('click', (event) => {
     $$('#motion-seg button').forEach((b) => b.classList.toggle('is-on', b === motionBtn));
     return;
   }
-  const domainChip = event.target.closest('.chip[data-domain]');
-  if (domainChip) {
-    toggleDomain(domainChip);
-  }
 });
 
 document.addEventListener('pointerdown', (event) => {
@@ -4028,15 +4413,26 @@ document.addEventListener('pointerdown', (event) => {
 }, true);
 
 document.addEventListener('keydown', (event) => {
+  // 全屏层开着时，Tab 必须在层内循环，其余全局快捷键一律让位给层。
+  const modal = $('#self-assessment').hidden ? null : $('#self-assessment');
+  if (modal) {
+    trapTabIn(modal, event);
+    if (event.key === 'Escape') return; // 由挂载方自己处理（它要保存草稿）
+    if (event.key !== 'Tab') return;
+  }
   if (event.key === 'Escape') {
     if (popLayer.innerHTML) { closePopover(); return; }
     if ($('#side-note').classList.contains('is-open')) { $('#side-note').classList.remove('is-open'); return; }
     document.body.classList.remove('rail-open');
   }
+  // 键盘激活：**不白名单**。任何被写成按钮的东西都必须能被 Enter/Space 按下。
+  // 原先是 `.folder-head / .session` 两个选择器的白名单，于是
+  // `#session-state`（role=button）与 `.step-check`（role=button 的 span）
+  // 能聚焦、能 Tab 到，但按下没反应 —— 这是「看起来是按钮」最坏的一种。
   const tag = document.activeElement?.tagName;
   if ((event.key === 'Enter' || event.key === ' ') && tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'BUTTON') {
     const target = document.activeElement;
-    if (target?.matches('.folder-head[role="button"], .session[tabindex]')) {
+    if (target?.matches('[role="button"], [data-action], [tabindex="0"]')) {
       event.preventDefault();
       target.click();
       return;
@@ -4111,7 +4507,13 @@ threadWrap.addEventListener('click', (event) => {
 });
 
 threadWrap.addEventListener('scroll', scheduleThreadIndexViewport, { passive: true });
-window.addEventListener('resize', () => renderThreadIndex());
+// resize 一次能做两件重活：重建索引（读一遍 offsetTop）与重算断点。
+// 两者都用 rAF 合并 —— 拖动窗口时每个事件都跑一遍会强制同步布局。
+window.addEventListener('resize', () => {
+  scheduleBreakpoint();
+  scheduleThreadIndexViewport();
+  scheduleThreadIndexRebuild();
+});
 
 const SIZES_KEY = 'studyflow.sizes.v1';
 const LEGACY_SIZES_KEY = 'mouxue.sizes.v1';
@@ -4215,40 +4617,44 @@ function autoGrow() {
   composerInput.style.height = `${Math.min(window.innerHeight * 0.42, composerInput.scrollHeight)}px`;
 }
 
-function toggleDomain(chip) {
-  const domain = chip.dataset.domain;
-  const isFamiliar = chip.parentElement.id === 'familiar-chips';
-  if (isFamiliar) {
-    if (state.familiar.has(domain)) state.familiar.delete(domain);
-    else {
-      state.familiar.add(domain);
-      if (state.interested.has(domain)) {
-        state.interested.delete(domain);
-        toast(`「${domain}」已移除`);
-      }
-    }
-  } else {
-    if (state.interested.has(domain)) state.interested.delete(domain);
-    else {
-      if (state.familiar.has(domain)) {
-        chip.classList.add('is-conflict');
-        setTimeout(() => chip.classList.remove('is-conflict'), 450);
-        toast(`「${domain}」已在熟悉集合`, 'danger');
-        return;
-      }
-      state.interested.add(domain);
-    }
-  }
-  renderDomains();
-  toast('已更新');
-}
 
 /* ── init ─────────────────────────────────────────────────────────── */
+/* ── 字体落地检查 ───────────────────────────────────────────────────
+ * 起因（2026-11-08）：`--display` 曾指向 Fraunces，实测它的 6 个 face 永远
+ * 停在 `unloaded`（`document.fonts.check` 为 false），于是所有大数字**静默**
+ * 退回正文衬线，三级层级塌成两级，而且不会有任何报错。
+ *
+ * 处置：Fraunces 已从头文件移除，数字档改由字重/字距无条件成立（见 CSS）。
+ * 这里保留一个**只做记录**的探针：把每个字族是否真的可用记在 `data-fonts` 上，
+ * 供排查用 —— 但它**不再决定任何布局**。层级不能挂在"某个字体恰好在"上。
+ */
+function probeDisplayFont() {
+  if (!document.fonts) return {};
+  const families = ['Noto Serif SC', 'Noto Sans SC', 'Hanken Grotesk', 'IBM Plex Mono'];
+  const state_ = {};
+  for (const family of families) {
+    try {
+      state_[family] = document.fonts.check(`16px "${family}"`);
+    } catch {
+      state_[family] = false;
+    }
+  }
+  const missing = families.filter((f) => !state_[f]);
+  document.documentElement.dataset.fonts = missing.length ? `missing:${missing.join(',')}` : 'ok';
+  return state_;
+}
+
+function watchDisplayFont() {
+  probeDisplayFont();
+  if (!document.fonts) return;
+  document.fonts.ready.then(() => probeDisplayFont()).catch(() => {});
+}
+
 async function boot() {
   document.documentElement.dataset.cite = 'on';
   document.documentElement.dataset.motion = state.motion;
-  if (window.innerWidth <= 1180) workspace.classList.add('is-margin-closed');
-  syncMarginToggle();
+  watchDisplayFont();
+  applyBreakpoint();
 
   // 先把壳画出来（侧栏空、对话区空），再从后端取数据 ——
   // 反过来做的话，首屏会有一段时间是白屏
@@ -4285,10 +4691,12 @@ async function boot() {
     } else ensureSelection();
   } catch (err) {
     // 后端没起来时**说清楚是哪一步没成**，而不是留一个空白界面让人以为"没有数据"
-    thread.innerHTML = `<div class="empty-thread"><span class="empty-seal">${icon('close')}</span>
-      <h2>连不上后端</h2>
-      <p>${escape(err.message || String(err))}</p>
-      <p class="muted">界面上的每一条数据都来自接口；接口不通时这里不会摆一份假数据。</p></div>`;
+    thread.innerHTML = emptyStateMarkup({
+      icon: 'close',
+      title: '连不上后端',
+      body: err.message || String(err),
+      note: '界面上的每一条数据都来自接口；接口不通时这里不会摆一份假数据。',
+    });
     threadEnd.hidden = true;
     toast(err.message || '连不上后端', 'danger');
   }

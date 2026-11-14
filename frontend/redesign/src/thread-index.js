@@ -21,10 +21,12 @@ export class ThreadIndex {
    * @param {HTMLCanvasElement} canvas
    * @param {{onSelect: (item: any) => void, onHover?: (index: number) => void}} options
    */
-  constructor(canvas, { onSelect, onHover } = {}) {
+  constructor(canvas, { onSelect, onHover, onToggle } = {}) {
     this.canvas = canvas;
     this.onSelect = onSelect || (() => {});
     this.onHover = onHover || (() => {});
+    // 触屏/键盘没有 hover：点轨道空白处显式开合面板。
+    this.onToggle = onToggle || (() => {});
     this.items = [];
     this.hoverIndex = -1;
     this.activeIndex = -1;
@@ -118,6 +120,7 @@ export class ThreadIndex {
   _onClick(event) {
     const index = this.indexAt(event);
     if (index >= 0) this.onSelect(this.items[index], index);
+    else this.onToggle();
   }
 
   draw() {

@@ -183,12 +183,23 @@ async function phaseChat() {
   mark('计划版本（仅供参考）', { ok: true, before: report.planBefore, after: report.planAfter });
 }
 
-/* ── 第一段半：侧记写一条笔记 ─────────────────────────────────────── */
+/* ── 第一段半：侧记**真的和模型对话** ─────────────────────────────────
+ *
+ * 判据改过一次（2026-11-08）。上一版查的是「回执里有没有 `已存为笔记 N-0001`」——
+ * 那是把侧记当成"写笔记"的旧实现。现在侧记走 `POST /api/sidebar/discuss`，
+ * 回答来自模型，**没有笔记编号可查**；继续按旧判据查，只会永远红着，
+ * 而红的原因不是功能坏了，是探针没跟上产品。
+ *
+ * 现在的判据是它真正该做的事：**用户说一句，助手回一段非空正文**，
+ * 并且这一段不是用户那句的复读。`noteId` 仍原样记录（有就记，没有就是 null），
+ * 供人工核对用 —— 但不作为通过条件。
+ */
 async function phaseSideNote() {
   click('[data-action="open-side-note"]');
   const input = await waitDom(() => $('#sn-input'), '侧记面板打开');
   const before = $$('#sn-thread .sn-msg').length;
-  input.value = '词根 re- 我总记混，先记一笔。';
+  const asked = '词根 re- 我总记混，先记一笔。';
+  input.value = asked;
   input.dispatchEvent(new Event('input', { bubbles: true }));
   click('#sn-thread ~ * [data-action="sn-send"], [data-action="sn-send"]');
 
@@ -197,10 +208,21 @@ async function phaseSideNote() {
     const last = rows[rows.length - 1];
     return rows.length > before && last && last.classList.contains('from-bot') ? last : null;
   }, '侧记给出回执');
-  const text = String(reply.textContent || '');
-  // 后端的笔记编号形如 `N-0001`：判据照真实格式写，别猜前缀
-  const noteId = (text.match(/已存为笔记\s*([A-Z]+-\d+)/) || [])[1] || null;
-  mark('侧记回执带笔记编号', { ok: Boolean(noteId), noteId, text: text.slice(0, 60) });
+  const text = String(reply.textContent || '').trim();
+  // 角色标签（「侧记」两字）也在 textContent 里，所以只要求"除去标签后仍有正文"。
+  const body = text.replace(/^侧记\s*/, '').trim();
+  const echoed = body === asked;
+  mark('侧记给出非空回答', {
+    ok: body.length > 0 && !echoed,
+    len: body.length,
+    echoed,
+    text: body.slice(0, 60),
+  });
+  // 有笔记编号就记下来供核对，但不作为通过条件（当前实现不产编号）。
+  mark('侧记笔记编号（仅记录）', {
+    ok: true,
+    noteId: (text.match(/已存为笔记\s*([A-Z]+-\d+)/) || [])[1] || null,
+  });
   mark('侧记顶上的上下文数字', { ok: true, tokens: String(($('#sn-tokens') || {}).textContent || '') });
   click('[data-action="close-side-note"]');
 }

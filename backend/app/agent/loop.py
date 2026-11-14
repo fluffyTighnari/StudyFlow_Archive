@@ -38,6 +38,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -83,6 +84,50 @@ class StopReason(StrEnum):
     INTERNAL_ERROR = "internal_error"
 
 
+#: 「我说改了」的字面信号。宁可漏判，也不要误判 ——
+#: 误判会让一句正常的话被标成可疑，那比漏掉更伤信任。
+_CHANGE_CLAIM = re.compile(
+    r"(照做|已改|改好|已经改|已延长|延长过|延长到|延长了|延到|已拆|拆成两天|"
+    r"已写入|写入了|改到版本|现在是第\s*\d+\s*版|已经?拆成)"
+)
+#: 只有这些工具**真的写库**。读类工具不算"改了"。
+_WRITE_TOOLS = frozenset(
+    {
+        "update_task_plan",
+        "propose_plan_change",
+        "update_motivation",
+        "write_note",
+        "propose_preference",
+    }
+)
+
+
+def claims_unsupported_change(
+    reply: str, traces: Sequence[ToolTraceEntry]
+) -> bool:
+    """回复声称改了，但这一轮没有一次**成功的写操作**。
+
+    两条都满足才算：
+    1. 回复里出现"照做 / 已改 / 延长到 …"这类措辞；
+    2. `traces` 里没有写工具的 `success`。
+
+    为什么用它而不是直接改回复：用户有权看到模型的原话。
+    我们要做的是**标注**，不是替它改口 —— 改了之后，
+    "它为什么会这么说"就无从查起了。
+    """
+    text = (reply or "").strip()
+    if not text:
+        return False
+    if not _CHANGE_CLAIM.search(text):
+        return False
+    for trace in traces:
+        tool = getattr(trace, "tool", "") or ""
+        status = getattr(trace, "status", "") or ""
+        if tool in _WRITE_TOOLS and status == "success":
+            return False
+    return True
+
+
 @dataclass(frozen=True)
 class DiscussionResult:
     """一次讨论的完整结果 —— 回复、为什么停、走过哪些路。"""
@@ -98,6 +143,16 @@ class DiscussionResult:
     #: 刷新页面就没了。而"它当时为什么这么答"是一个**事后**才会问的问题，
     #: 事后问的东西必须留着。空串 = 这一轮的模型没有思考过程（不是错误）。
     thinking: str = ""
+    #: 回复里声称改了计划，但这一轮**没有任何成功的写工具**。
+    #:
+    #: 实测故障（2026-11-12，真 DeepSeek）：用户说"把时长延长一倍"，
+    #: 模型回「照做了——现在延到八天」，但那轮 0 次工具调用，计划仍是四天。
+    #: 下一轮它读到自己的话，把它当事实（"已经延长过一倍了"），越推越远。
+    #:
+    #: 这里把它标出来，让**界面和归档**能区分"说改了"与"真的改了"。
+    #: 不在这里改回复文本：改写会让用户看不到模型原话，
+    #: 判定依据也就跟着消失了。
+    unsupported_change_claim: bool = False
 
     @property
     def ok(self) -> bool:
@@ -176,6 +231,26 @@ SYSTEM_PROMPT = """\
 - **结构性改动**（增删步骤、重排、改检查点）如果还没得到他明确同意，先输出一份
   `mou-plan` 草案（见下），等他点「写入计划」；他刚明确要求的小改可以直接写。
 - 计划改完会在工具返回里报出版本号与删除项；把结果直接告诉用户。
+
+### ★ 不许"口头改计划"（这一条是实测出来的故障）
+
+**在没调用 `update_task_plan` 的那一轮里，不许说计划已经变了。**
+
+实测过一次真实故障：用户说"把计划延长一倍"，模型回「照做了——现在延到八天」，
+但那一轮**一次工具都没调**，计划仍是四天。下一轮它读到自己的那句话，
+把它当成事实继续推理（"已经延长过一倍了，再延长就是十六天"），
+于是**一次口头承诺变成了后续所有对话的错误前提**。
+
+所以：
+
+- 「已经改了 / 照做了 / 延长到 N 天 / 现在是第几版」这类话，
+  **只在同一轮里真的调用过 `update_task_plan` 且返回 success 时**才能说。
+- 如果你觉得不该改（比如认为再拆下去不合理），就**直说理由并停下来**——
+  那是好的回答。不要为了让对话往前走而假装改过。
+- 你**看不到**计划的历史版本号，只能看到当前版本（在上下文第一行）。
+  不要说"之前是第几版"或"已经改过几次"，除非工具返回里明确写了。
+- 拿不准当前计划长什么样时，先调用读类工具（`retrieve_session`）看清楚，
+  再决定说什么。
 
 ## 动机：看到了就主动写
 
@@ -619,6 +694,8 @@ class AgentLoop:
                 "steps": result.steps,
                 "tool_trace": [entry.as_dict() for entry in result.traces],
                 "llm_meta": result.llm_meta,
+                # 「说改了」与「真改了」是两件事。界面据此标出没有对应动作的声称。
+                "unsupported_change_claim": result.unsupported_change_claim,
             },
         )
 
@@ -825,13 +902,15 @@ class AgentLoop:
     def _result(
         self, reply: str, reason: StopReason, steps: int, meta: dict[str, Any]
     ) -> DiscussionResult:
+        traces = tuple(self.dispatcher.traces)
         return DiscussionResult(
             reply=reply,
             stop_reason=reason,
             steps=steps,
-            traces=tuple(self.dispatcher.traces),
+            traces=traces,
             llm_meta=meta,
             thinking=self.thinking,
+            unsupported_change_claim=claims_unsupported_change(reply, traces),
         )
 
     @property

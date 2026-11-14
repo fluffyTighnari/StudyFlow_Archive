@@ -1,0 +1,25 @@
+# 运行时/构建产物
+design/
+backend/var/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.db
+*.db-journal
+*.db-wal
+*.log
+*.egg-info/
+build/
+.env
+.env.*
+!.env.example
+.git/
+.claude/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+frontend/redesign/tools/_artifacts/
+frontend/redesign/tools/_edgeprofile*/
+node_modules/

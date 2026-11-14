@@ -145,6 +145,22 @@ PROVENANCE: dict[str, Provenance] = {
         "run 在开始时创建、结束时补分；response 在每题作答后立刻落，"
         "所以中途中断的运行也能留下「答到哪一题」这个事实",
     ),
+    "self_assessment_run": Provenance(
+        "source_ref",
+        "自评单例的作答与读数：与 `benchmark_run` 同族但**分开一张表** —— "
+        "它产出 `stated` 通道，而基准运行产出 `measured`/`experienced`；"
+        "两者的题目、判分、可中断粒度都不同。"
+        "`m1_baseline_version.source_ref` 指向它的 `run_id`（`SA-` 前缀），"
+        "于是「自评重做过几次」与「基准重做过几次」分别计数 —— "
+        "它们本来就不是同一件事",
+    ),
+    "baseline_paper_run": Provenance(
+        "source_ref",
+        "基线测卷的**整份作答**：固定卷一次覆盖多个变量，与按变量抽题的 "
+        "`benchmark_run` 不同，也与只产 `stated` 的 `self_assessment_run` 不同。"
+        "它的 `results` 只是能当场核对的客观题与观测，主观部分留原文；"
+        "因此这张表回答的是「那次卷子交了什么」，不是「算出了哪些读数」",
+    ),
     "domain_topic": Provenance(
         "catalog",
         "主题表（目录数据）：随版本发布的静态清单，运行时无人可写。"

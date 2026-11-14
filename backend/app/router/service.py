@@ -66,9 +66,14 @@ from app.global_domain.writes import (
     append_benchmark_response,
     append_domain_profile,
     append_router_log,
+    create_baseline_paper_run,
     create_benchmark_run,
     create_proposal,
+    create_self_assessment_run,
+    finish_baseline_paper_run,
+    finish_self_assessment_run,
     finalize_benchmark_run,
+    save_baseline_paper_answers,
     record_anchor_baseline,
     rollback_baseline_version,
     set_benchmark_run_status,
@@ -225,6 +230,121 @@ class Router:
     # ------------------------------------------------------------------ #
     # 写入：测量记账（基准运行记录，**不产生 Intent，因此不经过判定表**）
     # ------------------------------------------------------------------ #
+
+    def start_self_assessment_run(
+        self,
+        *,
+        answers: dict,
+        attention_span: str | None = None,
+        activity_rank: list | None = None,
+        elapsed_minutes: float | None = None,
+        tier: str | None = None,
+        scale_version: str | None = None,
+    ) -> str:
+        """开一次自评运行，返回 `run_id`。
+
+        与 `start_benchmark_run` 同一个姿态：**运行记录不是断言**，
+        它是断言的依据，因此不进判定表；但令牌仍然只有 Router 能签发
+        （ARCH-01 / ARCH-03）。
+        """
+        return create_self_assessment_run(
+            self._token,
+            self._session,
+            answers=answers,
+            attention_span=attention_span,
+            activity_rank=activity_rank,
+            elapsed_minutes=elapsed_minutes,
+            tier=tier,
+            scale_version=scale_version,
+        ).run_id
+
+    def finish_self_assessment_run(
+        self,
+        run_id: str,
+        *,
+        answers: dict,
+        attention_span: str | None,
+        activity_rank: list,
+        elapsed_minutes: float | None,
+        flags: list,
+        notes: list,
+        readings: list,
+        written_log_ids: list,
+        tier: str | None = None,
+        scale_version: str | None = None,
+    ) -> None:
+        """把自评收尾：存作答与读数。**只允许一次**。"""
+        finish_self_assessment_run(
+            self._token,
+            self._session,
+            run_id,
+            answers=answers,
+            attention_span=attention_span,
+            activity_rank=activity_rank,
+            elapsed_minutes=elapsed_minutes,
+            flags=flags,
+            notes=notes,
+            readings=readings,
+            written_log_ids=written_log_ids,
+            tier=tier,
+            scale_version=scale_version,
+        )
+
+    def start_baseline_paper_run(
+        self,
+        *,
+        paper_id: str,
+        paper_version: str,
+    ) -> str:
+        """开一次基线测卷，返回 `run_id`。
+
+        与自评/基准运行同一姿态：运行记录**不是断言**，它是作答的容器，
+        因此不进判定表；令牌仍然只由 Router 签发。
+        """
+        return create_baseline_paper_run(
+            self._token,
+            self._session,
+            paper_id=paper_id,
+            paper_version=paper_version,
+        ).run_id
+
+    def save_baseline_paper_answers(
+        self,
+        run_id: str,
+        *,
+        answers: dict,
+        current_section: str | None,
+        section_seconds: dict,
+    ) -> None:
+        """逐段存档。"""
+        save_baseline_paper_answers(
+            self._token,
+            self._session,
+            run_id,
+            answers=answers,
+            current_section=current_section,
+            section_seconds=section_seconds,
+        )
+
+    def finish_baseline_paper_run(
+        self,
+        run_id: str,
+        *,
+        answers: dict,
+        current_section: str | None,
+        section_seconds: dict,
+        results: dict,
+    ) -> None:
+        """收卷：存最后一份作答与核对结果。**只允许一次**。"""
+        finish_baseline_paper_run(
+            self._token,
+            self._session,
+            run_id,
+            answers=answers,
+            current_section=current_section,
+            section_seconds=section_seconds,
+            results=results,
+        )
 
     def start_benchmark_run(
         self,

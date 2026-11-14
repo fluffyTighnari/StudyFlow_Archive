@@ -169,6 +169,13 @@ class DiscussResponse(_Request):
     #: 压缩失败的原因。**不吞掉**：失败会让上下文继续膨胀，
     #: 而下一次就撞上真正的装不下。
     compact_error: str | None = None
+    #: 回复声称改了计划，但这一轮**没有一次成功的写工具**。
+    #:
+    #: 实测故障（2026-11-12）：模型回「照做了——现在延到八天」，
+    #: 那轮 0 次工具调用，计划仍是四天；下一轮它把自己那句话当事实继续推理。
+    #: 这里如实标出来，界面据此提示「这句话没有对应的改动」——
+    #: **不改写模型原话**，改写会让"它为什么这么说"无从追查。
+    unsupported_change_claim: bool = False
 
 
 class ArchiveReviewResponse(_Request):
@@ -359,6 +366,7 @@ def discuss(
         context=meter_payload(after, client),
         compacted=memory.new_compact_id,
         compact_error=memory.compact_error,
+        unsupported_change_claim=result.unsupported_change_claim,
     )
 
 
@@ -651,6 +659,11 @@ def stream_events(
                             **event.data,
                             "context": meter_payload(meter, loop.client),
                             "thinking": loop.thinking,
+                            # 与一次性端点同一个判据：回复说改了、但没有
+                            # 成功的写工具 → 界面要能标出来。
+                            "unsupported_change_claim": event.data.get(
+                                "unsupported_change_claim", False
+                            ),
                         },
                     )
                 yield event.to_sse()

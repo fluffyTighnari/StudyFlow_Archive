@@ -104,7 +104,10 @@ def test_every_table_is_registered_and_classified(session: Session) -> None:
     # + 1 张感想表（`reflection`，P15：复盘之后按指引写的四要素产物）。
     #   它**是**用户自己写的字，所以同样不需要审计；但它必须挂在会话上，
     #   而且形状有理由（分项存，V-PAR 评的就是那份完整度）→ 沙箱（18 → 19 张）。
-    assert len(Base.metadata.tables) == 41
+    # + 1 张自评运行表（`self_assessment_run`）：与基准运行同族但分开 ——
+    #   它产 `stated` 通道、不给人材料、判分规则也不同（见 `benchmark/self_assessment`）。
+    # + 1 张基线测卷表（`baseline_paper_run`）：固定卷按段作答，一次覆盖多个变量。
+    assert len(Base.metadata.tables) == 43
 
 
 def test_every_declared_provenance_explains_itself() -> None:

@@ -24,6 +24,8 @@ from app.core.errors import ValidationRejected
 from app.core.ids import (
     next_benchmark_response_id,
     next_benchmark_run_id,
+    next_baseline_paper_id,
+    next_self_assessment_id,
     next_domain_profile_id,
     next_router_log_id,
     next_m1_baseline_id,
@@ -56,6 +58,7 @@ from app.global_domain.enums import (
     TriggerType,
 )
 from app.global_domain.models import (
+    BaselinePaperRun,
     BenchmarkResponse,
     BenchmarkRun,
     CEvidence,
@@ -67,6 +70,7 @@ from app.global_domain.models import (
     M1ChannelObs,
     M2Preference,
     RouterLog,
+    SelfAssessmentRun,
     UpdateIntentRow,
     UpdateProposal,
 )
@@ -1104,4 +1108,165 @@ __all__ = [
     "revise_hypothesis",
     "set_hypothesis_status",
     "set_evidence_status",
+    "create_self_assessment_run",
+    "finish_self_assessment_run",
+    "create_baseline_paper_run",
+    "save_baseline_paper_answers",
+    "finish_baseline_paper_run",
 ]
+
+
+def create_self_assessment_run(
+    token: RouterToken,
+    session: Session,
+    *,
+    answers: dict,
+    attention_span: str | None = None,
+    activity_rank: list | None = None,
+    elapsed_minutes: float | None = None,
+    tier: str | None = None,
+    scale_version: str | None = None,
+) -> SelfAssessmentRun:
+    """开一次自评运行（作答尚可继续补）。"""
+
+    require(token)
+    row = SelfAssessmentRun(
+        run_id=next_self_assessment_id(_seq(session)),
+        status=BenchmarkRunStatus.IN_PROGRESS,
+        tier=tier,
+        scale_version=scale_version,
+        answers=dict(answers),
+        attention_span=attention_span,
+        activity_rank=list(activity_rank or []),
+        elapsed_minutes=elapsed_minutes,
+        started_at=_now(),
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def finish_self_assessment_run(
+    token: RouterToken,
+    session: Session,
+    run_id: str,
+    *,
+    answers: dict,
+    attention_span: str | None,
+    activity_rank: list,
+    elapsed_minutes: float | None,
+    flags: list,
+    notes: list,
+    readings: list,
+    written_log_ids: list,
+    tier: str | None = None,
+    scale_version: str | None = None,
+) -> SelfAssessmentRun:
+    """把一次自评收尾：存作答、读数与"写了哪几条基线"。**只能收一次。**"""
+
+    require(token)
+    row = session.get(SelfAssessmentRun, run_id)
+    if row is None:
+        raise KeyError(f"self_assessment_run 不存在：{run_id}")
+    if row.finished_at is not None:
+        raise ValueError(
+            f"自评运行 {run_id} 已经收尾过（{row.finished_at}）；"
+            "重复收尾会让「这一次写了什么」失去唯一答案"
+        )
+    row.status = BenchmarkRunStatus.FINISHED
+    row.tier = tier
+    row.scale_version = scale_version
+    row.answers = dict(answers)
+    row.attention_span = attention_span
+    row.activity_rank = list(activity_rank or [])
+    row.elapsed_minutes = elapsed_minutes
+    row.flags = list(flags)
+    row.notes = list(notes)
+    row.readings = list(readings)
+    row.written_log_ids = list(written_log_ids)
+    row.finished_at = _now()
+    session.flush()
+    return row
+
+
+def create_baseline_paper_run(
+    token: RouterToken,
+    session: Session,
+    *,
+    paper_id: str,
+    paper_version: str,
+) -> BaselinePaperRun:
+    """开一次基线测卷。作答与当前段随后逐段补。"""
+
+    require(token)
+    row = BaselinePaperRun(
+        run_id=next_baseline_paper_id(_seq(session)),
+        paper_id=paper_id,
+        paper_version=paper_version,
+        status=BenchmarkRunStatus.IN_PROGRESS,
+        answers={},
+        current_section=None,
+        section_seconds={},
+        results={},
+        started_at=_now(),
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def save_baseline_paper_answers(
+    token: RouterToken,
+    session: Session,
+    run_id: str,
+    *,
+    answers: dict,
+    current_section: str | None,
+    section_seconds: dict,
+) -> BaselinePaperRun:
+    """逐段存档。**整份替换**（客户端手里就是完整作答），已收卷的拒绝改写。"""
+
+    require(token)
+    row = session.get(BaselinePaperRun, run_id)
+    if row is None:
+        raise KeyError(f"baseline_paper_run 不存在：{run_id}")
+    if row.finished_at is not None:
+        raise ValueError(
+            f"基线测卷 {run_id} 已经收卷；收卷后的作答不再改写 —— "
+            "否则“我交了什么”会失去唯一答案"
+        )
+    row.answers = dict(answers)
+    row.current_section = current_section
+    row.section_seconds = dict(section_seconds)
+    session.flush()
+    return row
+
+
+def finish_baseline_paper_run(
+    token: RouterToken,
+    session: Session,
+    run_id: str,
+    *,
+    answers: dict,
+    current_section: str | None,
+    section_seconds: dict,
+    results: dict,
+) -> BaselinePaperRun:
+    """收卷：存最后一份作答与核对结果。**只能收一次。**"""
+
+    require(token)
+    row = session.get(BaselinePaperRun, run_id)
+    if row is None:
+        raise KeyError(f"baseline_paper_run 不存在：{run_id}")
+    if row.finished_at is not None:
+        raise ValueError(
+            f"基线测卷 {run_id} 已经收卷过（{row.finished_at}）；重复收卷会让结果失去唯一答案"
+        )
+    row.status = BenchmarkRunStatus.FINISHED
+    row.answers = dict(answers)
+    row.current_section = current_section
+    row.section_seconds = dict(section_seconds)
+    row.results = dict(results)
+    row.finished_at = _now()
+    session.flush()
+    return row

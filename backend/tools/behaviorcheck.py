@@ -1455,8 +1455,8 @@ def render_markdown(rows: list[Row], ctx: RunContext, base: str, elapsed: float)
         "",
         "## 四、这份清单覆盖不到的地方",
         "",
-        "- **界面渲染**：这里只打 HTTP。界面那一层由 `node var_ref/check_model_page.mjs`",
-        "  （模型页 DOM 与接口对账）和 `node var_ref/headless_probe.mjs`（点一遍对话/侧记/归档）负责。",
+        "- **界面渲染**：这里只打 HTTP。界面那一层由 `node frontend/redesign/tools/check_model_page.mjs`",
+        "  （模型页 DOM 与接口对账）和 `node frontend/redesign/tools/headless_probe.mjs`（点一遍对话/侧记/归档）负责。",
         "- **长时间运行**：没有压测、没有并发跑同一会话。",
         "- **真实模型的响应质量**：只验「有没有答、答得一样不一样」，不验「答得对不对」。",
     ]

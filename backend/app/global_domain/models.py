@@ -388,6 +388,119 @@ class DomainProfile(Base):
     )
 
 
+class SelfAssessmentRun(Base):
+    """一次**自评单例**的作答与读数。
+
+    ## 它为什么与 `BenchmarkRun` 是两张表
+
+    基准运行是**受控施测**：给材料、计时、判分，产出 `measured` / `experienced`。
+    自评量表不给人任何材料，问的是"最近三个月实际最常发生的那一档"，
+    产出 `stated`。两者的题目、判分、通道、可中断粒度都不同。
+
+    合成一张表会逼出一堆"这一列对另一种运行没意义"的空值，
+    而空值的含义迟早会被读成"这一项没测到" —— 那是相反的意思。
+
+    ## 为什么 `source_ref` 是它自己
+
+    `m1_baseline_version.source_ref` 会指向 `SA-0001`。§5.4 的「重做次数」
+    按 `source_ref` 去重，于是自评重做与基准重做分别计数 ——
+    它们本来就不是同一件事。
+    """
+
+    __tablename__ = "self_assessment_run"
+
+    run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    status: Mapped[BenchmarkRunStatus] = mapped_column(
+        enum_col(BenchmarkRunStatus, "ck_self_assess_status"),
+        nullable=False,
+        default=BenchmarkRunStatus.IN_PROGRESS,
+    )
+    #: 这次用的是哪一档：`short`（90 条）/ `full`（127 条）。
+    #:
+    #: 不记这一列，事后就无法回答"这份读数来自 90 条还是 127 条" ——
+    #: 而两档的置信度本来就不该被当成一回事。`None` = v1 时代的 44 条卷。
+    tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: 卷面版本：`v2` = 127 条；`None` = v1（44 条）。
+    scale_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: `{卷面号: 选项}` —— 原始作答，**整份存**。
+    #:
+    #: 存原始作答而不只存分数，是因为计分键会改（权重、反向句归属），
+    #: 而改完之后必须能重算；只存分数的话，历史分数就再也解释不了了。
+    answers: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    #: 附加题：专注时长区间（`A`–`E`），可空。
+    attention_span: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    #: 附加题：四种学习方式的排序，可空。**留空是有信息量的答案。**
+    activity_rank: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    #: 有效性标记（`straight_lining` / `acquiescence:V-SE` / `too_fast` …）。
+    flags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    #: 附注（"四维都 ≥8 → 无明显偏好"这类）。
+    notes: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    #: `[{variable_id, score, facets, boundary}]` —— 算出来的读数，**只读快照**。
+    readings: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    #: 作答用时（分钟）；没记就是 `None`，**不编一个数**。
+    elapsed_minutes: Mapped[float | None] = mapped_column(Float, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: 写进基线的 `router_log_id` 列表（一次运行会写 11 个变量）。
+    #:
+    #: 存成列表而不是另开一张关联表：它的用途只有"回看这次运行写了哪几条"，
+    #: 没有反向查询需求；而开表会让读取一次运行变成一次 join。
+    written_log_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+
+class BaselinePaperRun(Base):
+    """一次**基线测卷**的作答。
+
+    ## 为什么它既不是 `BenchmarkRun` 也不是 `SelfAssessmentRun`
+
+    - `BenchmarkRun` 是按**变量 / 通道 / 方法**抽题的一次运行：一次只管一格，
+      每道题一行 `benchmark_response`。基线测卷是**固定卷**，一次走完
+      A/B1–B5/C1–C2/D，覆盖多个变量，而且卷面本身带分段与计时。
+    - `SelfAssessmentRun` 不给材料、只产 `stated`。测卷给材料、计时，
+      产出的是 `measured` / `experienced` 的原料（其中客观题与观测已核对，
+      主观部分等判读）。
+
+    把固定卷拆成十几个 `BenchmarkRun` 会得到十几个互不相关的运行记录，
+    而"我这次把整份卷做完了吗"这个问题就再也回答不了。
+
+    ## 作答整份存
+
+    `answers` 是**按段存档的原始作答**（含每题用时与首次动作时刻）。
+    结果页只展示能核对的部分（`results`），不把原始作答改写成读数 ——
+    主观部分的判分口径在卷面 §5，属于另一次判读，不是这次收集。
+    """
+
+    __tablename__ = "baseline_paper_run"
+
+    run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    paper_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[BenchmarkRunStatus] = mapped_column(
+        enum_col(BenchmarkRunStatus, "ck_baseline_paper_status"),
+        nullable=False,
+        default=BenchmarkRunStatus.IN_PROGRESS,
+    )
+    #: `{段号: 作答}` —— 原样保存，按段合并即可续答。
+    answers: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    #: 停在哪一段（`A` / `B1` / …）。续答从这里开始。
+    current_section: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    #: `{段号: 秒}` —— 每段实际用时。**由客户端记**，没记就是缺项。
+    section_seconds: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    #: 收卷时算出的核对结果（`app.benchmark.baseline_paper.evaluate`）。
+    #: 未收卷时是空字典 —— 不提前生成一份"看起来像结果"的东西。
+    results: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class BenchmarkRun(Base):
     """一次基准运行 —— **分数追回答案的那一端**。
 

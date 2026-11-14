@@ -18,6 +18,7 @@ from app.api import errors as api_errors
 from app.api import (
     attachments,
     benchmark,
+    benchmark_baseline,
     discuss,
     evidence,
     external,
@@ -29,6 +30,7 @@ from app.api import (
     proposals,
     router_logs,
     sedimentation,
+    self_assessment,
     sessions,
     sidebar,
 )
@@ -172,6 +174,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         discuss,
         llm,
         benchmark,
+        benchmark_baseline,
+        self_assessment,
         sidebar,
         external,
     ):

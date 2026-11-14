@@ -27,6 +27,7 @@ from app.global_domain.enums import (
     TriggerType,
 )
 from app.global_domain.models import (
+    BaselinePaperRun,
     BenchmarkResponse,
     BenchmarkRun,
     CEvidence,
@@ -41,6 +42,7 @@ from app.global_domain.models import (
     M2Preference,
     M2Strategy,
     RouterLog,
+    SelfAssessmentRun,
     UpdateIntentRow,
     UpdateProposal,
 )
@@ -571,6 +573,53 @@ def list_benchmark_runs(
     if limit is not None:
         stmt = stmt.limit(limit)
     return list(session.scalars(stmt))
+
+
+def list_self_assessment_runs(
+    session: Session, *, limit: int | None = None
+) -> list[SelfAssessmentRun]:
+    """自评单例的历史，最近的在前。
+
+    **它是单例，但不覆盖旧的** —— 重做留下的版本差值本身是信息
+    （见 `_自评计分键` §7：旧值不删，把两次的差值当成信息）。
+    """
+    stmt = select(SelfAssessmentRun).order_by(SelfAssessmentRun.started_at.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(session.scalars(stmt))
+
+
+def latest_finished_self_assessment(session: Session) -> SelfAssessmentRun | None:
+    """最近一次**做完**的自评；没有就 `None`（不拿半截作答冒充读数）。"""
+    return session.scalars(
+        select(SelfAssessmentRun)
+        .where(SelfAssessmentRun.status == BenchmarkRunStatus.FINISHED)
+        .order_by(SelfAssessmentRun.finished_at.desc())
+        .limit(1)
+    ).first()
+
+
+def list_baseline_paper_runs(
+    session: Session, *, limit: int | None = None
+) -> list[BaselinePaperRun]:
+    """基线测卷的历史，最近的在前。"""
+    stmt = select(BaselinePaperRun).order_by(BaselinePaperRun.started_at.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(session.scalars(stmt))
+
+
+def get_baseline_paper_run(session: Session, run_id: str) -> BaselinePaperRun | None:
+    return session.get(BaselinePaperRun, run_id)
+
+
+def latest_baseline_paper_run(session: Session) -> BaselinePaperRun | None:
+    """最近一次基线测卷（**含未收卷**）—— 入口据此决定"继续"还是"看结果"。"""
+    return session.scalars(
+        select(BaselinePaperRun)
+        .order_by(BaselinePaperRun.started_at.desc())
+        .limit(1)
+    ).first()
 
 
 # --------------------------------------------------------------------------- #
