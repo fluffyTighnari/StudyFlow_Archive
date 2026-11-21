@@ -86,10 +86,30 @@ class StopReason(StrEnum):
 
 #: 「我说改了」的字面信号。宁可漏判，也不要误判 ——
 #: 误判会让一句正常的话被标成可疑，那比漏掉更伤信任。
+#:
+#: ★ 2026-11-21 实测（真 DeepSeek）：模型问完三个澄清问题后写
+#: 「你把这三个答案给我，我就一次性把步骤表和检查点改好」——
+#: 一句**将来条件句**，旧正则只看「改好」两个字，于是界面弹出
+#: 「这句话说改动发生了，但这一轮没有任何写操作」。模型没有说谎，
+#: 是判定把「会去改」读成了「已经改了」。
+#:
+#: 现在的口径：先按句切，句子里出现将来/条件/征求同意的**多字标记**
+#: （我会、可以、如果、先、就、建议、要不要…）就不算“已发生”；
+#: 只有明确的完成体才进入候选。
 _CHANGE_CLAIM = re.compile(
-    r"(照做|已改|改好|已经改|已延长|延长过|延长到|延长了|延到|已拆|拆成两天|"
-    r"已写入|写入了|改到版本|现在是第\s*\d+\s*版|已经?拆成)"
+    r"(照做了|已改|已修改|已经改|改好了|已延长|延长过|延长到|延长了|延到|"
+    r"已拆|已写入|写入了|改到版本|现在是第\s*\d+\s*版|已经?拆成)"
 )
+#: 将来 / 条件 / 征求同意。句子级判断，不是全文级：
+#: 「已经改好了。你要不要看看？」前半句仍然是完成体。
+#:
+#: 用**多字标记**而不是裸的「会 / 要 / 能」：后三者会被「会话」「功能」
+#: 「主要」这类普通名词误伤，把一句真的完成体也放过去。
+_NOT_YET_OR_CONDITIONAL = re.compile(
+    r"(我会|我们会|会去|会先|会再|会帮|将要|就要|可以|如果|若|要是|先|就|"
+    r"打算|准备|建议|要不要|等你|让我|需要你)"
+)
+_SENTENCE_END = re.compile(r"[。！？!?；;\n]+")
 #: 只有这些工具**真的写库**。读类工具不算"改了"。
 _WRITE_TOOLS = frozenset(
     {
@@ -118,7 +138,15 @@ def claims_unsupported_change(
     text = (reply or "").strip()
     if not text:
         return False
-    if not _CHANGE_CLAIM.search(text):
+    claimed = False
+    for sentence in _SENTENCE_END.split(text):
+        if not _CHANGE_CLAIM.search(sentence):
+            continue
+        if _NOT_YET_OR_CONDITIONAL.search(sentence):
+            continue
+        claimed = True
+        break
+    if not claimed:
         return False
     for trace in traces:
         tool = getattr(trace, "tool", "") or ""
@@ -288,6 +316,8 @@ SYSTEM_PROMPT = """\
 - 他点提交后，界面会把他的回答拼成一条完整消息发给你；**那时你再继续**。
 - 不要自己替他填答案，也不要在表单外再重复问同样的问题。
 - 只需要一个二选一、且选项很短时，仍可以用一行 `? ` 快捷问题。
+- `mou-form` / `mou-plan` 是**正文里的代码块**，不是可调用的工具：
+  不要发起同名工具调用（那会被守卫拦下，白费一步）。
 
 ## 需要他确认一份计划草案时：用 `mou-plan`
 

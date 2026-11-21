@@ -16,6 +16,9 @@ import { existsSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const URL_ = process.argv[2] || 'http://127.0.0.1:8125/';
+// 接口要和页面同一个源。以前这里写死 8125，传 8130 时页面读的是 A、
+// 对照的接口读的是 B —— 报出来的“不一致”与页面无关。
+const ORIGIN = new URL(URL_).origin;
 const PORT = 9392;
 const EDGE_CANDIDATES = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -133,8 +136,8 @@ async function main() {
       cardHtml: (document.querySelector('#active-model-card') || {}).innerHTML?.slice(0, 100) || '',
     })`);
 
-    const api = await (await fetch('http://127.0.0.1:8125/api/llm/config')).json();
-    const apiProfiles = await (await fetch('http://127.0.0.1:8125/api/llm/profiles')).json();
+    const api = await (await fetch(`${ORIGIN}/api/llm/config`)).json();
+    const apiProfiles = await (await fetch(`${ORIGIN}/api/llm/profiles`)).json();
     const view = JSON.parse(stateText);
 
     console.log('页面：', view);

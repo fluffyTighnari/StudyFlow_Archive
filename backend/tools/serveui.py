@@ -234,9 +234,15 @@ def main() -> int:
     from app import config as app_config
 
     loaded_keys = getattr(app_config, "_ENV_FILE_KEYS_LOADED", [])
-    print(
-        f"模型：{settings.llm_provider} / {effective_model()} @ {effective_base()}"
-    )
+    if settings.llm_provider == "fake":
+        # fake 没有模型名。以前这里照样打印 `.env` 的 `qwen3.6:27b @ 127.0.0.1:11434`，
+        # 于是容器日志写着"模型：fake / qwen3.6:27b"—— 两个互相矛盾的事实
+        # 挤在一行里，读的人只会记住"qwen3.6:27b"。
+        print("模型：fake（确定性替身，不调用任何真模型）")
+    else:
+        print(
+            f"模型：{settings.llm_provider} / {effective_model()} @ {effective_base()}"
+        )
     print(
         f"密钥：{'已提供' if settings.llm_api_key else '未提供'}"
         f" · .env 新读到 {len(loaded_keys)} 个键（已在环境变量中的不重复计数）"
@@ -256,8 +262,25 @@ def main() -> int:
     if (dist / "index.html").is_file():
         from starlette.staticfiles import StaticFiles
 
+        # ★ `Cache-Control: no-cache` 不是性能设置，是**更新可见性**设置。
+        #
+        # 静态文件没有构建哈希（这个项目刻意没有构建步骤），Starlette 默认
+        # 只给 ETag / Last-Modified、不给 Cache-Control，浏览器于是可以按
+        # “启发式缓存”把 app.js 留上一阵。实测：改了 app.js、普通刷新之后
+        # 页面仍跑旧模块 —— 用户看到的是“改完没生效”，而且没有任何报错。
+        # `no-cache` 允许缓存，但每次使用前必须用 ETag 回源确认；换版本后
+        # 一次普通刷新就能拿到新的那份。
+        class _RevalidatingStaticFiles(StaticFiles):
+            async def get_response(self, path, scope):
+                response = await super().get_response(path, scope)
+                if response.status_code < 400:
+                    response.headers["Cache-Control"] = "no-cache"
+                return response
+
         # 挂在最后：路由先匹配，所以 `/api/...` 不会被这个 mount 吃掉。
-        app.mount("/", StaticFiles(directory=dist, html=True), name="app")
+        app.mount(
+            "/", _RevalidatingStaticFiles(directory=dist, html=True), name="app"
+        )
         print(f"已托管前端产物：{dist}")
     else:
         print(f"没有前端产物（{dist} 里没有 index.html）—— 只跑 API。")
@@ -276,10 +299,19 @@ def main() -> int:
             "等另一端把 res-N.json 写回来。"
         )
     elif settings.llm_provider == "fake":
+        # 有真实计划时装"改计划"的替身；没有计划时**不退出**，退回只回一句话的替身。
+        #
+        # 以前这里 `return 2`：一个空库起不来，于是容器入口脚本被迫先铺数据，
+        # 而铺出来的那两条演示会话看起来像"旧数据残留"。空库其实是**正常状态**
+        # ——「还没有计划也能讨论」本来就是支持的（见 discuss 的测试）。
+        # 让 fake 跟着这个事实走，容器才能以空档案启动。
         if not _install_scripted(
             app, session_id=args.script_session, frame_delay=args.frame_delay
         ):
-            return 2
+            print(
+                "→ 没有可改的计划，替身退回「只回一句话」："
+                "讨论能跑，但不会替你改计划。"
+            )
     else:
         print(
             f"用模型：{effective_model()} @ {effective_base()}"

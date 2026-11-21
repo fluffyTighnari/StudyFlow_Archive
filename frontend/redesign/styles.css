@@ -17,16 +17,19 @@
      回退到宋体，所以离线时只是"看不出区别"，不会掉字。 */
   --kai: "LXGW WenKai", "LXGW WenKai GB", "Kaiti SC", "STKaiti", "KaiTi", var(--serif);
 
-  --rail-w: 292px;
-  --margin-w: 348px;
-  --top-h: 64px;
+  /* 三栏收窄过一轮：原本是 292 / 348 / 820 / 1180。
+     在 1440 宽上，旧值让正文只剩 704px（而且左右两栏都偏"厚"），
+     整页看起来比实际内容更大。现在按 ~9% 收，正文列反而更松。 */
+  --rail-w: 264px;
+  --margin-w: 316px;
+  --top-h: 58px;
 
   /* 两条列轴。此前是散落的 820 / 1180 / "无约束"：
      聊天正文 820、基准与认知 1180、输入区则撑满整个 stage。 */
-  --col-read: 820px;
-  --col-page: 1180px;
+  --col-read: 748px;
+  --col-page: 1080px;
   /* 正文列的横向内边距：输入区与正文对齐时共用这一个数。 */
-  --col-gutter: 48px;
+  --col-gutter: 40px;
 
   --r-xs: 5px;
   --r-sm: 8px;
@@ -234,7 +237,7 @@ body.rail-closed .rail { margin-left: calc(var(--rail-w) * -1); }
   width: 42px; height: 42px;
   flex: 0 0 42px;
   font-family: var(--serif);
-  font-size: 21px; font-weight: 700;
+  font-size: 21px; font-weight: 400;
   color: var(--vermilion);
   border: 1.5px solid currentColor;
   border-radius: var(--r-xs);
@@ -248,21 +251,29 @@ body.rail-closed .rail { margin-left: calc(var(--rail-w) * -1); }
   width: 42px; height: 42px;
   flex: 0 0 42px;
   color: var(--vermilion);
-  border: 1.5px solid currentColor;
+  border: none;
   border-radius: var(--r-xs);
-  box-shadow: inset 0 0 0 2.5px var(--paper), inset 0 0 0 3.4px currentColor;
+  box-shadow: none;
   transform: rotate(-1.5deg);
   transition: transform .6s var(--ease), color .4s;
 }
-.brand-mark svg {
+.brand-mark svg,
+.brand-mark img {
   width: 23px; height: 23px;
   fill: none; stroke: currentColor; stroke-width: 1.55;
   stroke-linecap: round; stroke-linejoin: round;
 }
+.brand-mark img {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  border: none; border-radius: var(--r-xs);
+  box-shadow: none;
+  filter: none;
+}
 .brand:hover .brand-mark { transform: rotate(1.5deg) scale(1.03); }
 .brand-text { display: flex; flex-direction: column; gap: 4px; }
 .brand-text strong {
-  font-size: 18px; font-weight: 700; letter-spacing: 0.1em; line-height: 1;
+  font-size: 18px; font-weight: 400; letter-spacing: 0.1em; line-height: 1;
 }
 .brand-text em {
   font-family: var(--mono);
@@ -342,7 +353,7 @@ body.rail-closed .rail { margin-left: calc(var(--rail-w) * -1); }
 .mini-btn {
   font-family: var(--kai);
   font-size: 12.5px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.02em;
   padding: 6px 12px;
   border: 1px solid var(--rule-strong);
@@ -434,7 +445,16 @@ body.rail-closed .rail { margin-left: calc(var(--rail-w) * -1); }
   list-style: none; margin: 0; padding: 0 0 6px 0;
   display: none;
 }
-.folder.is-open .sessions { display: block; animation: sessionsIn .4s var(--ease) both; }
+.folder.is-open .sessions { display: block; }
+/* 展开动画只在"真的从关到开"那一次播。
+
+   以前它挂在 `.is-open` 上，而左栏是整块 innerHTML 重绘的 ——
+   于是**每次点会话**（selectSession → renderSession → renderRail）
+   都会给整列会话重新挂一次 `sessionsIn`，屏幕上就是整列淡出再淡入、
+   从 -4px 升起来。用户说的"切换时颤动"就是它。
+
+   `.is-expanding` 由 renderRail 在"这次渲染之前它是关着的"那一刻加一次。 */
+.folder.is-open.is-expanding .sessions { animation: sessionsIn .4s var(--ease) both; }
 @keyframes sessionsIn { from { opacity: 0; transform: translateY(-4px); } }
 
 .session {
@@ -551,8 +571,11 @@ body.rail-closed .rail { margin-left: calc(var(--rail-w) * -1); }
 .foot-model:hover { border-color: var(--rule-strong); }
 .foot-model svg { width: 10px; height: 10px; color: var(--ink-meta); }
 .foot-model-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.foot-model-text strong { font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.foot-model-text em { font-family: var(--mono); font-style: normal; font-size: 12px; color: var(--ink-faint); letter-spacing: 0.04em; }
+.foot-model-text strong { font-size: 13px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 这一行是"设置 → 模型：加一份档案就能换"。左栏收窄后它会折成两行，
+   而 `.foot-model` 是固定高度的一格 —— 折行会把整块顶出去。
+   单行 + 省略号：宁可截断，也不让左栏底部撑破。 */
+.foot-model-text em { font-family: var(--mono); font-style: normal; font-size: 12px; color: var(--ink-faint); letter-spacing: 0.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pulse-dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--jade);
@@ -631,7 +654,7 @@ body.rail-closed .rail { margin-left: calc(var(--rail-w) * -1); }
 }
 .crumb-folder { letter-spacing: 0.04em; }
 .crumb-sep { color: var(--ink-meta); font-family: var(--mono); font-size: 14px; }
-.crumb-session { color: var(--ink); font-weight: 700; letter-spacing: 0.04em; overflow: hidden; text-overflow: ellipsis; }
+.crumb-session { color: var(--ink); font-weight: 400; letter-spacing: 0.04em; overflow: hidden; text-overflow: ellipsis; }
 .top-actions { display: flex; align-items: center; gap: 4px; }
 
 .state-pill {
@@ -829,17 +852,24 @@ body.rail-closed .rail { margin-left: calc(var(--rail-w) * -1); }
 .msg-marker {
   display: grid; place-items: center;
   width: 27px; height: 27px;
-  font-size: 16px; font-weight: 700;
+  font-size: 16px; font-weight: 400;
   color: var(--vermilion);
-  border: 1px solid currentColor;
+  border: none;
   border-radius: var(--r-xs);
-  box-shadow: inset 0 0 0 2px var(--paper), inset 0 0 0 2.8px currentColor;
+  box-shadow: none;
   transform: rotate(-1.2deg);
 }
-.msg-marker.is-mark svg {
+.msg-marker.is-mark svg,
+.msg-marker.is-mark img {
   width: 15px; height: 15px;
   fill: none; stroke: currentColor; stroke-width: 1.6;
   stroke-linecap: round; stroke-linejoin: round;
+}
+.msg-marker.is-mark img {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  border: none; border-radius: inherit;
+  box-shadow: none;
 }
 .msg-gutter time {
   font-family: var(--mono);
@@ -885,7 +915,7 @@ body.rail-closed .rail { margin-left: calc(var(--rail-w) * -1); }
 }
 .msg-prose p { margin: 0 0 1.05em; }
 .msg-prose p:last-child { margin-bottom: 0; }
-.msg-prose strong { font-weight: 600; }
+.msg-prose strong { font-weight: 400; }
 .msg-prose em { font-style: normal; border-bottom: 1px solid var(--vermilion); padding-bottom: 1px; }
 .msg-prose .lede { font-size: calc(var(--text-body) * 1.06); line-height: 1.85; }
 .msg-prose .muted { color: var(--ink-faint); }
@@ -918,14 +948,14 @@ html[data-cite="off"] .cite::after { display: none; }
   margin-top: 18px;
   font-family: var(--kai);
   font-size: 14.5px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.02em;
   color: var(--ink-faint);
 }
 .msg-foot button {
   font-family: var(--kai);
   font-size: 14.5px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.02em;
   color: var(--ink-soft);
   padding: 3px 0;
@@ -1016,8 +1046,14 @@ html[data-cite="off"] .cite::after { display: none; }
   50% { box-shadow: 0 0 0 4px transparent; }
 }
 .trace-item { font-family: var(--kai); font-size: 14px; }
-.trace-item strong { display: block; font-weight: 700; color: var(--ink-soft); }
+.trace-item strong { display: block; font-weight: 400; color: var(--ink-soft); }
 .trace-item span { color: var(--ink-faint); }
+
+/* 正文里的那一份只在窄屏出现（宽屏看左侧 gutter）。
+   两份都由同一个 `traceMarkup` 画，状态色不会分叉。 */
+.msg-trace-inline { display: none; }
+/* 流式消息一开始就带着一个空容器；没有工具调用时不该留一块空白。 */
+.msg-trace-inline:empty { display: none !important; }
 
 /* live thinking — the non-dialog motion */
 .msg.is-live .msg-prose { min-height: 8px; }
@@ -1160,7 +1196,7 @@ html[data-cite="off"] .cite::after { display: none; }
 .proposal h4 {
   margin: 6px 0 14px;
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 400;
   letter-spacing: 0.04em;
 }
 .proposal-changes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
@@ -1191,7 +1227,7 @@ html[data-cite="off"] .cite::after { display: none; }
   line-height: 1.7;
   color: var(--ink-faint);
 }
-.proposal-basis strong { color: var(--ink-soft); font-weight: 700; }
+.proposal-basis strong { color: var(--ink-soft); font-weight: 400; }
 .proposal-actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
 .proposal-actions .text-link { margin-left: auto; }
 .proposal.is-resolved { opacity: .72; }
@@ -1226,7 +1262,7 @@ html[data-cite="off"] .cite::after { display: none; }
 .text-link {
   font-family: var(--kai);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.03em;
   color: var(--ink-faint);
   border-bottom: 1px solid var(--rule);
@@ -1310,7 +1346,7 @@ html[data-cite="off"] .cite::after { display: none; }
 .mpanel-head h3 {
   margin: 0;
   font-size: 15.5px;
-  font-weight: 600;
+  font-weight: 400;
   letter-spacing: 0.1em;
 }
 .mpanel-head .ver {
@@ -1332,7 +1368,7 @@ html[data-cite="off"] .cite::after { display: none; }
   padding-bottom: 12px;
   border-bottom: 1px solid var(--rule);
 }
-.mot-type strong { font-size: 16px; font-weight: 600; letter-spacing: 0.05em; }
+.mot-type strong { font-size: 16px; font-weight: 400; letter-spacing: 0.05em; }
 .mot-type em { font-family: var(--mono); font-style: normal; font-size: 14px; color: var(--ink-meta); letter-spacing: 0.1em; }
 
 .strength {
@@ -1381,7 +1417,7 @@ html[data-cite="off"] .cite::after { display: none; }
   background: var(--paper-raised);
   border-left: 2px solid var(--gold);
 }
-.obstacle-list strong { display: block; font-size: 14.5px; font-weight: 700; color: var(--ink); margin-bottom: 2px; letter-spacing: 0.04em; }
+.obstacle-list strong { display: block; font-size: 14.5px; font-weight: 400; color: var(--ink); margin-bottom: 2px; letter-spacing: 0.04em; }
 .obstacle-list span { color: var(--ink-faint); font-size: 14px; }
 
 .revision-note {
@@ -1395,7 +1431,7 @@ html[data-cite="off"] .cite::after { display: none; }
   color: var(--ink-meta);
   letter-spacing: 0.04em;
 }
-.revision-note b { font-weight: 700; color: var(--ink-faint); }
+.revision-note b { font-weight: 400; color: var(--ink-faint); }
 
 /* plan */
 .plan-progress {
@@ -1480,7 +1516,7 @@ html[data-cite="off"] .cite::after { display: none; }
 }
 .checkpoint p { margin: 0 0 5px; font-size: 15px; line-height: 1.65; color: var(--ink-soft); }
 .checkpoint .cp-criteria { color: var(--ink-faint); font-size: 14px; }
-.checkpoint .cp-criteria b { font-weight: 700; color: var(--ink-soft); }
+.checkpoint .cp-criteria b { font-weight: 400; color: var(--ink-soft); }
 
 .mpanel-actions {
   display: flex; gap: 7px; margin-top: 18px;
@@ -1495,7 +1531,7 @@ html[data-cite="off"] .cite::after { display: none; }
   color: var(--ink-faint);
   margin-bottom: 7px;
 }
-.token-meter-top strong { font-family: var(--display); font-size: 16px; font-weight: 700; color: var(--ink); letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.token-meter-top strong { font-family: var(--display); font-size: 16px; font-weight: 400; color: var(--ink); letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
 .token-bar { display: flex; height: 5px; gap: 2px; background: var(--rule-soft); }
 .token-bar i { height: 100%; background: var(--ink-faint); opacity: .55; }
 .token-bar i:nth-child(1) { background: var(--vermilion); opacity: .8; }
@@ -1567,16 +1603,25 @@ html[data-cite="off"] .cite::after { display: none; }
   width: 24px; height: 24px;
   font-size: 14.5px;
   color: var(--gold);
-  border: 1px solid currentColor;
+  border: none;
   border-radius: var(--r-xs);
+  box-shadow: none;
 }
 .mini-seal svg,
+.mini-seal img,
 .confirm-seal svg {
   width: 14px; height: 14px;
   fill: none; stroke: currentColor; stroke-width: 1.6;
   stroke-linecap: round; stroke-linejoin: round;
 }
-.side-note-link strong { display: block; font-size: 13px; font-weight: 700; margin-bottom: 2px; }
+.mini-seal img,
+.confirm-seal img {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  border: none; border-radius: inherit;
+  box-shadow: none;
+}
+.side-note-link strong { display: block; font-size: 13px; font-weight: 400; margin-bottom: 2px; }
 .side-note-link em { display: block; font-family: var(--mono); font-style: normal; font-size: 14px; color: var(--ink-meta); }
 
 /* ═══════════════════════════ COMPOSER ══════════════════════════════ */
@@ -2109,7 +2154,7 @@ html[data-cite="off"] .cite::after { display: none; }
 .reading-score {
   font-family: var(--display);
   font-size: 44px;
-  font-weight: 700;
+  font-weight: 400;
   line-height: 1;
   color: var(--ink-meta);
   letter-spacing: -.02em;
@@ -2170,7 +2215,9 @@ html[data-cite="off"] .cite::after { display: none; }
 .settings-nav-item i {
   grid-row: 1 / span 2;
   font-family: var(--mono); font-style: normal;
-  font-size: 14px; color: var(--ink-meta);
+  /* 编号是 12px：等宽字在 400 下仍然比中文正文显眼（字形更方、更黑），
+     和 15px 的中文并排会被读成"粗"。靠字号把它压回辅助层。 */
+  font-size: 12px; color: var(--ink-meta);
   padding-top: 3px;
 }
 .settings-nav-item span { font-size: 16.5px; letter-spacing: 0.06em; color: var(--ink-soft); }
@@ -2193,16 +2240,18 @@ html[data-cite="off"] .cite::after { display: none; }
   overflow-y: auto;
   padding: 38px 52px 80px;
 }
-.settings-panel { display: none; max-width: 880px; }
+.settings-panel { display: none; max-width: 860px; }
 .settings-panel.is-active { display: block; animation: panelIn .5s var(--ease) both; }
-.settings-head { max-width: 66ch; margin-bottom: 26px; }
+.settings-head { max-width: 66ch; margin-bottom: 20px; }
+/* 设置页主标题：32px + 合成粗体是"刺眼"的主要来源。
+   宋体中文在 32px 加粗后会糊成一团墨，改成 26px + 真 600（字体已按 600 加载）。 */
 .settings-head h2 {
-  margin: 0 0 10px;
-  font-size: 32px;
+  margin: 0 0 8px;
+  font-size: 26px;
   font-weight: 400;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.05em;
 }
-.settings-head p { margin: 0; font-size: 15.5px; line-height: 1.9; color: var(--ink-faint); }
+.settings-head p { margin: 0; font-size: 14.5px; line-height: 1.85; color: var(--ink-faint); }
 
 .setting-row {
   display: grid;
@@ -2212,7 +2261,7 @@ html[data-cite="off"] .cite::after { display: none; }
   padding: 24px 0;
   border-top: 1px solid var(--rule);
 }
-.setting-copy h3 { margin: 0 0 6px; font-size: 15px; font-weight: 700; letter-spacing: 0.06em; }
+.setting-copy h3 { margin: 0 0 6px; font-size: 15px; font-weight: 400; letter-spacing: 0.06em; }
 .setting-copy p { margin: 0; font-size: 15px; line-height: 1.8; color: var(--ink-faint); max-width: 54ch; }
 .setting-block { padding: 24px 0 6px; border-top: 1px solid var(--rule); }
 .setting-block .setting-copy { margin-bottom: 18px; }
@@ -2260,7 +2309,7 @@ html[data-cite="off"] .cite::after { display: none; }
   border-top-color: var(--vermilion);
   border-right-color: var(--vermilion);
 }
-.busy-card strong { font-size: 15.5px; font-weight: 700; letter-spacing: 0.05em; }
+.busy-card strong { font-size: 15.5px; font-weight: 400; letter-spacing: 0.05em; }
 .busy-card em { font-style: normal; font-size: 14px; line-height: 1.65; color: var(--ink-faint); }
 .busy-tag {
   margin-top: 4px;
@@ -2362,7 +2411,7 @@ html[data-cite="off"] .cite::after { display: none; }
   font-family: var(--mono); font-size: 14px; letter-spacing: 0.06em;
   color: var(--ink-faint);
 }
-.am-meta span b { font-weight: 700; color: var(--ink-soft); }
+.am-meta span b { font-weight: 400; color: var(--ink-soft); }
 .am-probe {
   align-self: center;
   display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
@@ -2402,7 +2451,7 @@ html[data-cite="off"] .cite::after { display: none; }
 }
 .profile.is-active .profile-mark { color: var(--vermilion); border-color: var(--vermilion); }
 .profile-main { min-width: 0; }
-.profile-main strong { display: block; font-size: 16px; font-weight: 700; letter-spacing: 0.03em; }
+.profile-main strong { display: block; font-size: 16px; font-weight: 400; letter-spacing: 0.03em; }
 .profile-main span {
   display: block;
   font-family: var(--mono); font-size: 14px; color: var(--ink-meta);
@@ -2485,13 +2534,15 @@ html[data-cite="off"] .cite::after { display: none; }
   display: grid; place-items: center;
   font-size: 15px;
   color: #b04430;
-  border: 1px solid #b04430;
+  border: none;
   border-radius: 2px;
+  box-shadow: none;
   transform: rotate(-2deg);
 }
-.sw-seal svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.sw-seal svg, .sw-seal img { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.sw-seal img { width: 100%; height: 100%; object-fit: contain; border: none; border-radius: inherit; box-shadow: none; }
 .swatch-preview.ink .sw-seal { color: #cf6a52; border-color: #cf6a52; }
-.theme-swatch strong { display: block; margin-top: 9px; font-size: 15px; font-weight: 700; letter-spacing: 0.08em; }
+.theme-swatch strong { display: block; margin-top: 9px; font-size: 15px; font-weight: 400; letter-spacing: 0.08em; }
 .theme-swatch em { display: block; margin-top: 3px; font-family: var(--mono); font-style: normal; font-size: 14px; color: var(--ink-meta); }
 
 .token-preview {
@@ -2537,7 +2588,7 @@ html[data-scale="large"] { --text-body: 19.5px; }
   padding: 18px 18px 14px;
   border-bottom: 1px solid var(--rule);
 }
-.sn-head strong { display: block; font-size: 16px; font-weight: 700; letter-spacing: 0.1em; }
+.sn-head strong { display: block; font-size: 16px; font-weight: 400; letter-spacing: 0.1em; }
 .sn-head em { display: block; font-family: var(--mono); font-style: normal; font-size: 14px; color: var(--ink-meta); margin-top: 3px; }
 .sn-meter { padding: 14px 18px; border-bottom: 1px solid var(--rule-soft); }
 .sn-meter-top { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 14px; color: var(--ink-faint); letter-spacing: 0.06em; margin-bottom: 6px; }
@@ -2658,12 +2709,12 @@ html[data-scale="large"] { --text-body: 19.5px; }
   width: 42px; height: 42px;
   font-size: 20px;
   color: var(--vermilion);
-  border: 1.5px solid currentColor;
+  border: none;
   border-radius: var(--r-xs);
-  box-shadow: inset 0 0 0 2px var(--paper-raised), inset 0 0 0 2.8px currentColor;
+  box-shadow: none;
   transform: rotate(-2deg);
 }
-.confirm-text h3 { margin: 0 0 7px; font-size: 16px; font-weight: 600; letter-spacing: 0.04em; }
+.confirm-text h3 { margin: 0 0 7px; font-size: 16px; font-weight: 400; letter-spacing: 0.04em; }
 .confirm-text p { margin: 0; font-size: 15px; line-height: 1.75; color: var(--ink-faint); }
 .confirm-actions { grid-column: 2; display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
 
@@ -2716,88 +2767,88 @@ body {
 
 /* rail */
 .brand-text strong { letter-spacing: 0.1em; }
-.brand-text em { font-size: 11.5px; font-weight: 700; letter-spacing: 0.1em; color: var(--ink-faint); }
-.tool-btn { height: 32px; font-family: var(--kai); font-size: 12.5px; font-weight: 700; letter-spacing: 0.02em; }
-.inline-label { font-size: 12px; font-weight: 700; letter-spacing: 0.1em; }
+.brand-text em { font-size: 11.5px; font-weight: 400; letter-spacing: 0.1em; color: var(--ink-faint); }
+.tool-btn { height: 32px; font-family: var(--kai); font-size: 12.5px; font-weight: 400; letter-spacing: 0.02em; }
+.inline-label { font-size: 12px; font-weight: 400; letter-spacing: 0.1em; }
 .inline-form input, .search-slot input { font-size: 16.5px; }
-.index-label { font-size: 12px; font-weight: 700; letter-spacing: 0.1em; }
-.index-count { font-size: 12px; font-weight: 700; color: var(--ink-faint); }
-.folio { font-size: 14.5px; font-weight: 700; }
-.folder-name { font-family: var(--kai); font-size: 14.5px; font-weight: 700; letter-spacing: 0.01em; }
-.folder-count { font-size: 12.5px; font-weight: 700; color: var(--ink-faint); }
+.index-label { font-size: 12px; font-weight: 400; letter-spacing: 0.1em; }
+.index-count { font-size: 12px; font-weight: 400; color: var(--ink-faint); }
+.folio { font-size: 14.5px; font-weight: 400; }
+.folder-name { font-family: var(--kai); font-size: 14.5px; font-weight: 400; letter-spacing: 0.01em; }
+.folder-count { font-size: 12.5px; font-weight: 400; color: var(--ink-faint); }
 .session-title { font-family: var(--kai); font-size: 14px; font-weight: 450; }
-.session time { font-size: 12px; font-weight: 700; color: var(--ink-faint); }
+.session time { font-size: 12px; font-weight: 400; color: var(--ink-faint); }
 .session.is-queued-msg .session-title::after { font-size: 14px; }
-.archive-head { font-size: 12px; font-weight: 700; letter-spacing: 0.1em; }
+.archive-head { font-size: 12px; font-weight: 400; letter-spacing: 0.1em; }
 .archive-empty { font-family: var(--kai); font-size: 13px; }
-.foot-link { font-family: var(--kai); font-size: 13px; font-weight: 700; letter-spacing: 0.04em; }
-.foot-badge { font-family: var(--kai); font-size: 11.5px; font-weight: 700; }
-.foot-model-text strong { font-family: var(--kai); font-size: 13px; font-weight: 700; }
-.foot-model-text em { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; color: var(--ink-faint); }
-.foot-colophon { font-size: 11.5px; font-weight: 700; letter-spacing: 0.08em; color: var(--ink-faint); }
+.foot-link { font-family: var(--kai); font-size: 13px; font-weight: 400; letter-spacing: 0.04em; }
+.foot-badge { font-family: var(--kai); font-size: 11.5px; font-weight: 400; }
+.foot-model-text strong { font-family: var(--kai); font-size: 13px; font-weight: 400; }
+.foot-model-text em { font-size: 12px; font-weight: 400; letter-spacing: 0.02em; color: var(--ink-faint); }
+.foot-colophon { font-size: 11.5px; font-weight: 400; letter-spacing: 0.08em; color: var(--ink-faint); }
 .rail-spine { font-size: 14px; opacity: .4; }
 
 /* topbar */
 .crumb { font-family: var(--kai); font-size: 14px; }
-.crumb-session { font-weight: 700; }
+.crumb-session { font-weight: 400; }
 .crumb-sep { font-size: 14.5px; }
-.state-pill { font-family: var(--kai); font-size: 12px; font-weight: 700; letter-spacing: 0.06em; }
-.model-chip { font-family: var(--kai); font-size: 12.5px; font-weight: 700; letter-spacing: 0.01em; height: 32px; }
+.state-pill { font-family: var(--kai); font-size: 12px; font-weight: 400; letter-spacing: 0.06em; }
+.model-chip { font-family: var(--kai); font-size: 12.5px; font-weight: 400; letter-spacing: 0.01em; height: 32px; }
 
 /* thread chrome */
-.date-divider { font-size: 14px; font-weight: 700; letter-spacing: 0.1em; color: var(--ink-faint); }
-.msg-gutter time { font-size: 14px; font-weight: 700; color: var(--ink-faint); }
-.msg-role { font-size: 14px; font-weight: 700; letter-spacing: 0.1em; }
-.msg-meta { font-size: 14px; font-weight: 700; color: var(--ink-faint); }
-.msg-foot { font-size: 14.5px; font-weight: 700; letter-spacing: 0.02em; color: var(--ink-faint); }
-.msg-foot button { font-size: 14.5px; font-weight: 700; letter-spacing: 0.02em; }
+.date-divider { font-size: 14px; font-weight: 400; letter-spacing: 0.1em; color: var(--ink-faint); }
+.msg-gutter time { font-size: 14px; font-weight: 400; color: var(--ink-faint); }
+.msg-role { font-size: 14px; font-weight: 400; letter-spacing: 0.1em; }
+.msg-meta { font-size: 14px; font-weight: 400; color: var(--ink-faint); }
+.msg-foot { font-size: 14.5px; font-weight: 400; letter-spacing: 0.02em; color: var(--ink-faint); }
+.msg-foot button { font-size: 14.5px; font-weight: 400; letter-spacing: 0.02em; }
 .msg-queued-tag { font-size: 14px; }
 .msg-trace { font-size: 14px; line-height: 1.55; color: var(--ink-faint); }
-.trace-item strong { font-weight: 700; }
-.thinking-status { font-size: 14px; font-weight: 700; letter-spacing: 0.1em; }
+.trace-item strong { font-weight: 400; }
+.thinking-status { font-size: 14px; font-weight: 400; letter-spacing: 0.1em; }
 .thinking-note { font-size: 16px; line-height: 1.8; color: var(--ink-soft); }
 .msg.is-interrupted .msg-body::after { font-size: 14px; }
-.proposal-stamp { font-size: 14.5px; font-weight: 700; letter-spacing: 0.1em; }
-.proposal-label { font-size: 14px; font-weight: 700; letter-spacing: 0.1em; }
-.proposal h4 { font-size: 17px; font-weight: 600; letter-spacing: 0.02em; }
+.proposal-stamp { font-size: 14.5px; font-weight: 400; letter-spacing: 0.1em; }
+.proposal-label { font-size: 14px; font-weight: 400; letter-spacing: 0.1em; }
+.proposal h4 { font-size: 17px; font-weight: 400; letter-spacing: 0.02em; }
 .proposal-changes li { font-family: var(--kai); font-size: 16.5px; line-height: 1.7; }
-.proposal-changes li .chg-mark { font-size: 14px; font-weight: 700; }
+.proposal-changes li .chg-mark { font-size: 14px; font-weight: 400; }
 .proposal-basis { font-family: var(--kai); font-size: 15.5px; line-height: 1.7; color: var(--ink-soft); }
-.proposal-resolution { font-size: 14px; font-weight: 700; }
-.text-link { font-family: var(--kai); font-size: 13px; font-weight: 700; letter-spacing: 0.03em; }
-.ink-btn { font-family: var(--kai); font-size: 13.5px; font-weight: 700; letter-spacing: 0.03em; }
-.thread-end { font-size: 14px; font-weight: 700; letter-spacing: 0.1em; color: var(--ink-faint); }
+.proposal-resolution { font-size: 14px; font-weight: 400; }
+.text-link { font-family: var(--kai); font-size: 13px; font-weight: 400; letter-spacing: 0.03em; }
+.ink-btn { font-family: var(--kai); font-size: 13.5px; font-weight: 400; letter-spacing: 0.03em; }
+.thread-end { font-size: 14px; font-weight: 400; letter-spacing: 0.1em; color: var(--ink-faint); }
 .empty-thread p { font-size: 15px; line-height: 1.8; }
 .prompt-hints button { font-family: var(--kai); font-size: 16px; }
 
 /* margin */
-.margin-tab { font-family: var(--kai); font-size: 13px; font-weight: 700; letter-spacing: 0.02em; }
-.margin-tab i { font-size: 14px; font-weight: 700; color: var(--ink-faint); }
-.mpanel-head h3 { font-size: 15.5px; font-weight: 600; letter-spacing: 0.02em; }
-.mpanel-head .ver { font-size: 14px; font-weight: 700; color: var(--ink-faint); }
+.margin-tab { font-family: var(--kai); font-size: 13px; font-weight: 400; letter-spacing: 0.02em; }
+.margin-tab i { font-size: 14px; font-weight: 400; color: var(--ink-faint); }
+.mpanel-head h3 { font-size: 15.5px; font-weight: 400; letter-spacing: 0.02em; }
+.mpanel-head .ver { font-size: 14px; font-weight: 400; color: var(--ink-faint); }
 .mpanel-sub { font-family: var(--kai); font-size: 13.5px; line-height: 1.75; }
-.mot-type strong { font-size: 16.5px; font-weight: 600; }
-.mot-type em { font-size: 14px; font-weight: 700; letter-spacing: 0.08em; }
-.strength-labels { font-size: 14px; font-weight: 700; color: var(--ink-faint); }
-.m-section-head { font-family: var(--kai); font-size: 12.5px; font-weight: 700; letter-spacing: 0.02em; }
+.mot-type strong { font-size: 16.5px; font-weight: 400; }
+.mot-type em { font-size: 14px; font-weight: 400; letter-spacing: 0.08em; }
+.strength-labels { font-size: 14px; font-weight: 400; color: var(--ink-faint); }
+.m-section-head { font-family: var(--kai); font-size: 12.5px; font-weight: 400; letter-spacing: 0.02em; }
 .driver-list li { font-family: var(--kai); font-size: 13.5px; line-height: 1.65; }
 .obstacle-list li { font-family: var(--kai); font-size: 13px; }
-.obstacle-list strong { font-size: 15.5px; font-weight: 700; }
+.obstacle-list strong { font-size: 15.5px; font-weight: 400; }
 .obstacle-list span { font-size: 15px; line-height: 1.6; }
 .revision-note { font-family: var(--kai); font-size: 15px; line-height: 1.65; }
-.plan-progress span { font-size: 14px; font-weight: 700; }
+.plan-progress span { font-size: 14px; font-weight: 400; }
 .step-action { font-family: var(--kai); font-size: 14px; line-height: 1.6; }
-.step-meta { font-size: 12px; font-weight: 700; line-height: 1.5; }
-.checkpoint-head { font-size: 14px; font-weight: 700; }
+.step-meta { font-size: 12px; font-weight: 400; line-height: 1.5; }
+.checkpoint-head { font-size: 14px; font-weight: 400; }
 .checkpoint p { font-family: var(--kai); font-size: 15.5px; }
 .checkpoint .cp-criteria { font-size: 14px; }
-.token-meter-top { font-size: 14px; font-weight: 700; color: var(--ink-faint); }
-.token-legend { font-size: 14px; font-weight: 700; color: var(--ink-faint); }
+.token-meter-top { font-size: 14px; font-weight: 400; color: var(--ink-faint); }
+.token-legend { font-size: 14px; font-weight: 400; color: var(--ink-faint); }
 .ctx-list li { font-family: var(--kai); font-size: 13px; }
-.ctx-list li em { font-size: 14px; font-weight: 700; }
+.ctx-list li em { font-size: 14px; font-weight: 400; }
 .ctx-note { font-size: 16.5px; line-height: 1.8; color: var(--ink-soft); }
-.side-note-link strong { font-family: var(--kai); font-size: 13px; font-weight: 700; }
-.side-note-link em { font-size: 14px; font-weight: 700; }
+.side-note-link strong { font-family: var(--kai); font-size: 13px; font-weight: 400; }
+.side-note-link em { font-size: 14px; font-weight: 400; }
 .mini-seal { font-size: 14.5px; }
 
 /* composer */
@@ -2806,94 +2857,94 @@ body {
 .composer-busy { font-size: 12.5px; font-weight: 400; }
 #composer-input { font-family: var(--kai); font-size: 16px; }
 #composer-input::placeholder { font-size: 16px; color: var(--ink-faint); }
-.send-btn { font-family: var(--kai); font-size: 16px; font-weight: 700; }
+.send-btn { font-family: var(--kai); font-size: 16px; font-weight: 400; }
 .composer-foot { font-size: 12px; font-weight: 400; letter-spacing: 0.02em; color: var(--ink-meta); }
-.queue-strip { font-size: 14px; font-weight: 700; }
+.queue-strip { font-size: 14px; font-weight: 400; }
 
 /* page chrome, benchmark and settings */
-.page-kicker { font-size: 14px; font-weight: 700; letter-spacing: 0.1em; color: var(--ink-faint); }
+.page-kicker { font-size: 14px; font-weight: 400; letter-spacing: 0.1em; color: var(--ink-faint); }
 .page-kicker em { font-size: 14px; }
-.quiet-note { font-size: 14px; font-weight: 700; }
-.section-mark { font-size: 14px; font-weight: 700; letter-spacing: 0.1em; }
-.hero-meta { font-size: 14px; font-weight: 700; letter-spacing: 0.05em; }
+.quiet-note { font-size: 14px; font-weight: 400; }
+.section-mark { font-size: 14px; font-weight: 400; letter-spacing: 0.1em; }
+.hero-meta { font-size: 14px; font-weight: 400; letter-spacing: 0.05em; }
 
 .bench-hero p,
 .cog-hero p { font-size: 16.5px; line-height: 1.9; }
-.form-time { font-size: 14px; font-weight: 700; }
-.form-no { font-family: var(--kai); font-size: 15px; font-weight: 700; }
-.form-card h2 { font-weight: 600; letter-spacing: 0.03em; }
+.form-time { font-size: 14px; font-weight: 400; }
+.form-no { font-family: var(--kai); font-size: 15px; font-weight: 400; }
+.form-card h2 { font-weight: 400; letter-spacing: 0.03em; }
 .form-card p { font-family: var(--kai); font-size: 16.5px; line-height: 1.75; }
 .form-list { font-family: var(--kai); font-size: 15px; line-height: 1.7; }
 .bench-section-head p { font-family: var(--kai); font-size: 16px; line-height: 1.75; }
-.run-status { font-size: 14px; font-weight: 700; }
-.run-card h3 { font-size: 20px; font-weight: 600; letter-spacing: 0.02em; }
+.run-status { font-size: 14px; font-weight: 400; }
+.run-card h3 { font-size: 20px; font-weight: 400; letter-spacing: 0.02em; }
 .run-sub { font-family: var(--kai); font-size: 15px; line-height: 1.7; }
 .run-note { font-family: var(--kai); font-size: 14px; line-height: 1.6; }
-.domain-col-head span { font-family: var(--kai); font-size: 16.5px; font-weight: 700; }
-.domain-col-head em { font-size: 14px; font-weight: 700; }
-.domain-note { font-size: 14px; font-weight: 700; line-height: 1.6; }
+.domain-col-head span { font-family: var(--kai); font-size: 16.5px; font-weight: 400; }
+.domain-col-head em { font-size: 14px; font-weight: 400; }
+.domain-note { font-size: 14px; font-weight: 400; line-height: 1.6; }
 .domain-skip span { font-family: var(--kai); font-size: 14.5px; }
-.chip { font-family: var(--kai); font-size: 15px; font-weight: 700; }
-.reading header span { font-family: var(--kai); font-size: 16.5px; font-weight: 600; }
-.reading header em { font-size: 14px; font-weight: 700; }
-.reading-score small { font-size: 14px; font-weight: 700; }
+.chip { font-family: var(--kai); font-size: 15px; font-weight: 400; }
+.reading header span { font-family: var(--kai); font-size: 16.5px; font-weight: 400; }
+.reading header em { font-size: 14px; font-weight: 400; }
+.reading-score small { font-size: 14px; font-weight: 400; }
 .reading-body p { font-family: var(--kai); font-size: 15.5px; line-height: 1.7; }
-.reading footer { font-size: 14px; font-weight: 700; }
+.reading footer { font-size: 14px; font-weight: 400; }
 .empty-resolution p { font-family: var(--kai); font-size: 15.5px; line-height: 1.75; }
 .empty-mark { font-size: 15px; }
 
-.settings-nav-item span { font-family: var(--kai); font-size: 15px; font-weight: 700; }
-.settings-nav-item i { font-size: 14px; font-weight: 700; }
-.settings-nav-item em { font-size: 14px; font-weight: 700; color: var(--ink-faint); }
-.settings-nav-foot { font-size: 14px; font-weight: 700; color: var(--ink-faint); }
-.settings-head h2 { font-weight: 600; letter-spacing: 0.03em; }
-.bench-section-head h2 { font-weight: 600; letter-spacing: 0.03em; }
+.settings-nav-item span { font-family: var(--kai); font-size: 15px; font-weight: 400; }
+.settings-nav-item i { font-size: 12px; font-weight: 400; }
+.settings-nav-item em { font-size: 14px; font-weight: 400; color: var(--ink-faint); }
+.settings-nav-foot { font-size: 14px; font-weight: 400; color: var(--ink-faint); }
+.settings-head h2 { font-weight: 400; letter-spacing: 0.03em; }
+.bench-section-head h2 { font-weight: 400; letter-spacing: 0.03em; }
 .settings-head p { font-family: var(--kai); font-size: 16.5px; line-height: 1.8; color: var(--ink-soft); }
-.setting-copy h3 { font-family: var(--kai); font-size: 15.5px; font-weight: 700; }
+.setting-copy h3 { font-family: var(--kai); font-size: 15.5px; font-weight: 400; }
 .setting-copy p { font-family: var(--kai); font-size: 15.5px; line-height: 1.75; color: var(--ink-faint); }
-.segmented button { font-family: var(--kai); font-size: 15px; font-weight: 700; }
-.busy-card strong { font-family: var(--kai); font-size: 16.5px; font-weight: 700; }
+.segmented button { font-family: var(--kai); font-size: 15px; font-weight: 400; }
+.busy-card strong { font-family: var(--kai); font-size: 16.5px; font-weight: 400; }
 .busy-card em { font-family: var(--kai); font-size: 15px; line-height: 1.65; }
-.busy-tag { font-size: 14px; font-weight: 700; }
+.busy-tag { font-size: 14px; font-weight: 400; }
 .am-seal { font-family: var(--serif); font-size: 14.5px; }
-.am-kicker { font-size: 14px; font-weight: 700; }
-.am-title h3 { font-size: 22px; font-weight: 600; letter-spacing: 0.02em; }
-.am-title .am-model { font-size: 14.5px; font-weight: 700; }
-.am-meta { font-size: 14px; font-weight: 700; line-height: 1.7; }
-.am-think { font-size: 14px; font-weight: 700; }
+.am-kicker { font-size: 14px; font-weight: 400; }
+.am-title h3 { font-size: 22px; font-weight: 400; letter-spacing: 0.02em; }
+.am-title .am-model { font-size: 14.5px; font-weight: 400; }
+.am-meta { font-size: 14px; font-weight: 400; line-height: 1.7; }
+.am-think { font-size: 14px; font-weight: 400; }
 .am-think em { font-size: 14px; }
-.am-probe .probe-result { font-size: 14px; font-weight: 700; }
-.profile-mark { font-size: 14px; font-weight: 700; }
-.profile-main strong { font-family: var(--kai); font-size: 16.5px; font-weight: 700; }
-.profile-main span { font-size: 14px; font-weight: 700; }
-.tag { font-size: 14px; font-weight: 700; color: var(--ink-faint); }
+.am-probe .probe-result { font-size: 14px; font-weight: 400; }
+.profile-mark { font-size: 14px; font-weight: 400; }
+.profile-main strong { font-family: var(--kai); font-size: 16.5px; font-weight: 400; }
+.profile-main span { font-size: 14px; font-weight: 400; }
+.tag { font-size: 14px; font-weight: 400; color: var(--ink-faint); }
 .add-profile { font-family: var(--kai); font-size: 15.5px; }
-.add-profile em { font-size: 14px; font-weight: 700; }
+.add-profile em { font-size: 14px; font-weight: 400; }
 .settings-note p { font-family: var(--kai); font-size: 15px; line-height: 1.75; }
-.theme-swatch strong { font-family: var(--kai); font-size: 16px; font-weight: 700; }
-.theme-swatch em { font-size: 14px; font-weight: 700; }
-.tp-label { font-size: 14px; font-weight: 700; }
-.tp-margin { font-size: 14px; font-weight: 700; }
+.theme-swatch strong { font-family: var(--kai); font-size: 16px; font-weight: 400; }
+.theme-swatch em { font-size: 14px; font-weight: 400; }
+.tp-label { font-size: 14px; font-weight: 400; }
+.tp-margin { font-size: 14px; font-weight: 400; }
 
 /* overlays and side note */
-.popover-label { font-size: 14px; font-weight: 700; letter-spacing: 0.1em; }
+.popover-label { font-size: 14px; font-weight: 400; letter-spacing: 0.1em; }
 .popover-item { font-family: var(--kai); font-size: 13.5px; }
-.popover-item .pop-meta { font-size: 14px; font-weight: 700; }
-.popover-basis h5 { font-size: 14px; font-weight: 700; }
+.popover-item .pop-meta { font-size: 14px; font-weight: 400; }
+.popover-basis h5 { font-size: 14px; font-weight: 400; }
 .popover-basis p { font-family: var(--kai); font-size: 15.5px; }
 .popover-basis em { font-size: 14px; }
 .toast { font-family: var(--kai); font-size: 13.5px; }
-.confirm-text h3 { font-size: 17px; font-weight: 600; letter-spacing: 0.02em; }
+.confirm-text h3 { font-size: 17px; font-weight: 400; letter-spacing: 0.02em; }
 .confirm-text p { font-family: var(--kai); font-size: 16px; line-height: 1.7; }
-.sn-head strong { font-family: var(--kai); font-size: 15px; font-weight: 700; }
-.sn-head em { font-size: 14px; font-weight: 700; }
-.sn-meter-top { font-size: 14px; font-weight: 700; }
-.sn-role { font-size: 14px; font-weight: 700; }
+.sn-head strong { font-family: var(--kai); font-size: 15px; font-weight: 400; }
+.sn-head em { font-size: 14px; font-weight: 400; }
+.sn-meter-top { font-size: 14px; font-weight: 400; }
+.sn-role { font-size: 14px; font-weight: 400; }
 .sn-msg p { font-size: 15.5px; }
 .sn-composer input { font-family: var(--kai); font-size: 16.5px; }
-.empty-foot { font-size: 14px; font-weight: 700; }
+.empty-foot { font-size: 14px; font-weight: 400; }
 .rename-input { font-family: var(--kai); font-size: 16.5px; }
-kbd { font-size: 14px; font-weight: 700; }
+kbd { font-size: 14px; font-weight: 400; }
 
 @media (max-width: 1240px) {
   :root { --margin-w: 326px; }
@@ -2933,6 +2984,17 @@ kbd { font-size: 14px; font-weight: 700; }
   .msg, .msg-user { grid-template-columns: 42px minmax(0,1fr); column-gap: 14px; }
   .msg-user { grid-template-columns: minmax(0,1fr) 42px; }
   .msg-gutter .msg-trace { display: none; }
+  /* 窄屏把轨迹放回正文下面，而不是直接丢掉。
+     “回答 · 工具 6”还写着，六条轨迹全看不见、被拦下的原因也一起消失，
+     是信息缺失，不是简化。 */
+  .msg-trace-inline:not(:empty) {
+    display: flex;
+    margin: 16px 0 2px;
+    padding: 10px 12px;
+    background: var(--paper-sunk);
+    border-left: 2px solid var(--rule);
+    border-radius: 0 var(--r-xs) var(--r-xs) 0;
+  }
   .msg-marker { width: 24px; height: 24px; font-size: 14.5px; }
   .composer {
     --col-gutter: 18px;
@@ -3039,6 +3101,26 @@ kbd { font-size: 14px; font-weight: 700; }
   .folder-menu-btn { opacity: .6; }
   .session:active .session-menu-btn,
   .folder-head:active .folder-menu-btn { opacity: 1; }
+  /* 触摸目标：图标本身只有 16–20px，手指点不中。
+     用伪元素把可点区域撑到 24–28px，视觉尺寸不变（WCAG 2.2 目标尺寸）。 */
+  .session-menu-btn,
+  .folder-menu-btn,
+  .folder-add-btn { position: relative; }
+  .session-menu-btn::after,
+  .folder-menu-btn::after,
+  .folder-add-btn::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border-radius: var(--r-xs);
+  }
+  .step-check { position: relative; }
+  .step-check::before {
+    content: "";
+    position: absolute;
+    inset: -5px;
+    border-radius: 50%;
+  }
 }
 
 html[data-motion="restrained"] .ambient::before,
@@ -3074,6 +3156,9 @@ html[data-motion="restrained"] .thinking-field { transition: opacity var(--dur-2
 .folder-menu-btn:hover { background: var(--paper-sunk); color: var(--ink); }
 
 .archived-item { cursor: default; }
+/* 归档的会话现在点得开（见 app.js 的 `data-archived-session`），
+   归档的领域仍然只能通过右侧菜单恢复/删除。 */
+.archived-item[data-archived-session] { cursor: pointer; }
 .archived-item .session-menu-btn { opacity: .55; }
 
 /* ── 数字位的第三档 ─────────────────────────────────────────────────
@@ -3136,6 +3221,10 @@ html[data-motion="restrained"] .thinking-field { transition: opacity var(--dur-2
   letter-spacing: 0.1em;
   color: var(--ink-faint);
 }
+/* 切会话时不呼吸：骨架只在那一次"真的在读"时该有生命感；
+   从 A 切到 B 的过程中它每帧都在闪，读起来像画面不稳。 */
+.thread.is-settled .sk-line { animation: none; opacity: .7; }
+
 html[data-motion="restrained"] .sk-line { animation: none; opacity: .7; }
 
 .empty-thread {
@@ -3145,23 +3234,35 @@ html[data-motion="restrained"] .sk-line { animation: none; opacity: .7; }
   padding: 0 10px;
   text-align: center;
   display: flex; flex-direction: column; align-items: center;
+  /* 只有"第一次进到这个空会话"才该升起。切会话 / 数据到达后的重绘
+     不该让整块空态再演一遍 —— 那看起来像页面在跳。 */
   animation: msgRise .8s var(--ease) both;
 }
+/* `is-settled` 由 renderThread 在"这次是重绘而非首次进入"时挂上，
+   同一套开关同时覆盖消息与空态。 */
+.thread.is-settled .empty-thread { animation: none; }
 .empty-seal {
   display: grid; place-items: center;
   width: 58px; height: 58px;
   margin-bottom: 26px;
   font-size: 25px;
   color: var(--vermilion);
-  border: 1px solid currentColor;
+  border: none;
   border-radius: var(--r-xs);
-  box-shadow: inset 0 0 0 3px var(--paper), inset 0 0 0 4px currentColor;
+  box-shadow: none;
   transform: rotate(-2deg);
 }
-.empty-seal svg {
+.empty-seal svg,
+.empty-seal img {
   width: 25px; height: 25px;
   fill: none; stroke: currentColor; stroke-width: 1.5;
   stroke-linecap: round; stroke-linejoin: round;
+}
+.empty-seal img {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  border: none; border-radius: inherit;
+  box-shadow: none;
 }
 .empty-thread h2 {
   margin: 0 0 12px;
@@ -3341,7 +3442,7 @@ body.rail-closed .rail-open { display: inline-grid; }
   gap: 5px;
   font-family: var(--mono);
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-faint);
@@ -3422,6 +3523,185 @@ body.rail-closed .rail-open { display: inline-grid; }
   color: var(--ink-soft);
 }
 
+/* ── 句子标注 ───────────────────────────────────────────────────────
+   标注是“对某句话的追问”，不是另一条回答。所以它挂在消息下面，
+   用朱砂小印 + 原句摘要；点开才摊开依据。 */
+.msg-annotations {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--rule);
+}
+.msg-annotations-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: .08em;
+  color: var(--ink-meta);
+}
+.annotation-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: min(100%, 380px);
+  padding: 2px 9px 3px 3px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-family: var(--kai);
+  font-size: 13px;
+  line-height: 1.5;
+  transition: border-color var(--dur-1), background var(--dur-1), color var(--dur-1);
+}
+.annotation-chip:hover {
+  border-color: var(--vermilion);
+  background: var(--vermilion-soft);
+  color: var(--ink);
+}
+.annotation-chip-mark {
+  display: inline-grid; place-items: center;
+  width: 17px; height: 17px;
+  border-radius: 50%;
+  background: var(--vermilion);
+  color: var(--paper);
+  font-family: var(--serif);
+  font-size: 11px;
+  line-height: 1;
+}
+.annotation-chip-quote {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-form-pop {
+  width: min(500px, calc(100vw - 24px));
+}
+.annotation-form { display: grid; gap: 11px; }
+.annotation-form label {
+  display: grid; gap: 5px;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: .08em;
+  color: var(--ink-faint);
+}
+.annotation-form input,
+.annotation-form select {
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 9px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-xs);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--kai);
+  font-size: 15.5px;
+  line-height: 1.6;
+  letter-spacing: 0;
+}
+.annotation-form input:focus,
+.annotation-form select:focus {
+  outline: none;
+  border-color: var(--vermilion);
+  background: var(--paper-raised);
+}
+.annotation-form-note {
+  margin: 0;
+  font-size: var(--fs-small);
+  line-height: 1.7;
+  color: var(--ink-meta);
+}
+.annotation-quote {
+  margin: 0;
+  padding: 10px 13px;
+  border-left: 2px solid var(--vermilion);
+  background: var(--paper-sunk);
+  font-family: var(--serif);
+  font-size: 15.5px;
+  line-height: 1.75;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 170px;
+  overflow-y: auto;
+}
+.annotation-basis {
+  width: min(600px, calc(100vw - 24px));
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  padding: 14px 16px 16px;
+}
+.annotation-basis-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+}
+.annotation-basis-head .popover-label { padding: 0; }
+.annotation-basis-head time {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-meta);
+}
+.annotation-asked {
+  margin: 9px 0 0;
+  font-family: var(--kai);
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+.annotation-summary {
+  margin: 13px 0 0;
+  font-family: var(--serif);
+  font-size: 15.5px;
+  line-height: 1.8;
+  color: var(--ink);
+}
+.annotation-block {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule-soft);
+}
+.annotation-block h5 {
+  margin: 0 0 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-meta);
+}
+.annotation-block .trace-item { font-size: 13px; }
+.annotation-entries { display: flex; flex-wrap: wrap; gap: 5px; }
+.annotation-entry {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 2px 7px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink-soft);
+}
+.annotation-sections {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--ink-soft);
+}
+.annotation-note {
+  margin: 6px 0 0;
+  font-size: var(--fs-small);
+  color: var(--ink-meta);
+}
+.annotation-limits {
+  margin: 14px 0 0;
+  padding: 9px 11px;
+  border-left: 2px solid var(--gold);
+  background: color-mix(in srgb, var(--gold) 8%, transparent);
+  font-size: var(--fs-small);
+  line-height: 1.7;
+  color: var(--ink-soft);
+}
+.annotation-actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-top: 16px;
+}
+
 /* ── draggable frame ─────────────────────────────────────────────── */
 .workspace { position: relative; }
 .resizer {
@@ -3476,7 +3756,9 @@ body.is-resizing { user-select: none; }
  * 加粗仍然在正文里、专有名词仍然是正文、步骤引用是导航而不是新内容。
  */
 .msg-prose .hl {
-  font-weight: 650;
+  /* 正文高亮走**字号与颜色**，不走字重：宋体 650 会把一句话里的几个词
+     单独变成"墨块"，而它本意只是让人扫一眼认出来。 */
+  font-weight: 400;
   font-size: 1.02em;
   color: var(--ink);
   letter-spacing: 0.01em;
@@ -3486,7 +3768,7 @@ body.is-resizing { user-select: none; }
  * 但不会打断阅读，也不会把每个术语都变成一个待点击的控件。 */
 .msg-prose .term {
   font-family: var(--kai);
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.015em;
   color: var(--jade);
 }
@@ -3511,7 +3793,7 @@ body.is-resizing { user-select: none; }
 .rich-h {
   font-family: var(--kai);
   font-size: .82em;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.1em;
   color: var(--ink-faint);
   margin: 1.4em 0 .5em;
@@ -3644,7 +3926,7 @@ body.is-resizing { user-select: none; }
 }
 .ctx-ring-facts > div:last-child { border-bottom: 0; padding-bottom: 0; }
 .ctx-ring-facts span { font-family: var(--kai); font-size: 14.5px; color: var(--ink-faint); }
-.ctx-ring-facts b { font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--ink); }
+.ctx-ring-facts b { font-family: var(--mono); font-size: 15px; font-weight: 400; color: var(--ink); }
 
 /* ═════════════════════ 模型档案 · 多模型 ═════════════════════ */
 .profile-models { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
@@ -3732,7 +4014,7 @@ body.is-resizing { user-select: none; }
   border-radius: 999px;
   font-family: var(--mono);
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.01em;
   text-transform: none;
   color: var(--ink-soft);
@@ -3894,14 +4176,22 @@ body.is-resizing { user-select: none; }
   display: grid; place-items: center;
   width: 34px; height: 34px;
   margin: 0 auto 12px;
-  border: 1px solid var(--rule-strong);
+  border: none;
   border-radius: 50%;
+  box-shadow: none;
   color: var(--ink-meta);
 }
-.sn-empty-seal svg {
+.sn-empty-seal svg,
+.sn-empty-seal img {
   width: 16px; height: 16px;
   fill: none; stroke: currentColor; stroke-width: 1.5;
   stroke-linecap: round; stroke-linejoin: round;
+}
+.sn-empty-seal img {
+  width: 100%; height: 100%;
+  object-fit: contain;
+  border: none; border-radius: 50%;
+  box-shadow: none;
 }
 .sn-msg.is-pending .sn-prose { opacity: .8; }
 .sn-busy { display: inline-flex; }
@@ -3950,7 +4240,7 @@ body.is-resizing { user-select: none; }
 .cog-stat b {
   font-family: var(--display);
   font-size: 18px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: -.01em;
   font-variant-numeric: tabular-nums;
   color: var(--ink);
@@ -4035,7 +4325,7 @@ body.is-resizing { user-select: none; }
   background: var(--paper-raised);
 }
 .cog-var header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.cog-var header strong { font-family: var(--kai); font-size: 16px; font-weight: 700; }
+.cog-var header strong { font-family: var(--kai); font-size: 16px; font-weight: 400; }
 .cog-var header em { font-family: var(--mono); font-style: normal; font-size: 14px; color: var(--ink-meta); }
 .cog-channels {
   display: grid;
@@ -4089,7 +4379,7 @@ body.is-resizing { user-select: none; }
   display: block;
   font-family: var(--kai);
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 400;
   color: var(--ink-soft);
   line-height: 1.7;
 }
@@ -4153,7 +4443,7 @@ body.is-resizing { user-select: none; }
 .cog-bname strong {
   font-family: var(--kai);
   font-size: 15.5px;
-  font-weight: 700;
+  font-weight: 400;
   color: var(--ink-soft);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4184,7 +4474,7 @@ body.is-resizing { user-select: none; }
 .cog-bcell b {
   font-family: var(--display);
   font-size: 17px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: -.01em;
   font-variant-numeric: tabular-nums;
   line-height: 1.1;
@@ -4240,7 +4530,7 @@ body.is-resizing { user-select: none; }
   display: block;
   font-family: var(--kai);
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 400;
   line-height: 1.7;
   color: var(--ink-soft);
 }
@@ -4492,7 +4782,7 @@ body.is-resizing { user-select: none; }
 .mou-form-head strong, .mou-plan-head strong {
   font-family: var(--kai);
   font-size: 16.5px;
-  font-weight: 700;
+  font-weight: 400;
   color: var(--ink);
 }
 .mou-form-fields { display: flex; flex-direction: column; gap: 9px; }
@@ -4535,7 +4825,7 @@ body.is-resizing { user-select: none; }
 .mou-form-hint {
   font-family: var(--kai);
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.02em;
   color: var(--ink-faint);
 }
@@ -4564,7 +4854,7 @@ body.is-resizing { user-select: none; }
   display: block;
   font-family: var(--kai);
   font-size: 15.5px;
-  font-weight: 700;
+  font-weight: 400;
   line-height: 1.7;
   color: var(--ink-soft);
 }
@@ -4619,7 +4909,7 @@ body.is-resizing { user-select: none; }
   margin-top: 9px;
   font-family: var(--kai);
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.02em;
   color: var(--jade);
 }
@@ -4663,7 +4953,7 @@ body.is-resizing { user-select: none; }
   font-size: 14px;
   color: var(--ink-meta);
 }
-.proposal-block header strong { color: var(--ink-faint); font-weight: 700; }
+.proposal-block header strong { color: var(--ink-faint); font-weight: 400; }
 .proposal-intent {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
@@ -4678,7 +4968,7 @@ body.is-resizing { user-select: none; }
   display: block;
   font-family: var(--kai);
   font-size: 15.5px;
-  font-weight: 700;
+  font-weight: 400;
   color: var(--ink-soft);
 }
 .proposal-intent p {
@@ -4749,7 +5039,7 @@ body.is-resizing { user-select: none; }
   margin: 0 0 8px;
   font-family: var(--serif);
   font-size: 21px;
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0.02em;
 }
 .sa-entry-main p {
@@ -4762,7 +5052,7 @@ body.is-resizing { user-select: none; }
 }
 .sa-entry-facts { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px; }
 .sa-fact { font-family: var(--mono); font-size: 14px; letter-spacing: 0.03em; color: var(--ink-meta); }
-.sa-fact b { color: var(--ink-soft); font-weight: 700; }
+.sa-fact b { color: var(--ink-soft); font-weight: 400; }
 .sa-fact.is-warn { color: var(--vermilion); }
 .sa-entry-actions {
   display: flex;
@@ -4794,7 +5084,7 @@ body.is-resizing { user-select: none; }
 .sa-note-card h3 {
   margin: 0 0 10px;
   font-size: var(--fs-ui);
-  font-weight: 600;
+  font-weight: 400;
   letter-spacing: .02em;
   color: var(--ink);
 }
@@ -4996,8 +5286,8 @@ body.is-assessing { overflow: hidden; }
   font-family: var(--kai);
   font-size: 16px;
 }
-.sa-reading-head strong { font-weight: 700; color: var(--ink-soft); }
-.sa-reading-head span { font-family: var(--display); font-size: 18px; font-weight: 700; letter-spacing: -.01em; font-variant-numeric: tabular-nums; color: var(--ink); }
+.sa-reading-head strong { font-weight: 400; color: var(--ink-soft); }
+.sa-reading-head span { font-family: var(--display); font-size: 18px; font-weight: 400; letter-spacing: -.01em; font-variant-numeric: tabular-nums; color: var(--ink); }
 .sa-facets { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 5px; }
 .sa-facets span { font-family: var(--mono); font-size: 14px; letter-spacing: 0.03em; color: var(--ink-meta); }
 .sa-result-actions { display: flex; gap: 10px; margin-top: 24px; }
@@ -5032,15 +5322,22 @@ body.is-assessing { overflow: hidden; }
 /* ═══════════════════════════════════════════════════════════════════
    字体层级：一套规则，不再各处随手加粗
 
-   问题：前面有 158 处 font-weight:700、14 处 600、以及一堆继承值，
+   问题：前面有 158 处 font-weight: 400、14 处 600、以及一堆继承值，
    于是"计划标题"和"计划下面的说明"都是粗的，说明反而比内容抢眼。
 
    规则（只有三档）：
-     1. 阅读正文   —— 宋体 400（`.msg-prose`）
-     2. 界面标题   —— 文楷 700（真正的一级信息：面板名、步骤动作、设置项名）
+     1. 阅读正文   —— 宋体 450（`.msg-prose`；中文宋体 400 在 Windows 上发虚）
+     2. 界面标题   —— 文楷 600（真正的一级信息：面板名、步骤动作、设置项名）
      3. 其余一切   —— 文楷 400（说明、元数据、按钮、标签、输入）
 
-   即：**只有标题是粗的，其余全部常规**。粗体从"到处都用"变成"用来标记标题"。
+   即：**只有标题是偏重的，其余全部常规**。
+
+   ★ 为什么标题从 700 降到 600：文楷的 700 是**真粗体**，但在 15–17px 的
+   中文界面字号上，它的笔画会挤在一起 —— 眼睛看到的不是"强调"，是"一团墨"。
+   600 在文楷上没有独立 face，浏览器会走合成加粗，反而更难读。
+   所以标题级在**中文界面字体上**用 500/600 之外的值是没意义的，
+   这里的 600 只对西文栈（Hanken Grotesk，真有 600）生效；
+   中文标题靠**字号 + 字距**建立层级，不靠加粗。见下面 `.settings-head h2` 等。
    ═══════════════════════════════════════════════════════════════════ */
 
 /* 3. 说明 / 元数据 / 标签 —— 一律常规 */
@@ -5094,7 +5391,20 @@ body.is-assessing { overflow: hidden; }
   font-weight: 400;
 }
 
-/* 2. 界面标题 —— 700（真正需要被一眼找到的） */
+/* 2. 界面标题 —— 400（真正需要被一眼找到的）
+
+   ★ 为什么不是 700/600/500：这三档在中文字体上根本不存在。
+
+   实测（真 Edge，读 `document.fonts`）：
+     - LXGW WenKai（界面用）：只有 300 / 400 / 700 三个 face
+     - Noto Serif SC（正文与标题）：只加载了 400 / 500 / 600 / 700
+
+   于是 `font-weight: 500` 在文楷上**没有对应 face**，CSS 字体匹配会往上找
+   到 700 —— 也就是说，写 500 和写 700 渲染出来一模一样。这正是"我改了
+   怎么还是那么粗"的原因。
+
+   结论：中文界面文字的层级只能靠**字号 + 字距 + 颜色**，不能靠字重。
+   所以这里统一 400；真正的层级差异由下面每个标题自己的 font-size 承担。 */
 .mpanel-head h3,
 .step-action,
 .obstacle-list strong,
@@ -5109,7 +5419,8 @@ body.is-assessing { overflow: hidden; }
 .crumb-session,
 .brand-text strong,
 .run-card h3 {
-  font-weight: 700;
+  font-weight: 400;
+  letter-spacing: 0.02em;
 }
 
 /* 按钮文字：比说明重一点，但不与标题同重 */

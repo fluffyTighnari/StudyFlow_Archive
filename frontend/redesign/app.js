@@ -19,7 +19,7 @@
    ═══════════════════════════════════════════════════════════════════ */
 
 import { api } from './src/api.js';
-import { adaptContext, adaptDetail, adaptWorkspace, dotClass, escape, shortTime, traceRow, traceRows } from './src/adapt.js';
+import { adaptContext, adaptDetail, adaptWorkspace, dotClass, escape, shortTime, toolLabel, traceRow, traceRows } from './src/adapt.js';
 import { richText } from './src/rich.js';
 import { drawContextRing } from './src/context-ring.js';
 import { ThreadIndex } from './src/thread-index.js';
@@ -306,6 +306,7 @@ function makeDetail() {
     loaded: false,
     failed: '',
     messages: [],
+    annotations: [],
     plan: null,
     motivation: null,
     input: null,
@@ -347,16 +348,27 @@ async function loadWorkspace() {
  * `render: false` 用在"后台对齐"上：刚结束的那一轮已经在界面上画完了，
  * 再整页重绘会把刚出现的字闪一下。后台只更新数据，界面按需再画。
  */
-async function loadDetail(sessionId, { render = true } = {}) {
+async function loadDetail(sessionId, { render = true, animate = true } = {}) {
   if (!sessionId) return null;
-  const [payload, meter] = await Promise.all([
+  const [payload, meter, annotationPayload] = await Promise.all([
     api.state(sessionId),
     // 计量与会话数据分开读：窗口上限来自**此刻生效的模型**，
     // 换模型之后这一栏要能单独刷新，而 `/state` 不该因此改变形状。
     api.contextMeter(sessionId).catch(() => null),
+    // 标注也单独读：它是"对某句话的追问"，不是会话状态的一部分。
+    // 失败时不挡住会话 —— 下面会保留上一次读到的那份。
+    // `typeof` 检查是给旧缓存的 `api.js` 留退路：新增方法不该让会话打不开。
+    typeof api.annotations === 'function'
+      ? api.annotations(sessionId).catch(() => null)
+      : Promise.resolve(null),
   ]);
   const previous = state.details[sessionId];
   const detail = adaptDetail(payload);
+  if (annotationPayload && Array.isArray(annotationPayload.items)) {
+    detail.annotations = annotationPayload.items;
+  } else if (previous) {
+    detail.annotations = previous.annotations || [];
+  }
   // 会话状态可能被模型工具改过（例如“写入计划 → 自动执行中”）。
   // 侧栏那一行必须跟上，否则顶栏/列表还显示 draft。
   const row = findSessionRow(sessionId);
@@ -378,7 +390,7 @@ async function loadDetail(sessionId, { render = true } = {}) {
 
   state.details[sessionId] = detail;
   if (render && state.currentSession === sessionId) {
-    renderSession();
+    renderSession({ animate });
     // 打开会话应落在最新一条，而不是开头。
     requestAnimationFrame(() => jumpThreadBottom());
   }
@@ -453,6 +465,83 @@ const state = {
 };
 
 
+/* ── UI 偏好 ───────────────────────────────────────────────────────
+ * 语言、纸色、字号、动效、依据标注、思考展开方式、繁忙策略都是**用户设置**，
+ * 刷新后应当还在。它们原来只活在 `state` 里，刷新即回默认值 ——
+ * 用户每次打开都要重设一遍，而设置页看起来像没记住。
+ *
+ * 只存 UI 偏好，不碰任何后端数据；键名带版本，坏值一律忽略（不猜）。
+ */
+const PREFS_KEY = 'studyflow.prefs.v1';
+const LEGACY_PREFS_KEY = 'mouxue.prefs.v1';
+const PREF_CHOICES = {
+  lang: ['zh', 'en'],
+  theme: ['paper', 'ink'],
+  scale: ['small', 'base', 'large'],
+  motion: ['full', 'restrained'],
+  thinkView: ['fold', 'open'],
+  busyBehavior: ['queue', 'interrupt', 'block'],
+};
+
+function loadPrefs() {
+  try {
+    const raw = JSON.parse(
+      localStorage.getItem(PREFS_KEY) || localStorage.getItem(LEGACY_PREFS_KEY) || '{}',
+    ) || {};
+    for (const [key, allowed] of Object.entries(PREF_CHOICES)) {
+      if (allowed.includes(raw[key])) state[key] = raw[key];
+    }
+    if (typeof raw.cite === 'boolean') state.cite = raw.cite;
+  } catch {
+    /* 坏 JSON 不回滚整个界面，用默认值 */
+  }
+}
+
+function savePrefs() {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({
+      lang: state.lang,
+      theme: state.theme,
+      scale: state.scale,
+      motion: state.motion,
+      cite: state.cite,
+      thinkView: state.thinkView,
+      busyBehavior: state.busyBehavior,
+    }));
+  } catch {
+    /* 存储不可用（隐私模式）不该挡住操作 */
+  }
+}
+
+/** 把 `state` 里的偏好同步到 `<html>` 与那几组按钮上。 */
+function syncPrefsUi() {
+  const root = document.documentElement;
+  root.dataset.theme = state.theme;
+  root.dataset.scale = state.scale;
+  root.dataset.motion = state.motion;
+  root.dataset.cite = state.cite ? 'on' : 'off';
+
+  const mark = (selector, attr, value) => {
+    $$(selector).forEach((btn) => {
+      const on = btn.dataset[attr] === value;
+      btn.classList.toggle('is-on', on);
+      if (btn.getAttribute('role') === 'radio') btn.setAttribute('aria-checked', String(on));
+    });
+  };
+  mark('#lang-seg button', 'lang', state.lang);
+  mark('.theme-swatch', 'themeChoice', state.theme);
+  mark('#scale-seg button', 'scale', state.scale);
+  mark('#motion-seg button', 'motion', state.motion);
+  mark('#think-seg button', 'thinkview', state.thinkView);
+  mark('#busy-options .busy-card', 'busy', state.busyBehavior);
+
+  const cite = $('#cite-switch');
+  if (cite) {
+    cite.classList.toggle('is-on', state.cite);
+    cite.setAttribute('aria-checked', String(state.cite));
+  }
+}
+
 /* ── icons ────────────────────────────────────────────────────────── */
 const icon = (name, cls = '') => `<svg${cls ? ` class="${cls}"` : ''}><use href="#i-${name}"/></svg>`;
 
@@ -497,7 +586,23 @@ function findSession(id) {
     const found = folder.sessions.find((s) => s.id === id);
     if (found) return { ...found, folderId: folder.id, folder };
   }
-  return null;
+  // 归档的会话**仍然是会话**：它只是不在执行中的列表里，不是另一种对象。
+  // 之前这里只查 `state.folders`，于是「已归档」里那一行点得着、却没有反应 ——
+  // 界面把一个存在的会话画成了死链接。这里补一条合成 folder，让
+  // 选择、读详情、发消息、记侧记这些既有路径原样工作。
+  const archived = state.archivedSessions.find((s) => s.id === id);
+  if (!archived) return null;
+  return {
+    ...archived,
+    folderId: archived.folderId,
+    folder: findFolder(archived.folderId) || {
+      id: archived.folderId,
+      name: archived.folderName || '已归档',
+      sessions: [],
+      open: true,
+    },
+    archived: true,
+  };
 }
 /**
  * 侧栏列表里**那一行本身**（用来写）。
@@ -819,13 +924,22 @@ function scheduleBreakpoint() {
  *
  * 没有档案时**不编一个名字**：这时真正在说话的是 `.env` 里那一个
  * （`/api/llm/config` 的 `settings`），那就如实显示它。
+ *
+ * ★ `fake` 是**确定性替身**，它没有模型名。以前这里照样把 `.env` 的
+ * `qwen3.6:27b` 显示出来，于是容器默认配置（`MOUXUE_LLM_PROVIDER=fake`）
+ * 下界面写着"qwen3.6:27b · 来自 .env"，而那个模型根本没被调用过 ——
+ * 用户的第一反应是"这是旧数据残留吗"。如实说"替身（不调用真模型）"
+ * 比显示一个看起来像真的名字更有用。
  */
 function currentModelLabel() {
   const prof = activeProfile();
   // 顶栏那一格回答的是「下一句话由谁来说」—— 那是**模型名**，不是档案名。
   // 档案名（"DeepSeek（验收）"）放在左侧索引里，两者分开才看得出切换生效。
   if (prof) return prof.model;
-  const model = state.llmConfig?.settings?.llm_model;
+  const settings = state.llmConfig?.settings;
+  if (!settings) return '未配置模型';
+  if (settings.llm_provider === 'fake') return '替身 · 不调用真模型';
+  const model = settings.llm_model;
   return model ? `${model} · 来自 .env` : '未配置模型';
 }
 
@@ -833,7 +947,12 @@ function currentModelLabel() {
 function currentProfileLabel() {
   const prof = activeProfile();
   if (prof) return prof.label;
-  const model = state.llmConfig?.settings?.llm_model;
+  const settings = state.llmConfig?.settings;
+  if (!settings) return '未配置模型';
+  // `fake` 不是从 `.env` 里读来的模型，写“· .env”会让人以为那里真有个
+  // `xxx` 可以换掉。它就是一个确定性替身。
+  if (settings.llm_provider === 'fake') return '确定性替身';
+  const model = settings.llm_model;
   return model ? `${model} · .env` : '未配置模型';
 }
 
@@ -1139,14 +1258,14 @@ function matchesSearch(text) {
 function sessionMarkup(session, folderId) {
   const isCurrent = session.id === state.currentSession;
   return `<li class="session${isCurrent ? ' is-current' : ''}" data-session-id="${session.id}" data-folder-id="${folderId}" tabindex="0">
-    <span class="state-dot ${session.state}"></span>
+    <span class="state-dot ${session.dot ?? session.state}"></span>
     <span class="session-title">${escapeHtml(session.title)}</span>
     <time>${escapeHtml(session.time)}</time>
     <button class="session-menu-btn" data-action="session-menu" data-id="${session.id}" aria-label="会话操作">${icon('dots')}</button>
   </li>`;
 }
 
-function folderMarkup(folder) {
+function folderMarkup(folder, wasOpen = null) {
   let sessions = folder.sessions.filter((s) => matchesSearch(s.title));
   const folderMatches = matchesSearch(folder.name);
   if (!folderMatches && sessions.length === 0) return '';
@@ -1157,7 +1276,10 @@ function folderMarkup(folder) {
   }
   const open = folder.open || !!state.search;
   const current = folder.id === state.currentFolder;
-  return `<div class="folder${open ? ' is-open' : ''}${current ? ' is-current' : ''}" data-folder-id="${folder.id}">
+  // 只在"上次渲染时它是关着的、这次开着"时加 `is-expanding`。
+  // 其余情况（一直是开着的重绘）不加 —— 那正是抖动来源。
+  const expanding = open && !(wasOpen && wasOpen.has(folder.id));
+  return `<div class="folder${open ? ' is-open' : ''}${expanding ? ' is-expanding' : ''}${current ? ' is-current' : ''}" data-folder-id="${folder.id}">
     <div class="folder-head" data-action="toggle-folder" data-id="${folder.id}" role="button" tabindex="0"
       aria-expanded="${open}">
       <span class="folio">${icon(open ? 'folder-open' : 'folder')}</span>
@@ -1173,15 +1295,35 @@ function folderMarkup(folder) {
 
 function renderRail() {
   const visibleFolders = state.folders;
-  folderList.innerHTML = visibleFolders.map((f) => folderMarkup(f)).join('')
-    || '<div class="archive-empty">还没有领域。点上面「新领域」建第一个。</div>';
+  // 记下"这次渲染之前哪些领域是展开的" —— 只有从未展开→展开的那一次
+  // 才该播 `sessionsIn`。整块 innerHTML 重绘会把 class 重新挂上，
+  // 若不做这个判断，每次点会话都会让整列奶油色列表淡出再淡入。
+  const wasOpen = new Set(
+    $$('.folder.is-open', folderList).map((el) => el.dataset.folderId).filter(Boolean),
+  );
+  const folderEmpty = state.search
+    ? `没有匹配「${escapeHtml(state.search)}」的会话或领域。`
+    : '还没有领域。点上面「新领域」建第一个。';
+  folderList.innerHTML = visibleFolders.map((f) => folderMarkup(f, wasOpen)).join('')
+    || `<div class="archive-empty">${folderEmpty}</div>`;
+  // `is-expanding` 只活一次：动画跑完就摘掉。
+  // 不摘的话它会一直挂在 DOM 上 —— 之后任何一次重绘（改名、归档、
+  // 后台对齐）都会让它再播一遍，抖动以更隐蔽的方式回来。
+  for (const el of $$('.folder.is-expanding', folderList)) {
+    const done = () => el.classList.remove('is-expanding');
+    const list = el.querySelector('.sessions');
+    if (!list) { done(); continue; }
+    list.addEventListener('animationend', done, { once: true });
+    // 动画被 `prefers-reduced-motion` 之类关掉时不会有 animationend。
+    setTimeout(done, 600);
+  }
   $('#folder-count').textContent = pad(state.folders.length);
 
   const archived = [];
   for (const s of state.archivedSessions) {
     if (!matchesSearch(s.title) && !matchesSearch(s.folderName)) continue;
-    archived.push(`<div class="session archived-item" data-archived-session="${s.id}" tabindex="0">
-      <span class="state-dot ${s.state}"></span>
+    archived.push(`<div class="session archived-item${s.id === state.currentSession ? ' is-current' : ''}" data-archived-session="${s.id}" tabindex="0">
+      <span class="state-dot ${s.dot}"></span>
       <span class="session-title">${escapeHtml(s.title)}</span>
       <time>${escapeHtml(s.time)}</time>
       <button class="session-menu-btn" data-action="archived-session-menu" data-id="${s.id}" aria-label="归档操作">${icon('dots')}</button>
@@ -1196,14 +1338,18 @@ function renderRail() {
       <button class="session-menu-btn" data-action="archived-folder-menu" data-id="${f.id}" aria-label="归档操作">${icon('dots')}</button>
     </div>`);
   }
-  archiveList.innerHTML = archived.join('') || '<div class="archive-empty">空</div>';
+  archiveList.innerHTML = archived.join('')
+    || `<div class="archive-empty">${state.search ? '没有匹配的归档' : '空'}</div>`;
   $('#archive-count').textContent = pad(state.archivedSessions.length + state.archivedFolders.length);
 
   const prof = activeProfile();
   $('#rail-model-name').textContent = currentProfileLabel();
+  const cfg = state.llmConfig?.settings;
   $('#rail-model .foot-model-text em').textContent = prof
     ? `${prof.model} · ${prof.provider} · ${L('上下文', 'context')} ${prof.ctx}`
-    : (state.llmConfig?.settings ? '设置 → 模型：加一份档案就能换' : '读不到模型配置');
+    : (cfg
+      ? (cfg.llm_provider === 'fake' ? L('确定性替身 · 不调用真模型', 'deterministic stand-in') : '设置 → 模型：加一份档案就能换')
+      : '读不到模型配置');
 
   translateUi();
 }
@@ -1213,7 +1359,11 @@ function renderTopbar() {
   const session = currentSession();
   // 没有会话但选中了领域时，面包屑仍然显示那个领域 —— 否则会出现
   // “刚点了领域，上面却写着未选择领域”。
-  const folder = session ? findFolder(session.folderId) : findFolder(state.currentFolder);
+  // 归档会话的领域可能本身也已归档（不在 `state.folders` 里）。
+  // 那时用会话自带的 `folderName` 兜底，面包屑才不会写“还没选领域”。
+  const folder = session
+    ? (findFolder(session.folderId) || (session.folderName ? { name: session.folderName } : null))
+    : findFolder(state.currentFolder);
   $('#crumb .crumb-folder').textContent = folder ? folder.name : '还没选领域';
   $('#crumb .crumb-session').textContent = session ? session.title : '还没选会话';
   const pill = $('#session-state');
@@ -1221,9 +1371,15 @@ function renderTopbar() {
   pill.className = 'state-pill is-' + stateKey;
   pill.querySelector('span').textContent = stateLabel(stateKey);
 
-  $('#model-chip-name').textContent = currentModelLabel();
+  const modelLabel = currentModelLabel();
+  $('#model-chip-name').textContent = modelLabel;
+  // 窄屏 CSS 会把模型名 `display: none`，可访问名不能跟着消失。
+  $('#model-chip').setAttribute('aria-label', `切换模型 · ${modelLabel}`);
   const prof = activeProfile();
-  $('#composer-model-note').textContent = prof ? prof.model : (state.llmConfig?.settings?.llm_model || '未配置模型');
+  const cfg = state.llmConfig?.settings;
+  $('#composer-model-note').textContent = prof
+    ? prof.model
+    : (cfg?.llm_provider === 'fake' ? '替身' : (cfg?.llm_model || '未配置模型'));
   $('#composer-busy-rule').textContent = t('composer.busyPrefix') + t('busy.' + state.busyBehavior);
 
   const brandTitle = state.lang === 'en' ? 'StudyFlow Archive' : '学习流档案';
@@ -1233,6 +1389,11 @@ function renderTopbar() {
 function renderThread({ animate = true } = {}) {
   const detail = activeDetail();
   const session = currentSession();
+  // 这个开关管**所有**带入场动画的块（消息、空态、骨架），所以在铺内容之前
+  // 先定下来。以前它只在"有消息"那条分支里设置，于是空会话每次重绘都会
+  // 让 `.empty-thread` 重新升一次 —— 切会话看起来像页面在跳。
+  if (!animate) thread.classList.add('is-settled');
+  else thread.classList.remove('is-settled');
   if (!session || !detail) {
     thread.innerHTML = '';
     threadEnd.hidden = true;
@@ -1266,13 +1427,10 @@ function renderThread({ animate = true } = {}) {
   threadEnd.hidden = false;
   const messages = detail.messages.map((m, i) => messageMarkup(m, i)).join('');
   thread.innerHTML = `${dateDivider(detail)}${messages}`;
-  // 重绘的**原因**决定要不要重播"墨落"动画：
-  // 切会话/首次进入该有；换语言、换主题只该换字，不该把整屏再演一遍。
-  if (!animate) thread.classList.add('is-settled');
-  else thread.classList.remove('is-settled');
   bindInkDots();
   renderThreadIndex();
   markInteractionStates(thread, '.msg-assistant', '.msg-user');
+  renderAnnotationMarks(detail);
 }
 
 /**
@@ -1389,8 +1547,11 @@ function emptyStateMarkup({ icon: iconName = 'archive-mark', title, body = '', n
     ? `<div class="prompt-hints"><button ${action.action || ''}>${escapeHtml(action.label)}</button></div>`
     : '';
   const noteHtml = note ? `<p class="muted">${escapeHtml(note)}</p>` : '';
+  const sealHtml = iconName === 'archive-mark'
+    ? '<img class="brand-img" src="assets/memory-mark.png" alt="" draggable="false">'
+    : icon(iconName);
   return `<div class="empty-thread">
-    <span class="empty-seal">${icon(iconName)}</span>
+    <span class="empty-seal">${sealHtml}</span>
     <h2>${escapeHtml(title)}</h2>
     ${body ? `<p>${escapeHtml(body)}</p>` : ''}
     ${noteHtml}
@@ -1414,13 +1575,18 @@ function threadSkeletonMarkup() {
 }
 
 function emptyThreadMarkup(session) {
+  // 提示语必须跟**这个会话**有关。原来三条是写死的，于是打开
+  // 「技术文档精读：React 文档第一章」也会被建议“读懂英文论文摘要” ——
+  // 用户的第一反应是“这是不是别人的会话”。第一条用标题生成，
+  // 其余两条保持与会话无关，因为它们对任何目标都成立。
+  const start = `先帮我把「${session.title}」拆成能开始的第一步。`;
   return `<div class="empty-thread">
-    <span class="empty-seal">${icon('archive-mark')}</span>
+    <span class="empty-seal"><img class="brand-img" src="assets/memory-mark.png" alt="" draggable="false"></span>
     <h2>这一页还是空的</h2>
     <p>说一句你现在卡在哪儿就行——基础、想达到什么、哪一步不顺。
       我会先给一个草案，你看着改。</p>
     <div class="prompt-hints">
-      <button data-prompt="我想在两周内读懂一篇英文论文的摘要。">我想在两周内读懂一篇英文论文的摘要。</button>
+      <button data-prompt="${escapeHtml(start)}">${escapeHtml(start)}</button>
       <button data-prompt="我不知道该怎么安排今天的复习。">我不知道该怎么安排今天的复习。</button>
       <button data-prompt="先帮我看看这个计划哪里不合理。">先帮我看看这个计划哪里不合理。</button>
     </div>
@@ -1428,13 +1594,24 @@ function emptyThreadMarkup(session) {
   </div>`;
 }
 
-function traceMarkup(traces) {
-  if (!traces || !traces.length) return '';
-  return `<div class="msg-trace">${traces.map((tr) => `
+function traceItemsMarkup(traces) {
+  return (traces || []).map((tr) => `
     <div class="trace-item ${tr.state || 'is-done'}">
       <strong>${escapeHtml(tr.label)}</strong>
       <span>${escapeHtml(tr.note || '')}</span>
-    </div>`).join('')}</div>`;
+    </div>`).join('');
+}
+
+/**
+ * 工具轨迹画两处：宽屏在左侧栏（gutter），窄屏在正文下方。
+ *
+ * 原来窄屏（≤900px）把 gutter 里的轨迹整块 `display: none`，于是
+ * “回答 · 工具 6”这句话还在，六条轨迹却一条都看不到 —— 被守卫拦下的
+ * 那一步（金点 + 原因）也一起消失了。核心信息不能只在宽屏存在。
+ */
+function traceMarkup(traces, extraClass = '') {
+  if (!traces || !traces.length) return '';
+  return `<div class="msg-trace${extraClass ? ' ' + extraClass : ''}">${traceItemsMarkup(traces)}</div>`;
 }
 
 function messageMarkup(message, index) {
@@ -1470,15 +1647,18 @@ function messageMarkup(message, index) {
       <span class="dot"></span>
       <span>${message.traces ? message.traces.length : 0} 个工具动作</span>
     </div>` : '';
-  return `<article class="msg msg-assistant" style="--i:${index}" data-msg-id="${message.id || ''}">
+  // `data-annotatable` 只在原文真的在手上时才挂：标注要逐字引用，
+  // 而“这条回答还在保存”不该被当成“按钮坏了”。
+  return `<article class="msg msg-assistant" style="--i:${index}" data-msg-id="${message.id || ''}"${message.raw ? ' data-annotatable="1"' : ''}>
     <div class="msg-gutter">
-      <span class="msg-marker is-mark">${icon('archive-mark')}</span>
+      <span class="msg-marker is-mark"><img class="brand-img" src="assets/memory-mark.png" alt="" draggable="false"></span>
       <time>${escapeHtml(message.time || '')}</time>
       ${traceMarkup(message.traces)}
     </div>
     <div class="msg-body">
       <div class="msg-head"><span class="msg-role"><em>${L('档', 'SF')}</em> · STUDYFLOW</span>${message.review ? '<span class="msg-review">归档复盘</span>' : ''}<span class="msg-meta${metaClass}">${metaText}</span></div>
       <div class="msg-prose">${message.html || ''}</div>
+      ${traceMarkup(message.traces, 'msg-trace-inline')}
       ${proposal}
       ${foot}
     </div>
@@ -1684,13 +1864,13 @@ function renderContextRings() {
   }
 }
 
-function renderSession() {
+function renderSession({ animate = true } = {}) {
   renderTopbar();
   // 先同步侧栏：用户点了哪个会话，左侧高亮就必须立刻跟过去。
   // 后面任何一块渲染失败都不能把它留在旧会话上（这正是"聊天框跳了、标识没跳"）。
   renderRail();
   try {
-    renderThread();
+    renderThread({ animate });
   } catch (err) {
     console.error(err);
     thread.innerHTML = emptyStateMarkup({
@@ -1774,7 +1954,7 @@ function createLiveMessage() {
   article.className = 'msg msg-assistant is-live';
   article.innerHTML = `
     <div class="msg-gutter">
-      <span class="msg-marker is-mark">${icon('archive-mark')}</span>
+      <span class="msg-marker is-mark"><img class="brand-img" src="assets/memory-mark.png" alt="" draggable="false"></span>
       <time>${clock()}</time>
       <svg class="ink-thread" viewBox="0 0 10 300" preserveAspectRatio="none" aria-hidden="true">
         <path d="M4,0 C9,45 -2,82 4,125 C10,168 0,215 5,250 C8,272 6,288 5,300" vector-effect="non-scaling-stroke"/>
@@ -1792,6 +1972,7 @@ function createLiveMessage() {
         <div class="thinking-note">先不急着改计划——我在核对这句话是在改「词数」，还是在改「什么时候提取」。</div>
       </div>
       <div class="msg-prose streaming"></div>
+      <div class="msg-trace msg-trace-inline"></div>
     </div>`;
   thread.appendChild(article);
   scrollThread(true);
@@ -1799,12 +1980,14 @@ function createLiveMessage() {
 }
 
 function addTrace(article, label, note, stateClass = 'is-done') {
-  const trace = article.querySelector('.msg-trace');
-  if (!trace) return;
-  const row = document.createElement('div');
-  row.className = `trace-item ${stateClass}`;
-  row.innerHTML = `<strong>${escapeHtml(label)}</strong><span>${escapeHtml(note)}</span>`;
-  trace.appendChild(row);
+  const traces = article.querySelectorAll('.msg-trace');
+  if (!traces.length) return;
+  for (const trace of traces) {
+    const row = document.createElement('div');
+    row.className = `trace-item ${stateClass}`;
+    row.innerHTML = `<strong>${escapeHtml(label)}</strong><span>${escapeHtml(note)}</span>`;
+    trace.appendChild(row);
+  }
   scrollThread();
 }
 
@@ -1820,23 +2003,31 @@ function settleInk(root, delayMs = 1600) {
   if (!spans.length) return;
   const strip = () => {
     // **按父节点分组**：正文可能跨多个 <p>，把不同段落的字拼成一段会破坏排版。
-    const byParent = new Map();
+    const parents = new Set();
     for (const span of spans) {
       if (!span.isConnected) continue;
-      const parent = span.parentNode;
-      if (!parent) continue;
-      if (!byParent.has(parent)) byParent.set(parent, []);
-      byParent.get(parent).push(span);
+      if (span.parentNode) parents.add(span.parentNode);
     }
-    for (const [parent, group] of byParent) {
-      // 相邻的 span 合成一个文本节点，**原地**替换（先插后删，避免用到已脱离的节点）。
-      let buffer = '';
-      for (const span of group) buffer += span.textContent;
-      const anchor = group[0];
-      if (anchor && anchor.parentNode === parent) {
-        parent.insertBefore(document.createTextNode(buffer), anchor);
+    for (const parent of parents) {
+      // ★ 只合并**连续**的 span，不能把一个父节点下的所有 span 拼成一整段。
+      // 正文里有 `<strong>…</strong>` 与 `<button class="step-ref">…</button>`：
+      // 旧写法把「strong 前后的所有文字」先拼成一个文本节点、插到第一个 span 前，
+      // 于是模型写的「另外我想先确认一个判断：**现在的…**。它用…」被重排成
+      // 「判断：。它用……**现在的…**」—— 句子顺序被改掉，而屏幕上看不出是渲染坏。
+      let run = [];
+      const flushRun = () => {
+        if (!run.length) return;
+        const text = run.map((span) => span.textContent).join('');
+        // 先插后删，避免用到已脱离文档的节点。
+        parent.insertBefore(document.createTextNode(text), run[0]);
+        for (const span of run) span.remove();
+        run = [];
+      };
+      for (const child of Array.from(parent.childNodes)) {
+        if (child.nodeType === 1 && child.classList.contains('chunk')) run.push(child);
+        else flushRun();
       }
-      for (const span of group) span.remove();
+      flushRun();
     }
   };
   if (delayMs <= 0) { strip(); return; }
@@ -1970,24 +2161,36 @@ async function startLiveRun({ userText, stepId = null }) {
       if (streamed > 80) scrollThread();
     },
     trace(row) {
-      const el = document.createElement('div');
-      el.className = `trace-item ${row.state || 'is-running'}`;
-      el.dataset.call = row.callId || '';
-      el.innerHTML = `<strong>${escape(row.label)}</strong><span>${escape(row.note || '')}</span>`;
-      article.querySelector('.msg-trace').appendChild(el);
+      // 轨迹同时画在 gutter 与正文里（前者宽屏、后者窄屏）。
+      for (const trace of article.querySelectorAll('.msg-trace')) {
+        const el = document.createElement('div');
+        el.className = `trace-item ${row.state || 'is-running'}`;
+        el.dataset.call = row.callId || '';
+        el.innerHTML = `<strong>${escape(row.label)}</strong><span>${escape(row.note || '')}</span>`;
+        trace.appendChild(el);
+      }
       scrollThread();
     },
     traceUpdate(callId, row) {
-      const el = article.querySelector(`.trace-item[data-call="${callId}"]`);
-      if (!el) {
-        view.trace(row);
-        return;
+      let found = false;
+      for (const trace of article.querySelectorAll('.msg-trace')) {
+        const el = trace.querySelector(`.trace-item[data-call="${callId}"]`);
+        if (!el) continue;
+        found = true;
+        el.className = `trace-item ${row.state}`;
+        el.innerHTML = `<strong>${escape(row.label)}</strong><span>${escape(row.note || '')}</span>`;
       }
-      el.className = `trace-item ${row.state}`;
-      el.innerHTML = `<strong>${escape(row.label)}</strong><span>${escape(row.note || '')}</span>`;
+      if (!found) view.trace(row);
     },
     finish(payload) {
-      void finalizeLive({ run, article, prose, meta, detail, sessionId, payload });
+      // 收官里任何一处抛错都不能让界面停在“正在推演”。
+      // 以前 `basisText` 少了一个 import，异常被 `void` 吞掉：
+      // 回答已经画出来了，但 `state.busy` 永远不清，计划侧页也不刷新。
+      // 用户看到的是“答完了却还在转、计划还是旧版”，而且控制台之外没有痕迹。
+      finalizeLive({ run, article, prose, meta, detail, sessionId, payload }).catch((err) => {
+        console.error(err);
+        failLive({ run, article, message: '这一轮收尾时出错了：' + (err?.message || err) });
+      });
     },
     fail(message) {
       failLive({ run, article, message });
@@ -2031,12 +2234,9 @@ async function finalizeLive({ run, article, prose, meta, detail, sessionId, payl
   // 以前只 push 进 `detail.messages`，不动 DOM —— 于是当轮看不到轨迹，
   // 只有刷新或切走再回来（从 detail 重绘）才出现。用户会说"工具调用没显示"。
   // 状态色必须跟着回来：被守卫拦下（rejected）不能画成成功。
-  const traceBox = article.querySelector('.msg-trace');
-  if (traceBox) {
-    traceBox.innerHTML = traces.map((tr) => `
-      <div class="trace-item ${tr.state || 'is-done'}">
-        <strong>${escape(tr.label)}</strong><span>${escape(tr.note || '')}</span>
-      </div>`).join('');
+  const traceHtml = traceItemsMarkup(traces);
+  for (const traceBox of article.querySelectorAll('.msg-trace')) {
+    traceBox.innerHTML = traceHtml;
   }
   if (meta) {
     const stop = payload.stopReason || 'completed';
@@ -2056,15 +2256,16 @@ async function finalizeLive({ run, article, prose, meta, detail, sessionId, payl
     if (payload.unsupportedChangeClaim) {
       meta.classList.add('is-warn');
       meta.textContent = payload.toolTrace.length
-        ? `回答 · 工具 ${payload.toolTrace.length}（未改计划）`
-        : '回答（这一轮没有改动计划）';
+        ? `回答 · 工具 ${payload.toolTrace.length}（没有成功的写操作）`
+        : '回答（这一轮没有成功的写操作）';
     }
   }
 
   if (payload.unsupportedChangeClaim) {
     const warn = document.createElement('div');
     warn.className = 'msg-warning';
-    warn.textContent = '这句话说改动发生了，但这一轮没有任何写操作 —— 计划没有真的改变。可以让它重做一次，或直接确认当前计划。';
+    // 判定是启发式：宁可说“读起来像”，也不替模型定性说谎。
+    warn.textContent = '这句话读起来像是在说改动已经发生，但这一轮没有成功的写操作 —— 计划没有真的改变。可以让它重做一次，或直接确认当前计划。';
     article.querySelector('.msg-body').insertBefore(warn, article.querySelector('.msg-body').firstChild);
   }
 
@@ -2079,6 +2280,8 @@ async function finalizeLive({ run, article, prose, meta, detail, sessionId, payl
     id: 'M-' + Date.now(),
     role: 'assistant',
     time: clock(),
+    // 标注要用原文核对，不能用渲染后的 HTML。
+    raw: reply,
     html,
     traces: traces.length ? traces : null,
     thinking: payload.thinking,
@@ -2116,6 +2319,39 @@ async function finalizeLive({ run, article, prose, meta, detail, sessionId, payl
       await wait(350);
       await loadDetail(sessionId, { render: false });
     }
+    // 刚画完的这条消息手上是本地 id（`M-…`），而标注要的是后端 msg_id。
+    // 只能认**内容相同且尚未被别的 DOM 消息占用**的那一条：
+    // 以前直接取“最后一条助手消息”，如果发言落库晚于第 6 步的读取，
+    // 就会把上一条的 id 贴给新消息 —— 两条消息共用一个 id，标注会挂错地方。
+    const assignLiveId = () => {
+      const used = new Set(
+        [...thread.querySelectorAll('.msg-assistant')]
+          .filter((el) => el !== article)
+          .map((el) => el.dataset.msgId)
+          .filter(Boolean),
+      );
+      const fresh = (state.details[sessionId]?.messages || []).filter(
+        (m) => m.role === 'assistant' && m.id && !used.has(m.id),
+      );
+      const same = fresh.filter(
+        (m) => String(m.raw || '').trim() === String(reply || '').trim(),
+      );
+      const match = same[same.length - 1] || (fresh.length === 1 ? fresh[0] : null);
+      if (!match?.id) return false;
+      article.dataset.msgId = match.id;
+      article.dataset.annotatable = '1';
+      return true;
+    };
+    if (!assignLiveId()) {
+      // 写库的提交在响应之后；等一拍再读一次，别猜。
+      await wait(250);
+      try {
+        await loadDetail(sessionId, { render: false });
+      } catch {
+        /* 读失败就保留本地 id；标注会说“还在保存”，不会挂错消息 */
+      }
+      assignLiveId();
+    }
     renderRail();
     renderTopbar();
     const fresh = state.details[sessionId];
@@ -2127,7 +2363,10 @@ async function finalizeLive({ run, article, prose, meta, detail, sessionId, payl
     toast(err.message, 'danger');
   }
 
-  if (state.queue.length && state.busyBehavior === 'queue' && state.currentSession) {
+  // 已经排进队列的消息，不管用户后来把「繁忙时」改成了什么，都要发出去。
+  // 之前这里又查了一次 `busyBehavior === 'queue'`：排队后切到「暂不允许」，
+  // 那一条就永远卡在队列里（strip 写着“排队 1 条”，却再也不会动）。
+  if (state.queue.length && state.currentSession) {
     const next = state.queue.shift();
     if (next.el) next.el.remove();
     updateBusyUI();
@@ -2201,6 +2440,12 @@ function beginUserTurn(text, { fromQueue = false } = {}) {
 function sendFromComposer({ programmaticText = null } = {}) {
   const text = (programmaticText ?? composerInput.value).trim();
   if (!text) return;
+  // 没有会话时输入框仍然在页面上。以前这里会清空输入、然后 beginUserTurn
+  // 直接 return —— 用户看到自己写的字消失，也没有任何解释。
+  if (!state.currentSession) {
+    toast('先从左边挑一个会话，或者新建一个。', 'danger');
+    return;
+  }
 
   if (state.busy) {
     if (state.busyBehavior === 'block') {
@@ -2213,21 +2458,33 @@ function sendFromComposer({ programmaticText = null } = {}) {
       composerInput.value = '';
       autoGrow();
       const item = { text, el: null };
-      const detail = activeDetail();
-      if (detail) {
-        const article = document.createElement('div');
-        article.innerHTML = messageMarkup({ id: `local-q-${Date.now()}`, role: 'user', time: clock(), text, foot: false }, detail.messages.length);
-        const node = article.firstElementChild;
-        node.classList.add('is-queued');
-        node.querySelector('.msg-head').insertAdjacentHTML('beforeend', '<span class="msg-queued-tag">排队中</span>');
-        thread.appendChild(node);
-        item.el = node;
-        renderThreadIndex();
-        scrollThread(true);
-      }
+      // ★ 先把消息放进队列，再画那条“排队中”的占位。
+      // 之前顺序反了，而且 `.msg-head` 只有助手消息才有 ——
+      // 用户消息上那一句 `querySelector('.msg-head')` 抛 TypeError，
+      // 于是 `state.queue.push` 永远执行不到：用户看到输入框清空，
+      // 消息却既没发出去也没排队，直接消失。
       state.queue.push(item);
       updateBusyUI();
       toast('已排队');
+      try {
+        const detail = activeDetail();
+        if (detail) {
+          const article = document.createElement('div');
+          article.innerHTML = messageMarkup({ id: `local-q-${Date.now()}`, role: 'user', time: clock(), text, foot: false }, detail.messages.length);
+          const node = article.firstElementChild;
+          node.classList.add('is-queued');
+          // 用户消息没有 `.msg-head`；把标签放在正文开头，同样看得见。
+          const host = node.querySelector('.msg-head') || node.querySelector('.msg-body');
+          if (host) host.insertAdjacentHTML(host.classList.contains('msg-head') ? 'beforeend' : 'afterbegin', '<span class="msg-queued-tag">排队中</span>');
+          thread.appendChild(node);
+          item.el = node;
+          renderThreadIndex();
+          scrollThread(true);
+        }
+      } catch (err) {
+        // 画占位失败不该把已经排上的消息一起丢掉。
+        console.error(err);
+      }
       return;
     }
     if (state.busyBehavior === 'interrupt') {
@@ -2444,10 +2701,16 @@ function openPopover(anchor, html, className = '', { center = false } = {}) {
   popLayer.appendChild(el);
   if (center) {
     // 表单类面板固定在视口中央：锚在按钮上时，窗口一小就会溢出/错位，
-    // 而"编辑档案"是一个独立的操作，不依赖它从哪个按钮打开。
-    el.style.left = '50%';
-    el.style.top = '50%';
-    el.style.transform = 'translate(-50%, -50%)';
+    // 而"编辑档案"“标注一句”都是独立操作，不依赖它从哪个按钮打开。
+    //
+    // ★ 不用 `left:50% + translate(-50%,-50%)`：`.popover` 的 `popIn`
+    // 动画是 `transform` 结尾且 `fill-mode: both`，会把 inline transform
+    // 覆盖成 none —— 结果是面板从屏幕中线开始向右铺，窄屏直接溢出。
+    // 直接算像素位置，动画只负责那一小下淡入。
+    const left = Math.max(12, (window.innerWidth - el.offsetWidth) / 2);
+    const top = Math.max(12, (window.innerHeight - el.offsetHeight) / 2);
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
     translateUi(el);
     return el;
   }
@@ -2570,6 +2833,365 @@ function openRename(anchor, title, value, onSave) {
   });
 }
 
+/* ── 句子标注（P15）────────────────────────────────────────────────
+ *
+ * 「标注一句」不是再问模型一遍：后端只重放那条回复落库时的工具轨迹与上下文，
+ * 不调模型、不写认知表。前端要做三件事：
+ *   1. 让用户挑一句**逐字存在**的原文（选中，或从句子列表里选）；
+ *   2. 把 msg_id + quote 发过去；
+ *   3. 把返回的 basis 摊开给人看，并允许回看/删除。
+ *
+ * ★ 选中文字不能直接发：DOM 里的 `**` 已被渲染掉、`[ST-001]` 已变成按钮，
+ *   所以选中「把 ST-002 精读例句」时，原文里其实是「把 [ST-002] 精读例句」。
+ *   后端要求逐字子串，这里用一份**去掉标记的索引映射**把选中段落映射回原文。
+ */
+let pendingAnnotationSelection = null;
+
+/** 当前选区是否落在这条助手消息的正文里；是就返回原文。 */
+function selectionInsideMessage(article) {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return '';
+  const prose = article?.querySelector('.msg-prose');
+  const range = selection.getRangeAt(0);
+  return prose && prose.contains(range.commonAncestorContainer)
+    ? selection.toString()
+    : '';
+}
+
+function truncateText(value, limit = 28) {
+  const flat = String(value ?? '').replace(/\s+/g, ' ').trim();
+  return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
+}
+
+/**
+ * 去掉 markdown 记号并压空白，同时记下每个字符来自原文的哪个下标。
+ *
+ * 除了 `**`/反引号/方括号，还要去掉**行首的结构记号**：
+ * 渲染后的列表没有 `1. ` / `- `，标题没有 `### `，引用没有 `> `。
+ * 用户跨段落选中时，选区里不会有这些记号，而原文里有 —— 不去掉就永远
+ * 找不到对应片段（实测跨两段选中会报“这段引用在那条回复里找不到”）。
+ */
+function normalizeQuoteText(value, { dropSpace = false } = {}) {
+  const text = String(value ?? '').replace(/\r\n/g, '\n');
+  let out = '';
+  const map = [];
+  let lastWasSpace = false;
+  const pushChar = (ch, index) => {
+    if (ch === '*' || ch === '`' || ch === '[' || ch === ']') return;
+    if (/\s/.test(ch)) {
+      // 第二轮匹配会把空白全部删掉：流式 DOM 在 `<button>` 两侧可能
+      // 多一个/少一个空格，折叠成单个空格仍对不上。
+      if (dropSpace) return;
+      if (!lastWasSpace && out.length) {
+        out += ' ';
+        map.push(index);
+        lastWasSpace = true;
+      }
+      return;
+    }
+    out += ch;
+    map.push(index);
+    lastWasSpace = false;
+  };
+  let lineStart = 0;
+  while (lineStart <= text.length) {
+    let lineEnd = text.indexOf('\n', lineStart);
+    if (lineEnd < 0) lineEnd = text.length;
+    const line = text.slice(lineStart, lineEnd);
+    const prefix = line.match(/^\s*(?:[-*+]\s+|\d+[.)]\s+|#{1,4}\s+|>\s?)/);
+    const skip = prefix ? prefix[0].length : 0;
+    for (let i = lineStart + skip; i < lineEnd; i += 1) pushChar(text[i], i);
+    if (lineEnd < text.length) pushChar(text[lineEnd], lineEnd);
+    lineStart = lineEnd + 1;
+  }
+  return { text: out, map };
+}
+
+/** 把用户选中的渲染文字映射回那条回复的原文（逐字子串）。 */
+function mapSelectionToRaw(raw, selected) {
+  const needle = String(selected ?? '').replace(/\s+/g, ' ').trim();
+  if (!needle) return '';
+  if (raw.includes(needle)) return needle;
+  const locate = (options) => {
+    const target = normalizeQuoteText(needle, options);
+    const source = normalizeQuoteText(raw, options);
+    if (!target.text) return null;
+    const at = source.text.indexOf(target.text);
+    if (at < 0) return null;
+    const start = source.map[at];
+    const end = source.map[at + target.text.length - 1];
+    return start === undefined || end === undefined ? null : { start, end };
+  };
+  // 先保留“一个空格”的语义；对不上再试完全去空白。
+  // 流式 DOM 在 inline `<button>` 两侧有时没有空格，而原文有。
+  const span = locate({}) || locate({ dropSpace: true });
+  if (!span) return needle;
+  let { start, end } = span;
+  // 选区从步骤引用中间开始时（DOM 里是 ST-001，原文是 [ST-001]），
+  // 把包住它的方括号一起带上 —— 否则引用会以 `ST-001]…` 开头。
+  const cover = raw.slice(start, end + 1);
+  if (raw[start - 1] === '[' && /(?:ST|CP)-\d{3,}/.test(cover)) start -= 1;
+  if (raw[end + 1] === ']' && /(?:ST|CP)-\d{3,}/.test(cover)) end += 1;
+  return raw.slice(start, end + 1).trim() || needle;
+}
+
+/** 展示用：去掉 markdown 记号，但保留换行（引用是原句，别压成一行）。 */
+function annotationDisplay(value) {
+  return String(value ?? '').replace(/\*\*/g, '').replace(/`/g, '').trim();
+}
+
+/** 从原文里切出可标注的句子；给"选不中/用键盘"时的下拉列表用。 */
+function annotationCandidates(raw) {
+  const text = String(raw || '').replace(/\r\n/g, '\n').trim();
+  if (!text) return [];
+  const out = [];
+  const seen = new Set();
+  const push = (value) => {
+    const candidate = value.trim();
+    if (candidate.length < 4 || candidate.length > 600) return;
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    out.push(candidate);
+  };
+  for (const block of text.split(/\n{2,}/)) {
+    // 代码块不拆成句子：它是整块的，拆开也没有"一句话"的意义。
+    if (/^\s*```/.test(block)) continue;
+    const parts = block.match(/[^\n。！？!?]+[。！？!?]?/g) || [block];
+    for (const part of parts) push(part);
+  }
+  if (!out.length) push(text);
+  return out.slice(0, 40);
+}
+
+function annotationOptionLabel(raw) {
+  return truncateText(
+    String(raw || '')
+      .replace(/\*\*/g, '')
+      .replace(/`/g, '')
+      .replace(/^[-*+]\s+/, '')
+      .replace(/^\d+[.)]\s+/, '')
+      .replace(/^#{1,4}\s+/, '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    90,
+  );
+}
+
+/** 依据里的说明文字带 `**`/反引号；弹层里不跑 markdown，直接去掉记号。 */
+function annotationPlain(value) {
+  return String(value ?? '')
+    .replace(/\*\*/g, '')
+    .replace(/`/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function findAssistantMessage(detail, msgId) {
+  return (detail?.messages || []).find(
+    (m) => m.role === 'assistant' && m.id === msgId,
+  ) || null;
+}
+
+/** 每条助手消息下面列出它的标注；点击回到那句话的依据。 */
+function renderAnnotationMarks(detail) {
+  const byMsg = new Map();
+  for (const annotation of detail?.annotations || []) {
+    if (!byMsg.has(annotation.msg_id)) byMsg.set(annotation.msg_id, []);
+    byMsg.get(annotation.msg_id).push(annotation);
+  }
+  for (const article of $$('.msg-assistant', thread)) {
+    article.querySelector('.msg-annotations')?.remove();
+    const list = byMsg.get(article.dataset.msgId) || [];
+    if (!list.length) continue;
+    const body = article.querySelector('.msg-body');
+    if (!body) continue;
+    const wrap = document.createElement('div');
+    wrap.className = 'msg-annotations';
+    wrap.innerHTML = `<span class="msg-annotations-label">标注 ${list.length}</span>`
+      + list.map((annotation) => `
+        <button type="button" class="annotation-chip" data-action="show-annotation"
+          data-id="${escapeHtml(annotation.annotation_id)}"
+          title="${escapeHtml(`查看「${truncateText(annotationDisplay(annotation.quote), 42)}」的依据`)}">
+          <span class="annotation-chip-mark">标</span>
+          <span class="annotation-chip-quote">${escapeHtml(truncateText(annotationDisplay(annotation.quote), 26))}</span>
+        </button>`).join('');
+    body.appendChild(wrap);
+  }
+}
+
+function openAnnotationBasis(annotation, anchor) {
+  openPopover(anchor, annotationBasisMarkup(annotation), 'annotation-basis', { center: true });
+}
+
+function annotationBasisMarkup(annotation) {
+  const basis = annotation?.basis || {};
+  const traces = Array.isArray(basis.traces) ? basis.traces : [];
+  const entries = Array.isArray(basis.entries) ? basis.entries : [];
+  const sections = Array.isArray(basis.context_sections) ? basis.context_sections : [];
+  const traceHtml = traces.map((trace) => {
+    const cls = trace.status === 'rejected' ? 'is-rejected'
+      : trace.status === 'error' ? 'is-error' : 'is-done';
+    return `<div class="trace-item ${cls}">
+      <strong>${escapeHtml(toolLabel(trace.tool || '工具'))}</strong>
+      <span>${escapeHtml(annotationPlain(trace.message))}</span>
+    </div>`;
+  }).join('');
+  const entriesHtml = entries
+    .map((id) => `<span class="annotation-entry">${escapeHtml(id)}</span>`)
+    .join('');
+  const sectionsHtml = sections
+    .map((section) => `<li>${escapeHtml(section)}</li>`)
+    .join('');
+  return `<div class="annotation-basis-head">
+      <span class="popover-label">标注 · ${escapeHtml(annotation?.annotation_id || '—')}</span>
+      <time>${escapeHtml(shortTime(annotation?.created_at))}</time>
+    </div>
+    <blockquote class="annotation-quote">${escapeHtml(annotationDisplay(annotation?.quote || ''))}</blockquote>
+    ${annotation?.question ? `<p class="annotation-asked">你问：${escapeHtml(annotation.question)}</p>` : ''}
+    <p class="annotation-summary">${escapeHtml(annotationPlain(basis.summary) || '这条标注没有返回依据。')}</p>
+    ${traceHtml ? `<section class="annotation-block"><h5>工具轨迹</h5>${traceHtml}</section>` : ''}
+    ${entriesHtml ? `<section class="annotation-block"><h5>引用的条目</h5><div class="annotation-entries">${entriesHtml}</div>${basis.entries_truncated ? '<p class="annotation-note">只列了前 30 个。</p>' : ''}</section>` : ''}
+    ${(sections.length || basis.context_note) ? `<section class="annotation-block"><h5>上下文${basis.context_replayed_now ? ' · 现在重放' : ''}</h5>${sectionsHtml ? `<ul class="annotation-sections">${sectionsHtml}</ul>` : `<p class="annotation-note">${escapeHtml(basis.context_note || '没有重放上下文。')}</p>`}</section>` : ''}
+    ${basis.limits ? `<p class="annotation-limits">${escapeHtml(annotationPlain(basis.limits))}</p>` : ''}
+    <div class="annotation-actions">
+      <button type="button" class="mini-btn danger" data-action="delete-annotation" data-id="${escapeHtml(annotation?.annotation_id || '')}">删除这条标注</button>
+      <button type="button" class="mini-btn" data-action="close-popover">关闭</button>
+    </div>`;
+}
+
+function openAnnotationComposer(button, selectedText = '') {
+  const article = button.closest('.msg-assistant');
+  const detail = activeDetail();
+  const msgId = article?.dataset.msgId || '';
+  const message = findAssistantMessage(detail, msgId);
+  if (!article || !detail || !state.currentSession) {
+    toast('先选一个会话，再标注这句话。', 'danger');
+    return;
+  }
+  // 刚结束的消息可能还挂着本地 id（`M-…`）。**不猜“最后一条”** ——
+  // 那条可能是上一轮；等 finalize 用内容+未占用 id 对上了再标。
+  if (/^(M-|local-)/.test(msgId) || !message?.raw) {
+    toast('这条回答还在保存，等一秒再标注。', 'danger');
+    return;
+  }
+  const quote = selectedText ? mapSelectionToRaw(message.raw, selectedText) : '';
+  const candidates = annotationCandidates(message.raw);
+  if (!quote && !candidates.length) {
+    toast('这条消息里没有可标注的句子。', 'danger');
+    return;
+  }
+  const options = candidates.map((candidate, index) =>
+    `<option value="${index}">${escapeHtml(annotationOptionLabel(candidate))}</option>`).join('');
+  const pop = openPopover(button, `
+    <div class="popover-label">标注这一句</div>
+    <form class="annotation-form">
+      ${quote
+        ? `<blockquote class="annotation-quote">${escapeHtml(annotationDisplay(quote))}</blockquote>`
+        : `<label>选一句要标注的话<select class="annotation-quote-select">${options}</select></label>`}
+      <label>想问什么（可选）<input class="annotation-question" maxlength="200" placeholder="为什么这么说？"></label>
+      <p class="annotation-form-note">${quote
+        ? '这是你刚选中的原句。想换一句，取消后重新在正文里选。'
+        : '也可以先在正文里选中一句，再点「标注一句」——会直接用你选中的那句。'}</p>
+      <div class="inline-actions">
+        <button type="submit" class="mini-btn solid">记下并看依据</button>
+        <button type="button" class="mini-btn" data-action="close-popover">取消</button>
+      </div>
+    </form>
+  `, 'popover-form annotation-form-pop', { center: true });
+
+  const sessionId = state.currentSession;
+  const form = pop.querySelector('form');
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const select = pop.querySelector('.annotation-quote-select');
+    // 选中路径直接用闭包里的原文，不走 hidden input：
+    // HTML 属性会把换行压成空格，跨段的原句会在提交前被悄悄改掉。
+    const finalQuote = quote || (candidates[Number(select?.value || 0)] || '');
+    const question = pop.querySelector('.annotation-question').value.trim();
+    if (!finalQuote) {
+      toast('先选一句要标注的话。', 'danger');
+      return;
+    }
+    if (typeof api.createAnnotation !== 'function') {
+      toast('刷新页面后再试：标注接口没有加载。', 'danger');
+      return;
+    }
+    const submit = pop.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    submit.textContent = '记下中…';
+    try {
+      const created = await api.createAnnotation(sessionId, {
+        msg_id: msgId,
+        quote: finalQuote,
+        question: question || null,
+      });
+      const current = state.details[sessionId];
+      if (current) {
+        current.annotations = [
+          ...(current.annotations || []).filter(
+            (item) => item.annotation_id !== created.annotation_id,
+          ),
+          created,
+        ];
+        if (state.currentSession === sessionId) renderAnnotationMarks(current);
+      }
+      closePopover();
+      toast('已记下标注');
+      openAnnotationBasis(created, button);
+    } catch (err) {
+      submit.disabled = false;
+      submit.textContent = '记下并看依据';
+      toast(err.message, 'danger');
+    }
+  });
+}
+
+async function showAnnotation(annotationId, anchor) {
+  const sessionId = state.currentSession;
+  if (!sessionId) return;
+  const detail = state.details[sessionId];
+  const cached = (detail?.annotations || []).find(
+    (annotation) => annotation.annotation_id === annotationId,
+  );
+  if (!cached) return;
+  let annotation = cached;
+  try {
+    if (typeof api.annotation !== 'function') throw new Error('annotation api missing');
+    // 依据是现算的：会话状态变了，同一句话的上下文重放也可能变。
+    annotation = await api.annotation(sessionId, annotationId);
+    if (state.details[sessionId]) {
+      state.details[sessionId].annotations = state.details[sessionId].annotations
+        .map((item) => (item.annotation_id === annotationId ? annotation : item));
+    }
+  } catch {
+    // 读不到新依据时仍展示已有的那一份，不把"读失败"伪装成"没有依据"。
+  }
+  openAnnotationBasis(annotation, anchor);
+}
+
+async function deleteAnnotation(annotationId) {
+  const sessionId = state.currentSession;
+  if (!sessionId || !annotationId) return;
+  if (typeof api.deleteAnnotation !== 'function') {
+    toast('刷新页面后再试：标注接口没有加载。', 'danger');
+    return;
+  }
+  try {
+    await api.deleteAnnotation(sessionId, annotationId);
+    const detail = state.details[sessionId];
+    if (detail) {
+      detail.annotations = (detail.annotations || []).filter(
+        (annotation) => annotation.annotation_id !== annotationId,
+      );
+      if (state.currentSession === sessionId) renderAnnotationMarks(detail);
+    }
+    closePopover();
+    toast('已删除标注');
+  } catch (err) {
+    toast(err.message, 'danger');
+  }
+}
+
 function openBasis(anchor, text) {
   openPopover(anchor, `<h5>推断依据</h5>
     <p>${escapeHtml(text)}</p>
@@ -2585,19 +3207,25 @@ function selectSession(id) {
   const found = findSession(id);
   if (!found) return;
   if (state.busy) cancelRun({ interrupted: false, silent: true });
+  const switching = state.currentSession !== id;
   state.currentSession = id;
   state.currentFolder = found.folderId;
   state.anchorStep = null;
   found.folder.open = true;
   if (!state.details[id]) state.details[id] = makeDetail();
-  // 先用缓存画一次：点击必须立刻有反应，网络不能挡在点击和画面之间
-  renderSession();
+  // 先用缓存画一次：点击必须立刻有反应，网络不能挡在点击和画面之间。
+  //
+  // ★ 切会话**不重播**"墨落"动画：整屏消息从 16px 下方升起、逐条错开，
+  // 看起来像对话在抖。那是首次进入一个会话时该有的样子；从 A 切到 B 时
+  // 用户已经在读了，再演一遍只会让他以为内容在跳。
+  renderSession({ animate: false });
   requestAnimationFrame(() => jumpThreadBottom());
   applyBreakpoint();
   syncMarginToggle();
   renderAttachmentStrip();
   void loadAttachments(id);
-  void loadDetail(id)
+  // 第二次重绘（数据到了）同样不重播 —— 否则"骨架 → 内容"那一下又是一次跳。
+  void loadDetail(id, { animate: false })
     .then(() => requestAnimationFrame(() => jumpThreadBottom()))
     .catch((err) => {
       // 读失败不能停在骨架屏上 —— 那会让"读不到"看起来像"一直在读"。
@@ -2856,19 +3484,22 @@ function renderSettings() {
       // 一份档案都没有：这时真正在说话的是 `.env` 里那个模型。
       // **不编一个档案出来**，如实说"还没有档案、现在用的是环境变量里的那个"。
       const s = state.llmConfig?.settings;
+      // fake 是确定性替身：没有模型名可言。继续把 `.env` 里的
+      // `qwen3.6:27b` 摆在这里，会让人以为它真的在被调用。
+      const isFake = s && s.llm_provider === 'fake';
       card.innerHTML = `
         <span class="am-seal">当前</span>
         <div class="am-left">
-          <div class="am-kicker"><span class="pulse-dot"></span>正在使用 · .env 默认值</div>
-          <div class="am-title"><h3>未配置档案</h3><span class="am-model">${escapeHtml(s ? s.llm_model : '—')}</span></div>
+          <div class="am-kicker"><span class="pulse-dot"></span>正在使用 · ${isFake ? '确定性替身' : '.env 默认值'}</div>
+          <div class="am-title"><h3>${isFake ? '没有调用真模型' : '未配置档案'}</h3><span class="am-model">${escapeHtml(isFake ? 'fake' : (s ? s.llm_model : '—'))}</span></div>
           <div class="am-meta">
             <span>服务商 <b>${escapeHtml(s ? s.llm_provider : '—')}</b></span>
-            <span>端点 <b>${escapeHtml(s ? s.llm_base_url : '—')}</b></span>
-            <span>上下文 <b>${s && s.llm_num_ctx ? escapeHtml(String(s.llm_num_ctx)) : '—'}</b></span>
-            <span>密钥 <b>${s && s.has_api_key ? '已设置' : '未设置'}</b></span>
+            <span>端点 <b>${escapeHtml(isFake ? '—' : (s ? s.llm_base_url : '—'))}</b></span>
+            <span>上下文 <b>${isFake ? '—' : (s && s.llm_num_ctx ? escapeHtml(String(s.llm_num_ctx)) : '—')}</b></span>
+            <span>密钥 <b>${isFake ? '不需密钥' : (s && s.has_api_key ? '已设置' : '未设置')}</b></span>
           </div>
           <div class="am-think">
-            <em>当前实际使用的模型。</em>
+            <em>${isFake ? '当前不调用任何真模型：讨论会返回固定的替身回复。在下面加一份档案就能换成真的。' : '当前实际使用的模型。'}</em>
           </div>
         </div>`;
     } else {
@@ -3371,9 +4002,20 @@ function markInteractionStates(container, assistantSelector, userSelector) {
 }
 
 /* ── 自评单例（全屏）────────────────────────────────────────────── */
-async function loadSelfAssessment({ render = true } = {}) {
+async function loadSelfAssessment({ render = true, retryIfEmpty = false } = {}) {
   try {
-    const latest = await api.selfAssessmentLatest();
+    let latest = await api.selfAssessmentLatest();
+    // 刚提交完就关闭时，写入事务可能还没提交（响应先于 commit 发出）。
+    // 只读一次会把“刚做完”读成“尚未做过”，入口那一行于是空一下。
+    // 这里只在这种“刚提交”的场景重试；首次进页面没有结果时立即显示空态，
+    // 不为了一个不存在的记录等两秒。
+    if (!latest && retryIfEmpty) {
+      for (const delay of [200, 500, 1000]) {
+        await wait(delay);
+        latest = await api.selfAssessmentLatest();
+        if (latest) break;
+      }
+    }
     state.selfAssessment.latest = latest || null;
   } catch (err) {
     state.selfAssessment.latest = null;
@@ -3389,13 +4031,41 @@ function tierLabel(tier) {
   return '旧版 · 44 条';
 }
 
+/**
+ * 读自评草稿的进度。**不 import `self-assessment.js` 里的新导出**：
+ * 老浏览器缓存可能还留着旧版那个模块，新增一个 named export 会让整个
+ * `app.js` 模块图加载失败（白屏）。这里直接读同一个 localStorage 键。
+ * 键名若改，两处一起改（`src/self-assessment.js` 的 `draftKey`）。
+ */
+function selfAssessmentDraft(tier) {
+  try {
+    const key = `studyflow.selfAssessment.v2:${tier === 'short' ? 'short' : 'full'}`;
+    const draft = JSON.parse(localStorage.getItem(key) || 'null');
+    if (!draft || !draft.answers) return null;
+    const savedAt = Number(draft.savedAt || 0);
+    if (!savedAt || Date.now() - savedAt > 1000 * 60 * 60 * 24 * 3) return null;
+    return { answered: Object.keys(draft.answers).length };
+  } catch {
+    return null;
+  }
+}
+
 function renderSelfAssessmentEntry() {
   const facts = $('#sa-entry-facts');
   const link = $('#sa-result-link');
   if (!facts) return;
   const latest = state.selfAssessment.latest;
+  // 两档各有一份草稿；优先提示有进度的那个，并写清是哪一档 ——
+  // 否则用户点另一档时会以为“怎么没接着上次”.
+  const draftShort = selfAssessmentDraft('short');
+  const draftFull = draftShort ? null : selfAssessmentDraft('full');
+  const draft = draftShort || draftFull;
+  const draftTier = draftShort ? 'short' : 'full';
+  const draftFact = draft
+    ? `<span class="sa-fact is-warn">上次${escapeHtml(tierLabel(draftTier))}答到一半 · 已答 ${draft.answered} 条；点同一档会接着答</span>`
+    : '';
   if (!latest) {
-    facts.innerHTML = '<span class="sa-fact">尚未做过</span>';
+    facts.innerHTML = draft ? draftFact : '<span class="sa-fact">尚未做过</span>';
     if (link) link.hidden = true;
     return;
   }
@@ -3406,6 +4076,7 @@ function renderSelfAssessmentEntry() {
     `<span class="sa-fact">${escapeHtml(tierLabel(latest.tier))}</span>`,
     `<span class="sa-fact">${(latest.readings || []).length} 个变量</span>`,
     `<span class="sa-fact${flags.length ? ' is-warn' : ''}">${escapeHtml(flagSummary(flags))}</span>`,
+    draftFact,
   ].join('');
   if (link) link.hidden = false;
 }
@@ -3481,10 +4152,11 @@ async function openSelfAssessment(tier = 'full') {
     scale: state.selfAssessment.scales[tier],
     onSubmit: (payload) => api.submitSelfAssessment(payload),
     onError: (err) => toast(err.message, 'danger'),
-    onClose: () => {
+    onClose: ({ submitted = false } = {}) => {
       document.body.classList.remove('is-assessing');
       closeModalLayer(root);
-      void loadSelfAssessment();
+      // 提交过才等一拍；中途退出不该让入口空转。
+      void loadSelfAssessment({ retryIfEmpty: submitted });
       state.cognition.loaded = false;
       refreshCognitionIfVisible();
     },
@@ -3589,6 +4261,7 @@ function applyLanguage() {
 
 function setTheme(theme) {
   state.theme = theme;
+  savePrefs();
   document.documentElement.dataset.theme = theme;
   $$('.theme-swatch').forEach((el) => el.classList.toggle('is-on', el.dataset.themeChoice === theme));
   // Canvas 元素自己不会跟着 CSS 变量变 —— 换纸色后重画一次。
@@ -3801,7 +4474,19 @@ function handleAction(el, event) {
       openBasis(el, el.dataset.basis || '这是基于本轮的工具轨迹与当时锚点给出的建议。');
       break;
     case 'annotate':
-      toast('选中一句话即可标注');
+      // 鼠标路径：pointerdown 已经先把选区记下来了（点击按钮会清掉选区）。
+      // 键盘路径：没有 pointerdown，但选区还在，所以在 click 里再读一次。
+      openAnnotationComposer(
+        el,
+        pendingAnnotationSelection || selectionInsideMessage(el.closest('.msg-assistant')),
+      );
+      pendingAnnotationSelection = null;
+      break;
+    case 'show-annotation':
+      void showAnnotation(el.dataset.id, el);
+      break;
+    case 'delete-annotation':
+      void deleteAnnotation(el.dataset.id);
       break;
     case 'edit-motivation':
       openMotivationForm(el);
@@ -4154,7 +4839,7 @@ function renderSideNote() {
     threadEl.innerHTML = `<div class="sn-empty is-error">侧记读不到：${escapeHtml(bar.error)}</div>`;
   } else if (!bar.messages.length) {
     threadEl.innerHTML = `<div class="sn-empty">
-      <span class="sn-empty-seal">${icon('archive-mark')}</span>
+      <span class="sn-empty-seal"><img class="brand-img" src="assets/memory-mark.png" alt="" draggable="false"></span>
       <p>侧记不绑定会话。可讨论方法，或提议修改全局认知；写入需确认。</p>
     </div>`;
   } else {
@@ -4346,6 +5031,13 @@ document.addEventListener('click', (event) => {
     selectSession(sessionEl.dataset.sessionId);
     return;
   }
+  // 「已归档」里的会话也能点开。它们不在一级列表里，但仍然是可读、可继续
+  // 说话的会话 —— 归档只表示“不再排在进行中”，不表示“只能恢复或删除”。
+  const archivedEl = event.target.closest('[data-archived-session]');
+  if (archivedEl) {
+    selectSession(archivedEl.dataset.archivedSession);
+    return;
+  }
   const prompt = event.target.closest('[data-prompt]');
   if (prompt) {
     composerInput.value = prompt.dataset.prompt;
@@ -4365,6 +5057,7 @@ document.addEventListener('click', (event) => {
   const langBtn = event.target.closest('#lang-seg button');
   if (langBtn) {
     state.lang = langBtn.dataset.lang;
+    savePrefs();
     applyLanguage();
     toast(state.lang === 'zh' ? '中文' : 'English');
     return;
@@ -4372,6 +5065,7 @@ document.addEventListener('click', (event) => {
   const busyBtn = event.target.closest('#busy-options .busy-card');
   if (busyBtn) {
     state.busyBehavior = busyBtn.dataset.busy;
+    savePrefs();
     $$('#busy-options .busy-card').forEach((b) => {
       b.classList.toggle('is-on', b === busyBtn);
       b.setAttribute('aria-checked', String(b === busyBtn));
@@ -4383,6 +5077,7 @@ document.addEventListener('click', (event) => {
   const thinkView = event.target.closest('#think-seg button');
   if (thinkView) {
     state.thinkView = thinkView.dataset.thinkview;
+    savePrefs();
     $$('#think-seg button').forEach((b) => b.classList.toggle('is-on', b === thinkView));
     return;
   }
@@ -4395,6 +5090,7 @@ document.addEventListener('click', (event) => {
   const scaleBtn = event.target.closest('#scale-seg button');
   if (scaleBtn) {
     state.scale = scaleBtn.dataset.scale;
+    savePrefs();
     document.documentElement.dataset.scale = state.scale;
     $$('#scale-seg button').forEach((b) => b.classList.toggle('is-on', b === scaleBtn));
     return;
@@ -4402,6 +5098,7 @@ document.addEventListener('click', (event) => {
   const motionBtn = event.target.closest('#motion-seg button');
   if (motionBtn) {
     state.motion = motionBtn.dataset.motion;
+    savePrefs();
     document.documentElement.dataset.motion = state.motion;
     $$('#motion-seg button').forEach((b) => b.classList.toggle('is-on', b === motionBtn));
     return;
@@ -4410,6 +5107,14 @@ document.addEventListener('click', (event) => {
 
 document.addEventListener('pointerdown', (event) => {
   if (!popLayer.contains(event.target) && !event.target.closest('[data-popover-anchor]')) closePopover();
+}, true);
+
+// 点「标注一句」之前，浏览器选区还算数；点击按钮之后会被清掉。
+// 在捕获阶段先把它记下来，点击处理里再用。
+document.addEventListener('pointerdown', (event) => {
+  const button = event.target.closest('[data-action="annotate"]');
+  if (!button) return;
+  pendingAnnotationSelection = selectionInsideMessage(button.closest('.msg-assistant')) || null;
 }, true);
 
 document.addEventListener('keydown', (event) => {
@@ -4424,6 +5129,14 @@ document.addEventListener('keydown', (event) => {
     if (popLayer.innerHTML) { closePopover(); return; }
     if ($('#side-note').classList.contains('is-open')) { $('#side-note').classList.remove('is-open'); return; }
     document.body.classList.remove('rail-open');
+  }
+  // 「标注一句」在键盘路径下要带上当前选区：原生按键激活虽然会 click，
+  // 但这里显式接住，防止不同浏览器/输入法下把选区先清掉。
+  if ((event.key === 'Enter' || event.key === ' ')
+    && document.activeElement?.matches('[data-action="annotate"]')) {
+    event.preventDefault();
+    document.activeElement.click();
+    return;
   }
   // 键盘激活：**不白名单**。任何被写成按钮的东西都必须能被 Enter/Space 按下。
   // 原先是 `.folder-head / .session` 两个选择器的白名单，于是
@@ -4456,6 +5169,7 @@ $('#rail-search').addEventListener('input', (event) => {
 
 $('#cite-switch').addEventListener('click', (event) => {
   state.cite = !state.cite;
+  savePrefs();
   event.currentTarget.classList.toggle('is-on', state.cite);
   document.documentElement.dataset.cite = state.cite ? 'on' : 'off';
   event.currentTarget.setAttribute('aria-checked', String(state.cite));
@@ -4651,8 +5365,9 @@ function watchDisplayFont() {
 }
 
 async function boot() {
-  document.documentElement.dataset.cite = 'on';
-  document.documentElement.dataset.motion = state.motion;
+  // 偏好要在第一帧就位：先读、再画，避免“先亮一下默认纸色再跳回夜墨”。
+  loadPrefs();
+  syncPrefsUi();
   watchDisplayFont();
   applyBreakpoint();
 
@@ -4689,6 +5404,9 @@ async function boot() {
       await loadDetail(state.currentSession);
       await loadAttachments(state.currentSession);
     } else ensureSelection();
+    // 语言是唯一需要重画文案的偏好；数据到位后再套用一次，
+    // 免得先画中文再整屏换成英文。
+    if (state.lang === 'en') applyLanguage();
   } catch (err) {
     // 后端没起来时**说清楚是哪一步没成**，而不是留一个空白界面让人以为"没有数据"
     thread.innerHTML = emptyStateMarkup({

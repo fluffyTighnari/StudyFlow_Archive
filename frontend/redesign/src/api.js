@@ -150,6 +150,18 @@ export const api = {
   addNote: (sessionId, content, tags) =>
     post(`/api/sessions/${seg(sessionId)}/notes`, { content, tags: tags || null }),
 
+  // ── 句子标注（P15）：标助手某句话，当场看它的依据 ─────────────────
+  //
+  // 标注不是"再问模型一遍"：后端只重放那条回复落库时的工具轨迹与上下文，
+  // 不调模型、不写认知表。`quote` 必须逐字来自那条助手消息，否则 422。
+  annotations: (sessionId) => get(`/api/sessions/${seg(sessionId)}/annotations`),
+  createAnnotation: (sessionId, body) =>
+    post(`/api/sessions/${seg(sessionId)}/annotations`, body),
+  annotation: (sessionId, annotationId) =>
+    get(`/api/sessions/${seg(sessionId)}/annotations/${seg(annotationId)}`),
+  deleteAnnotation: (sessionId, annotationId) =>
+    del(`/api/sessions/${seg(sessionId)}/annotations/${seg(annotationId)}`),
+
   // ── 任务定义 / 动机 ───────────────────────────────────────────────
   patchInput: (sessionId, body) => patch(`/api/sessions/${seg(sessionId)}/input`, body),
   patchMotivation: (sessionId, body) => patch(`/api/sessions/${seg(sessionId)}/motivation`, body),

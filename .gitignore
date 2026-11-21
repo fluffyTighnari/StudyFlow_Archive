@@ -52,3 +52,12 @@ desktop.ini
 # ── 验收产物：浏览器配置（几百 MB）+ 截图/报告 ─────────────────────
 frontend/redesign/tools/_artifacts/
 frontend/redesign/tools/_edgeprofile*/
+
+# ── 本地题库素材：图 / 音频 / 卡片，只供本地验收脚本使用 ─────────────
+# 运行时读的是 JSON 题库（benchmark/items、backend/tests/fixtures/bank）；
+# 这里的 PNG / m4a / HTML 卡片由 tools/gen_* 生成、tools/check_assets.py 核对，
+# 不随代码发布，重建即可再生成。
+frontend/redesign/assets/items/
+
+# ── 系统残留 ───────────────────────────────────────────────────────
+**/.DS_Store

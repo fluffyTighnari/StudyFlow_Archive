@@ -29,6 +29,13 @@ def _main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", default="var/ui.db")
     parser.add_argument("--reset", action="store_true", help="先删掉库文件")
+    parser.add_argument(
+        "--minimal",
+        action="store_true",
+        help="只铺一份最小计划（一个文件夹 / 一个会话 / 一个步骤）。"
+        "给容器入口用：fake 替身需要一份计划才能起来，"
+        "但界面里不该因此出现两条用户没建过的历史会话。",
+    )
     args = parser.parse_args()
 
     db_path = pathlib.Path(args.db)
@@ -44,7 +51,11 @@ def _main() -> int:
 
     with TestClient(app) as client:
         folder = client.post(
-            "/api/folders", json={"name": "英语", "goal": FOLDER_GOAL}
+            "/api/folders",
+            json={
+                "name": "示例领域" if args.minimal else "英语",
+                "goal": "" if args.minimal else FOLDER_GOAL,
+            },
         ).json()
         folder_id = folder["folder_id"]
 
@@ -56,6 +67,12 @@ def _main() -> int:
                     "intent_raw": "我想在一个月内把考研核心词过一遍，每天大概 50 个",
                     "intent_confidence": "stated",
                 },
+                "why": "工作需要：读英文文档比读翻译快，而且不会漏细节",
+                "starting_point": "四级过了，但两年没用，词汇掉得厉害",
+                "success_criteria": "能不看字幕听懂技术播客的前 15 分钟",
+                "constraints": "每天只有通勤的 40 分钟",
+                "task_type": "记忆型",
+                "goal_derived": "先把第一单元吃透，再谈数量",
                 "steps": [
                     {"action": "通读 unit 1 词表", "output": "一份标了生词的词表"},
                     {"action": "精读 unit 1 例句", "output": "10 个自己造的例句"},
@@ -77,6 +94,12 @@ def _main() -> int:
                     "intent_raw": "前端要补 React，想先把官方文档第一章读完",
                     "intent_confidence": "inferred",
                 },
+                "why": "前端要补 React，官方文档是最准的一手材料",
+                "starting_point": "会写一点 JSX，但没系统读过文档",
+                "success_criteria": "能独立照文档做出一个小页面",
+                "constraints": "每周挤两个晚上",
+                "task_type": "理解型",
+                "goal_derived": "先读完第一章，再动手抄",
                 "steps": [
                     {"action": "通读 Getting Started", "output": "每节一句话摘要"},
                     {"action": "照着抄一个计数器", "output": "能跑起来的最小例子"},
@@ -84,6 +107,32 @@ def _main() -> int:
                 "checkpoints": [],
             },
         ]
+
+        if args.minimal:
+            # 只留第一条，并且**换成一个中性的标题**：
+            # fake 替身只需要"一份带步骤的计划"，不需要它是某个人的学习史。
+            # 用"背完考研核心 1500 词"会让第一次打开容器的人以为
+            # 这些是系统替他建的（或者更糟：是他自己建过又忘了的）。
+            one = dict(sessions[0])
+            one.update(
+                {
+                    "title": "示例会话",
+                    "input": {
+                        "input_goal": "演示用：把一件事拆成几步",
+                        "intent_raw": "只是想看看计划区长什么样",
+                        "intent_confidence": "stated",
+                    },
+                    "why": "演示数据：让模型替身有一份计划可改",
+                    "starting_point": "",
+                    "success_criteria": "",
+                    "constraints": "",
+                    "task_type": "记忆型",
+                    "goal_derived": "演示用：把第一步做掉",
+                    "steps": [{"action": "第一步示例", "output": "一个看得见的结果"}],
+                    "checkpoints": [],
+                }
+            )
+            sessions = [one]
 
         for spec in sessions:
             created = client.post(
@@ -111,11 +160,11 @@ def _main() -> int:
                 f"/api/sessions/{session_id}/input",
                 json={
                     "expected_version": input_row["version"],
-                    "why": "工作需要：读英文文档比读翻译快，而且不会漏细节",
-                    "starting_point": "四级过了，但两年没用，词汇掉得厉害",
-                    "success_criteria": "能不看字幕听懂技术播客的前 15 分钟",
-                    "constraints": "每天只有通勤的 40 分钟",
-                    "task_type": "记忆型",
+                    "why": spec["why"],
+                    "starting_point": spec["starting_point"],
+                    "success_criteria": spec["success_criteria"],
+                    "constraints": spec["constraints"],
+                    "task_type": spec["task_type"],
                     "reason": "第一次把任务说清楚",
                 },
             )
@@ -126,7 +175,7 @@ def _main() -> int:
             state = client.get(f"/api/sessions/{session_id}/state").json()
             plan_body = {
                 "expected_session_version": state["versions"]["session"],
-                "goal_derived": "先把第一单元吃透，再谈数量",
+                "goal_derived": spec["goal_derived"],
                 "steps": spec["steps"],
                 "checkpoints": [],
             }

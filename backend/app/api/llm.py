@@ -29,7 +29,7 @@ from contextlib import contextmanager
 from collections.abc import Iterator
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -191,13 +191,21 @@ def list_providers() -> dict[str, list[ProviderRead]]:
 
 
 @router.get("/config", response_model=dict[str, Any])
-def current_config(session: Session = Depends(get_session)) -> dict[str, Any]:
+def current_config(
+    request: Request, session: Session = Depends(get_session)
+) -> dict[str, Any]:
     """此刻**实际**在用的是什么。
 
     这是"我配了但好像没生效"的唯一答案来源：它同时给出生效中的 profile
     （如果有）与 `.env` 那条路的兜底值，并说清哪一个是当前生效的。
+
+    ★ **读 `app.state.settings`，不是再调一次 `Settings.from_env()`。**
+    启动器（`tools/serveui.py`、容器入口）会在 `from_env()` 之上做覆盖，
+    比如 `--llm fake`。再读一遍环境变量等于把那些覆盖丢掉：服务实际用着
+    `fake`，这个端点却报 `.env` 里的 `deepseek-chat`，界面于是把
+    "替身 · 不调用真模型" 写成 "deepseek-chat · 来自 .env"。
     """
-    settings = Settings.from_env()
+    settings = getattr(request.app.state, "settings", None) or Settings.from_env()
     profile = active_profile(session)
     return {
         "source": "profile" if profile is not None else "settings",

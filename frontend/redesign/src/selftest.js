@@ -165,7 +165,11 @@ async function phaseChat() {
   mark('这一轮结束', { ok: true });
 
   const last = $$('article.msg-assistant').pop();
-  const traces = $$('.trace-item', last).map((el) => ({
+  // 轨迹画了两份（宽屏 gutter / 窄屏正文），只读其中一份 ——
+  // 否则一条工具调用会被数成两条，探针报告自己就会说谎。
+  const traceBox = last.querySelector('.msg-gutter .msg-trace')
+    || last.querySelector('.msg-trace-inline');
+  const traces = (traceBox ? $$('.trace-item', traceBox) : []).map((el) => ({
     label: ($('strong', el) || {}).textContent || '',
     note: ($('span', el) || {}).textContent || '',
     state: el.className.replace('trace-item', '').trim(),
@@ -181,6 +185,53 @@ async function phaseChat() {
   report.planAfter = planVersion();
   report.planChanged = report.planBefore !== report.planAfter;
   mark('计划版本（仅供参考）', { ok: true, before: report.planBefore, after: report.planAfter });
+}
+
+/* ── 第一段后：句子标注（选中原文 → 记下 → 看依据 → 删除）─────────────
+ *
+ * 这条链最容易坏在“选中文字 → 原文”的映射上：渲染后的 DOM 没有 `**`、
+ * `[ST-001]` 也变成了按钮，直接把选区发过去，后端会 422。
+ * 这里选中一个真实段落，走的和用户一样的路径。
+ */
+async function phaseAnnotation() {
+  const last = await waitDom(() => {
+    const rows = $$('article.msg-assistant');
+    const el = rows[rows.length - 1];
+    // `data-annotatable` 由 app 在“原文已读回、msg_id 已对上”时挂上。
+    // 只等 id 不够：id 可能先到，而原文还没进 detail。
+    return el && el.dataset.annotatable === '1' ? el : null;
+  }, '标注：最后一条回答已可标注');
+
+  const paragraph = last.querySelector('.msg-prose p, .msg-prose li, .msg-prose blockquote');
+  if (!paragraph) {
+    mark('标注（跳过）', { ok: true, reason: '这条回答没有可选段落' });
+    return;
+  }
+  const range = document.createRange();
+  range.selectNodeContents(paragraph);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  const button = last.querySelector('[data-action="annotate"]');
+  // 和真实点击一样：pointerdown 先保住选区，click 再读。
+  button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  button.click();
+
+  const form = await waitDom(() => $('.annotation-form-pop'), '标注表单出现');
+  form.querySelector('form').requestSubmit();
+  const basis = await waitDom(() => $('.annotation-basis'), '标注依据出现');
+  const chip = $('.annotation-chip');
+  mark('标注创建', {
+    ok: !!chip,
+    quote: String((basis.querySelector('.annotation-quote') || {}).textContent || '').slice(0, 60),
+    traces: basis.querySelectorAll('.trace-item').length,
+    entries: basis.querySelectorAll('.annotation-entry').length,
+    hasLimits: String(basis.textContent || '').includes('有依据'),
+  });
+
+  basis.querySelector('[data-action="delete-annotation"]').click();
+  await waitDom(() => !$('.annotation-chip'), '标注删除');
+  mark('标注删除', { ok: true });
 }
 
 /* ── 第一段半：侧记**真的和模型对话** ─────────────────────────────────
@@ -277,6 +328,7 @@ export async function run() {
   flush();
   try {
     await phaseChat();
+    await phaseAnnotation();
     await phaseSideNote();
     await phaseLifecycle();
     report.ok = true;

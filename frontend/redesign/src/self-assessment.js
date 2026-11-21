@@ -393,7 +393,15 @@ export function mountSelfAssessment({ root, scale, onSubmit, onError, onClose })
     document.removeEventListener('keydown', onKey);
     root.hidden = true;
     root.innerHTML = '';
-    if (onClose) onClose({ answered: answeredCount(), total: statements.length });
+    if (onClose) {
+      onClose({
+        answered: answeredCount(),
+        total: statements.length,
+        // 结果页说明这次真的写入了。调用方据此决定要不要等写入事务落库 ——
+        // 中途退出（stage 仍是 statements/extra）没有这个必要。
+        submitted: stage === 'result',
+      });
+    }
   }
 
   function onKey(event) {

@@ -4,12 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<meta name="description" content="个人学习流工作台：把目标、动机、计划与每次讨论留成可回溯的档案。">
 <title>学习流档案 · StudyFlow Archive</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23b04430'/%3E%3Cpath d='M8 8h12l4 4v12H8z' fill='none' stroke='%23f8f5eb' stroke-width='1.8'/%3E%3Cpath d='M20 8v4h4M12 16h8M12 20h6' fill='none' stroke='%23f8f5eb' stroke-width='1.8'/%3E%3C/svg%3E">
+<link rel="icon" type="image/x-icon" href="assets/favicon.ico">
+<link rel="icon" type="image/png" href="assets/memory-mark@64.png">
+<link rel="apple-touch-icon" href="assets/memory-mark@256.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-<noscript><link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400;500;600&family=Noto+Serif+SC:wght@700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400;500;600&family=Noto+Serif+SC:wght@700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-webfont@1.7.0/style.css" media="print" onload="this.media='all'">
 <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-webfont@1.7.0/style.css"></noscript>
 <link rel="stylesheet" href="styles.css">
@@ -63,8 +66,10 @@
   <!-- ═══════════════════════  LEFT RAIL · 索引  ═══════════════════════ -->
   <aside class="rail" id="rail">
     <div class="rail-head">
-      <button class="brand" data-action="go-chat" aria-label="回到对话">
-        <span class="brand-mark"><svg><use href="#i-archive-mark"/></svg></span>
+      <!-- 可见文字是「学习流档案 / STUDYFLOW ARCHIVE」，无障碍名必须包含它，
+           否则读屏与视觉用户听到的是两件不同的事（Lighthouse 会如实报错）。 -->
+      <button class="brand" data-action="go-chat" aria-label="学习流档案 · StudyFlow Archive · 回到对话">
+        <span class="brand-mark"><img src="assets/memory-mark.png" alt="" draggable="false"></span>
         <span class="brand-text">
           <strong data-i18n="brand.name">学习流档案</strong>
           <em data-i18n="brand.tag">StudyFlow Archive</em>
@@ -150,7 +155,7 @@
   </aside>
 
   <!-- ═══════════════════════  STAGE  ═══════════════════════ -->
-  <div class="stage" id="stage">
+  <div class="stage" id="stage" role="main">
     <div class="resizer resizer-rail" data-resize="rail" role="separator" aria-label="拖动调整左侧栏宽度"></div>
 
     <!-- ──────────── CHAT VIEW ──────────── -->
@@ -165,12 +170,14 @@
           <strong class="crumb-session">一 unit 1 的词根网络</strong>
         </div>
         <div class="top-actions">
-          <span class="state-pill is-active" id="session-state" data-action="state-menu" role="button" tabindex="0" title="点这里换状态"><i></i><span>进行中</span></span>
+          <span class="state-pill is-active" id="session-state" data-action="state-menu" role="button" tabindex="0" aria-haspopup="menu" title="点这里换状态"><i></i><span>进行中</span></span>
           <button class="ctx-chip" data-action="open-context" id="ctx-chip" aria-label="上下文">
             <canvas class="ctx-ring" data-ctx-ring="topbar" width="26" height="26"></canvas>
             <span id="ctx-ring-pct">—</span>
           </button>
-          <button class="model-chip" data-action="model-menu" id="model-chip">
+          <!-- 窄屏（≤900px）会把模型名藏起来只留一个圆点；
+               没有 aria-label 时读屏只会念“按钮”。 -->
+          <button class="model-chip" data-action="model-menu" id="model-chip" aria-label="切换模型">
             <span class="pulse-dot"></span>
             <span id="model-chip-name">Qwen 3.6 · 27B</span>
             <svg><use href="#i-chev"/></svg>
@@ -230,7 +237,7 @@
 
           <div class="margin-foot">
             <button class="side-note-link" data-action="open-side-note">
-              <span class="mini-seal"><svg><use href="#i-archive-mark"/></svg></span>
+              <span class="mini-seal"><img src="assets/memory-mark.png" alt="" draggable="false"></span>
               <span>
                 <strong data-i18n="margin.sideNote">侧记 · 通用模型</strong>
                 <em data-i18n="margin.sideNoteNote">独立记忆 · 只提议</em>
@@ -536,7 +543,7 @@
               <button class="theme-swatch is-on" data-theme-choice="paper">
                 <span class="swatch-preview paper">
                   <i class="sw-line long"></i><i class="sw-line"></i><i class="sw-line short"></i>
-                  <span class="sw-seal"><svg><use href="#i-archive-mark"/></svg></span>
+                  <span class="sw-seal"><img src="assets/memory-mark.png" alt="" draggable="false"></span>
                 </span>
                 <strong data-i18n="set.paper">宣纸</strong>
                 <em data-i18n="set.paperDesc">暖白 · 墨字 · 朱砂</em>
@@ -544,7 +551,7 @@
               <button class="theme-swatch" data-theme-choice="ink">
                 <span class="swatch-preview ink">
                   <i class="sw-line long"></i><i class="sw-line"></i><i class="sw-line short"></i>
-                  <span class="sw-seal"><svg><use href="#i-archive-mark"/></svg></span>
+                  <span class="sw-seal"><img src="assets/memory-mark.png" alt="" draggable="false"></span>
                 </span>
                 <strong data-i18n="set.ink">夜墨</strong>
                 <em data-i18n="set.inkDesc">深墨 · 米白字 · 暗朱</em>
@@ -611,7 +618,7 @@
 
 <dialog class="confirm proposal-dialog" id="proposal-dialog">
   <div class="confirm-inner proposal-inner">
-    <span class="confirm-seal"><svg><use href="#i-archive-mark"/></svg></span>
+    <span class="confirm-seal"><img src="assets/memory-mark.png" alt="" draggable="false"></span>
     <div class="confirm-text">
       <h3 id="proposal-title">归档复盘 · 待确认</h3>
       <p id="proposal-sub">勾选后写入。</p>
@@ -626,7 +633,7 @@
 
 <aside class="side-note" id="side-note" aria-label="侧记">
   <header class="sn-head">
-    <span class="mini-seal"><svg><use href="#i-archive-mark"/></svg></span>
+    <span class="mini-seal"><img src="assets/memory-mark.png" alt="" draggable="false"></span>
     <div>
       <strong>侧记</strong>
       <em>不绑定会话 · 提议需确认</em>

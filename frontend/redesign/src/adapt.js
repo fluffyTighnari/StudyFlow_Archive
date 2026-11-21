@@ -111,6 +111,7 @@ export function adaptWorkspace(folderPayload, sessionPayload) {
         folderId: s.folder_id,
         folderName: folder ? folder.name : '（已归档的领域）',
         state: s.state,
+        dot: dotClass(s.state),
         time: shortTime(s.updated_at),
       });
       continue;
@@ -123,6 +124,7 @@ export function adaptWorkspace(folderPayload, sessionPayload) {
         folderId: s.folder_id,
         folderName: '（已归档的领域）',
         state: s.state,
+        dot: dotClass(s.state),
         time: shortTime(s.updated_at),
       });
     }
@@ -249,6 +251,8 @@ function adaptMessages(chat) {
       id: row.msg_id,
       role: 'assistant',
       time,
+      //: 原文。标注要求 `quote` 逐字来自这条回复，渲染后的 HTML 不能再反推。
+      raw: row.content,
       html: richText(row.content),
       thinking: row.thinking || null,
       traces: traceRows(row.tool_trace),
@@ -399,6 +403,8 @@ export function adaptDetail(payload) {
     session,
     loaded: true,
     messages: adaptMessages(payload?.chat),
+    //: 由 `loadDetail` 另外读 `/annotations` 填进来（与 `/state` 分开一份请求）。
+    annotations: [],
     plan: adaptPlan(payload?.plan),
     motivation: adaptMotivation(payload?.motivation),
     input: payload?.input || null,

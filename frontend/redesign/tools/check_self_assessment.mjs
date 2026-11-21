@@ -18,11 +18,16 @@ import { setTimeout as delay } from 'node:timers/promises';
 // 产物路径按脚本位置解析，不依赖从哪里启动 —— 否则 `node ...` 换个工作目录
 // 就会把截图写到别处（或因为父目录不存在而报错）。
 const HERE = dirname(fileURLToPath(import.meta.url));
-const BASE = process.argv[2] || 'http://127.0.0.1:8125';
+// 去掉末尾斜杠：脚本会拼 `${BASE}/api/...`，传 `http://host:port/` 时
+// 拼出 `//api/...`，服务端回 404 —— 表现为“latest 一直读不到”，
+// 与自评本身无关。这个坑实际踩过。
+const BASE = (process.argv[2] || 'http://127.0.0.1:8125').replace(/\/+$/, '');
 const PREFIX = process.argv[3]
   ? resolve(process.argv[3])
   : resolve(HERE, '_artifacts', 'sa-check');
-const PORT = 9392;
+// 与 check_model_page.mjs 的 9392 分开：两个脚本同时跑时，后者会连到
+// 前者开着的那个 Edge，表现为“页面加载超时”这种与自评无关的失败。
+const PORT = 9394;
 const sleep = (ms) => delay(ms);
 
 const EDGE_CANDIDATES = [
@@ -153,7 +158,23 @@ try {
   });
 
   // 1. 导航到「认识自己」页
-  await poll(send, "document.readyState === 'complete'", Boolean, { label: '页面加载' });
+  // **不等 `readyState === 'complete'`**：它要等所有外部字体/样式表（Google Fonts、
+  // jsDelivr）结束，而页面在它们到达之前已经能点。网络慢或被代理挡住时，
+  // 这个等待会超时，报出来的却是“驱动异常”，与自评毫无关系。
+  // 直接等应用自己的入口元素出现，那才证明模块脚本已经跑起来了。
+  await poll(
+    send,
+    "document.readyState !== 'loading' && !!document.querySelector('[data-view=\"benchmark\"]')",
+    Boolean,
+    { label: '页面进入可交互', timeout: 30_000 },
+  );
+  // **先清掉草稿。** 自评的答案是实时存的（关掉页面再回来接着答），
+  // 所以上一次跑剩下的草稿会让这次从第 67 条而不是第 1 条开始 ——
+  // 那看起来像"计数断言挂了"，实际是脚本没有从干净状态开始。
+  await evaluate(
+    send,
+    "(() => { for (const k of Object.keys(localStorage)) { if (k.toLowerCase().includes('selfassessment')) localStorage.removeItem(k); } return true; })()",
+  );
   // 模块脚本渲染导航之后才可点；`complete` 不保证 DOM 已铺好 —— 所以先等元素出现。
   await poll(
     send,
@@ -274,16 +295,33 @@ try {
   report.screenshots.push(await shot(send, 'result'));
 
   // 6. 后端确实记下了 tier
-  const latest = await (await fetch(`${BASE}/api/self-assessment/latest`)).json();
-  check('latest.tier === short', latest.tier === 'short', String(latest.tier));
-  check('latest.scale_version === v2', latest.scale_version === 'v2', String(latest.scale_version));
-  report.latest = {
-    run_id: latest.run_id,
-    tier: latest.tier,
-    scale_version: latest.scale_version,
-    readings: (latest.readings || []).length,
-    flags: latest.flags,
-  };
+  //
+  // 结果页出现 ≠ 后端已经提交完：`renderResult` 是先画后写的那一侧。
+  // 直接读一次会偶尔拿到 `null`，那时断言把"还没落库"报成了"tier 不对"。
+  // 这里轮询到有记录为止（8 秒上限），拿不到就说清楚是没等到。
+  // 3 秒在一台还在跑别的验收的机器上不够：提交事务、11 条基线写入与
+  // 不变式自检都要排队，实测偶发超过 3 秒。
+  let latest = null;
+  const startedLatest = Date.now();
+  for (let i = 0; i < 80; i += 1) {
+    const body = await (await fetch(`${BASE}/api/self-assessment/latest`)).json();
+    if (body && body.tier) { latest = body; break; }
+    await sleep(100);
+  }
+  if (!latest) {
+    check('latest 有记录', false,
+      `/api/self-assessment/latest 8 秒内没有返回任何一次自评（等待 ${Date.now() - startedLatest}ms）`);
+  } else {
+    check('latest.tier === short', latest.tier === 'short', String(latest.tier));
+    check('latest.scale_version === v2', latest.scale_version === 'v2', String(latest.scale_version));
+    report.latest = {
+      run_id: latest.run_id,
+      tier: latest.tier,
+      scale_version: latest.scale_version,
+      readings: (latest.readings || []).length,
+      flags: latest.flags,
+    };
+  }
 } catch (err) {
   check('驱动过程无异常', false, err && err.message ? err.message : String(err));
 } finally {
